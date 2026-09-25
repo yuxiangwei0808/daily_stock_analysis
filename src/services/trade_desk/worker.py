@@ -381,7 +381,7 @@ class TradeDeskWorker:
                 deliveries.setdefault(event["payload"].get("event_id"), event)
         wanted = {"opportunity", "price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
                   "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout",
-                  "holding_alert"}
+                  "holding_alert", "portfolio_summary"}
         for event in reversed(events):
             if event["event_type"] not in wanted:
                 continue
@@ -412,7 +412,7 @@ class TradeDeskWorker:
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
             ticker = payload.get("underlying", "")
-            if event["event_type"] == "trade_opportunities":
+            if event["event_type"] in {"trade_opportunities", "portfolio_summary"}:
                 content = message  # carries its own header
             elif event["event_type"] == "options_ideas":
                 content = f"🧭 **Options ideas** · for today's high-conviction trades\n{message}"

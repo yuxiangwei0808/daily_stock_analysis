@@ -279,3 +279,61 @@ def test_api_lists_holdings_and_manages_rules(store, monkeypatch):
         monkeypatch.delenv("TRADE_DESK_BROKER_ACCOUNT")
         assert client.get("/api/v1/trade-desk/holdings").json()["enabled"] is False
         assert client.post("/api/v1/trade-desk/holdings/refresh").status_code == 409
+
+
+def _bars_from(returns, start=100.0):
+    rows, price = [], start
+    for i, r in enumerate(returns):
+        price *= 1 + r
+        rows.append({"date": (date(2026, 6, 1) + timedelta(days=i)).isoformat(), "close": price})
+    return rows
+
+
+def test_portfolio_summary_exposure_hedges_and_wording():
+    from src.services.trade_desk.portfolio import build_summary, format_summary
+    import random
+    rng = random.Random(7)
+    spy = [rng.gauss(0, 0.01) for _ in range(70)]
+    raw = {**RAW, "positions": [{**row, "today_pl": -100.0 if "USO" in row["code"] else 20.0} for row in RAW["positions"]]}
+    view = h.build_view(raw, {**QUOTES, "NVDA": {"price": 200.0, "prev_close": 190.0}}, TODAY)
+    bars = {"SPY": _bars_from(spy), "NVDA": _bars_from([2 * r for r in spy]), "SOXS": _bars_from([-3 * r for r in spy])}
+    summary = build_summary(view, raw, bars, [{"status": "active"}, {"status": "triggered",
+                            "triggered_at": "2026-09-26T00:30:00+00:00"}], TODAY,
+                            earnings_date=lambda ticker, day: date(2026, 9, 29) if ticker == "NVDA" else None)
+    assert summary["day_pct"] == pytest.approx((-200 + 40) / (10_000 + 160) * 100)
+    assert summary["betas"] == {"NVDA": pytest.approx(2.0), "SOXS": pytest.approx(-3.0)}
+    assert summary["beta_exposure"] == pytest.approx(0.10 * 2 - 0.03 * 3)
+    assert summary["hedges"] == [{"ticker": "SOXS", "contribution": -0.09}]
+    assert summary["offsets"] == [{"a": "NVDA", "b": "SOXS", "corr": -1.0}]
+    assert summary["geared"] == ["SOXS"] and summary["alerts_triggered_today"] == 1  # 20:30 New York is still today
+    text = format_summary(summary)
+    assert text.startswith("📊 **Portfolio** · Fri Sep 25\nAccount -1.6% today")
+    assert "a 1% SPY move ≈ +0.1% on the account" in text
+    assert "• USO 10/16 160/170C spread 5.4% of account" in text and "NVDA 10.0% of account · +66.7% on cost · +5.3% today" in text
+    assert "Hedging the book: SOXS -9% of a 1% SPY move" in text
+    assert "NVDA and SOXS offset each other" in text and "NVDA earnings Sep 29 (in 4 days)" in text
+    assert "$" not in text
+
+
+def test_summary_is_sent_once_after_the_close_sync(store, monkeypatch):
+    provider = store.service.provider("live")
+    tick = {"clock": 0.0}
+    monitor, events = _monitor(store, clock=lambda: tick["clock"])
+    at = datetime(2026, 9, 25, 20, 16, tzinfo=timezone.utc)  # 16:16 New York
+    monitor.tick(at, "postmarket")  # the post-close sync first
+    monitor._tasks["sync"].result(timeout=5)
+    monitor.tick(at, "postmarket")
+    monitor._tasks["summary"].result(timeout=5)
+    monitor.tick(at + timedelta(minutes=1), "postmarket")
+    [(event_type, payload, key)] = [e for e in events if e[0] == "portfolio_summary"]
+    assert key == "portfolio:2026-09-25" and payload["message"].startswith("📊 **Portfolio**")
+    assert store.last_summary()["date"] == "2026-09-25" and provider.synced >= 2
+    restarted, events2 = _monitor(store)
+    restarted._emit = monitor._emit  # same dedup store: a restart does not send it twice
+    restarted._after_close_day = date(2026, 9, 25)
+    restarted._tasks["sync"] = monitor._tasks["sync"]
+    restarted.tick(at + timedelta(minutes=5), "postmarket")
+    restarted._tasks["summary"].result(timeout=5)
+    assert len([e for e in events if e[0] == "portfolio_summary"]) == 1
+    monitor.stop()
+    restarted.stop()

@@ -7,6 +7,7 @@ import type {
   HoldingRuleDraft,
   HoldingRuleInput,
   HoldingsResponse,
+  PortfolioSummary,
   PaperFillRequest,
   TradeAdviceJob,
   TradeAdviceListResponse,
@@ -259,6 +260,11 @@ export const tradeDeskApi = {
   async refreshHoldings(): Promise<HoldingsResponse> {
     const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/refresh`);
     return toCamelCase<HoldingsResponse>(response.data);
+  },
+
+  async buildPortfolioSummary(): Promise<PortfolioSummary> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/summary`);
+    return toCamelCase<PortfolioSummary>(response.data);
   },
 
   async createHoldingRule(rule: HoldingRuleInput): Promise<HoldingRule> {

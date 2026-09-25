@@ -11,6 +11,7 @@ import type {
   HoldingRuleKind,
   HoldingStock,
   HoldingsResponse,
+  PortfolioSummary,
 } from '../../types/tradeDesk';
 
 const POLL_MS = 30_000;
@@ -44,6 +45,49 @@ type RuleTarget = { positionKey: string | null; ticker: string; isOption: boolea
 function ruleText(rule: HoldingRule, t: (key: UiTextKey) => string): string {
   const unit = rule.kind.startsWith('pnl') ? '%' : '';
   return `${t(`tradeDesk.holdings.kind.${rule.kind}` as UiTextKey)} ${rule.value}${unit}`;
+}
+
+function SummaryLine({ text }: { text: string }) {
+  // Discord markdown subset: **bold** and _italic_ lines.
+  const parts = text.replace(/^_(.*)_$/, '$1').split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <p className={text.startsWith('_') ? 'text-xs text-muted-text' : text.startsWith('**') ? 'mt-2 font-semibold text-foreground' : 'text-sm text-secondary-text'}>
+      {parts.map((part, index) => (part.startsWith('**') ? <strong key={index} className="text-foreground">{part.slice(2, -2)}</strong> : part))}
+    </p>
+  );
+}
+
+function SummaryCard({ summary, onBuilt }: { summary?: PortfolioSummary | null; onBuilt: (summary: PortfolioSummary) => void }) {
+  const { t } = useUiLanguage();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState('');
+  const build = async () => {
+    setBusy(true);
+    setProblem('');
+    try {
+      onBuilt(await tradeDeskApi.buildPortfolioSummary());
+    } catch (error) {
+      setProblem(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const lines = (summary?.message ?? '').split('\n').filter((line) => line.trim());
+  return (
+    <Card variant="bordered" padding="md">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.summary')}</h2>
+          <p className="mt-1 text-xs text-muted-text">
+            {summary?.builtAt ? `${t('tradeDesk.holdings.summaryBuilt')} ${new Date(summary.builtAt).toLocaleString()}` : t('tradeDesk.holdings.summaryNone')}
+          </p>
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => void build()} isLoading={busy}><RefreshCw className="h-4 w-4" />{t('tradeDesk.holdings.summaryBuild')}</Button>
+      </div>
+      {problem ? <p className="mt-2 text-xs text-danger">{problem}</p> : null}
+      {lines.length ? <div className="mt-3 space-y-1">{lines.slice(1).map((line, index) => <SummaryLine key={index} text={line} />)}</div> : null}
+    </Card>
+  );
 }
 
 function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: () => void; onCancel: () => void }) {
@@ -340,6 +384,7 @@ export const HoldingsPanel: React.FC = () => {
           <Button size="sm" variant="ghost" onClick={() => void refresh()} isLoading={refreshing}><RefreshCw className="h-4 w-4" />{t('tradeDesk.holdings.sync')}</Button>
         </div>
       </Card>
+      <SummaryCard summary={data?.summary} onBuilt={(summary) => setData((current) => (current ? { ...current, summary } : current))} />
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.options')}</h2>
         {view?.options.length ? (

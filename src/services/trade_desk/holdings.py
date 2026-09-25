@@ -46,6 +46,7 @@ PROFIT_OF_MAX = 75.0
 PROFIT_ON_COST = (50.0, 100.0)
 LOSS_ON_COST = -50.0
 STOCK_EARNINGS_DAYS = 7
+SUMMARY_AT = dtime(16, 15)  # after the post-close sync at 16:05
 RULE_KINDS = {
     "price_below": "price at or below", "price_above": "price at or above",
     "days_to_expiry": "trading days to expiry at most", "pnl_below": "P&L at or below", "pnl_above": "P&L at or above",
@@ -75,6 +76,14 @@ def parse_code(code: str) -> Dict[str, Any]:
     return {"kind": "option", "ticker": bare, "underlying": underlying,
             "expiry": date(2000 + int(stamp[:2]), int(stamp[2:4]), int(stamp[4:])),
             "right": "call" if right == "C" else "put", "strike": int(strike) / 1000}
+
+
+def _trading_day(day: date) -> bool:
+    from src.core.trading_calendar import is_market_open
+    try:
+        return bool(is_market_open("us", day))
+    except Exception:
+        return day.weekday() < 5
 
 
 def trading_days_until(expiry: date, today: date) -> int:
@@ -126,11 +135,14 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
         info = parse_code(row["code"])
         qty = float(row["qty"]) * (-1 if row.get("side") == "SHORT" and row["qty"] > 0 else 1)
         if info["kind"] == "stock":
-            price = (quotes.get(info["ticker"]) or {}).get("price") or row.get("price")
+            quote = quotes.get(info["ticker"]) or {}
+            price = quote.get("price") or row.get("price")
+            prev_close = quote.get("prev_close")
             value = qty * price if price else row.get("market_value")
             cost = row.get("average_cost")
             stocks.append({"key": info["ticker"], "ticker": info["ticker"], "name": row.get("name", ""), "qty": qty,
                            "average_cost": cost, "price": price, "value": value,
+                           "day_pct": (price / prev_close - 1) * 100 if price and prev_close else None,
                            "weight_pct": abs(value) / total * 100 if total and value else None,
                            "pnl_pct": ((price / cost - 1) * 100 * (1 if qty > 0 else -1)) if price and cost and cost > 0
                            else row.get("pl_pct")})
@@ -299,6 +311,25 @@ class Holdings:
         rows = [row for row in view["stocks"] if row["ticker"] == ticker]
         return rows[0]["weight_pct"] if rows else None
 
+    def summary(self, now: Optional[datetime] = None, *,
+                bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
+                earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings) -> Dict[str, Any]:
+        """Build (not send) the portfolio summary from the current snapshot and quotes."""
+        from .portfolio import build_summary, format_summary
+        now = now or utcnow()
+        view = self.view(now=now)
+        tickers = [row["ticker"] for row in view["stocks"]]
+        history = bars(list(dict.fromkeys(["SPY", *tickers]))) if tickers else {}
+        summary = build_summary(view, self.raw(), history, self.rules(), _local(now).date(),
+                                earnings_date=earnings_date)
+        summary["message"] = format_summary(summary)
+        summary["built_at"] = utcnow().isoformat()
+        self.repo.set_setting("portfolio_summary", summary)
+        return summary
+
+    def last_summary(self) -> Optional[Dict[str, Any]]:
+        return self.repo.setting("portfolio_summary", None)
+
     # rules ----------------------------------------------------------------
     def rules(self) -> List[Dict[str, Any]]:
         return self.repo.setting("holding_rules", [])
@@ -404,6 +435,7 @@ class HoldingsMonitor:
         self._next_sync = 0.0
         self._next_quotes = 0.0
         self._after_close_day: Optional[date] = None
+        self._summary_day: Optional[date] = None
         self._levels_day: Optional[date] = None
         self._levels: Dict[str, Dict[str, float]] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="holdings")
@@ -447,9 +479,15 @@ class HoldingsMonitor:
                 self._next_sync = clock + SYNC_SECONDS
                 self._run("sync", self.holdings.sync)
                 return
-        elif local.time() >= dtime(16, 5) and self._after_close_day != day and local.weekday() < 5:
+        elif local.time() >= dtime(16, 5) and self._after_close_day != day and _trading_day(day):
             self._after_close_day = day
             self._run("sync", self.holdings.sync)
+            return
+        elif (local.time() >= SUMMARY_AT and self._summary_day != day and _trading_day(day)
+              and self._after_close_day == day and self._tasks.get("sync") is not None
+              and self._tasks["sync"].done()):
+            self._summary_day = day
+            self._run("summary", self._daily_summary, now)
             return
         elif not self.holdings.raw():
             if clock >= self._next_sync:
@@ -463,6 +501,12 @@ class HoldingsMonitor:
             self._run("levels", self._load_levels, day)
         self._next_quotes = clock + QUOTE_SECONDS
         self.check(now)
+
+    def _daily_summary(self, now: datetime) -> None:
+        summary = self.holdings.summary(now, bars=self._bars, earnings_date=self._earnings_date)
+        # The day's dedup key stops a second send after a restart.
+        self._emit("portfolio_summary", {"underlying": "", "message": summary["message"]},
+                   f"portfolio:{summary['date']}")
 
     # alerts ------------------------------------------------------------------
     def _alert(self, kind: str, ticker: str, message: str, key: str) -> Any:

@@ -222,19 +222,27 @@ async def holdings_view(request: Request):
     """Read-only broker positions with live marks, plus your alert rules."""
     from src.services.trade_desk import holdings
     if not holdings.enabled():
-        return {"enabled": False, "view": None, "rules": [], "error": None}
+        return {"enabled": False, "view": None, "rules": [], "error": None, "summary": None}
     service = get_service(request)
     worker = getattr(service, "worker", None)
     error = worker.status().get("holdings_error") if worker is not None else None
     view = await invoke(service.holdings.view)
-    return {"enabled": True, "view": view, "rules": service.holdings.rules(), "error": error}
+    return {"enabled": True, "view": view, "rules": service.holdings.rules(), "error": error,
+            "summary": service.holdings.last_summary()}
 
 
 @router.post("/holdings/refresh")
 async def holdings_refresh(request: Request):
     store = _holdings(request)
     await invoke(store.sync)
-    return {"enabled": True, "view": await invoke(store.view), "rules": store.rules(), "error": None}
+    return {"enabled": True, "view": await invoke(store.view), "rules": store.rules(), "error": None,
+            "summary": store.last_summary()}
+
+
+@router.post("/holdings/summary")
+async def holdings_summary(request: Request):
+    """Rebuild the portfolio summary now for the dashboard; Discord gets it only after the close."""
+    return await invoke(_holdings(request).summary)
 
 
 @router.post("/holdings/rules", status_code=201)

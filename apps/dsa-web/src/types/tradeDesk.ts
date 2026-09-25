@@ -390,11 +390,19 @@ export interface HoldingRule {
   triggeredAt?: string | null;
 }
 
+export interface PortfolioSummary {
+  date: string;
+  message: string;
+  builtAt?: string;
+  dayPct?: number | null;
+}
+
 export interface HoldingsResponse {
   enabled: boolean;
   view: HoldingsView | null;
   rules: HoldingRule[];
   error?: string | null;
+  summary?: PortfolioSummary | null;
 }
 
 export interface HoldingRuleInput {

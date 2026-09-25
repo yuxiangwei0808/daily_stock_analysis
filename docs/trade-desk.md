@@ -276,7 +276,18 @@ unlocked and nothing is ordered. The snapshot is stored locally
   trade ideas and breakout alerts on something you hold add a "You hold: …" line
   and say "sell or trim your position" / "already held — hold, or add small"
   instead of generic wording.
-- **Privacy:** Discord messages (`holding_alert`) contain percentages only —
+- **Daily portfolio summary** (`portfolio.py`): each trading day at 16:15 New
+  York time, after the post-close sync, one `portfolio_summary` Discord message
+  (and the Holdings tab card; **Build now** / `POST /holdings/summary` rebuilds it
+  without sending): the account's day change (broker "today" P&L over the prior
+  value); stock, option and cash shares; market exposure as the account's move
+  for a 1 % SPY move (60-day betas of held stocks/ETFs; options excluded) and
+  which holdings hedge it; the five largest positions and the day's movers; the
+  leveraged/inverse fund share; positions over 25 % of the account; pairs whose
+  60-day daily returns offset (correlation ≤ −0.6) or move together (≥ 0.85, both
+  ≥ 5 % of the account); option expiries within 5 trading days and earnings within
+  7 days; active and triggered alerts. One per day (deduplicated across restarts).
+- **Privacy:** Discord messages (`holding_alert`, `portfolio_summary`) contain percentages only —
   weight of the account and P&L on cost — never share counts, cost or dollar
   amounts. The dashboard shows full detail.
 
