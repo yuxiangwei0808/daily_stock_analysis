@@ -29,7 +29,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 Forked from [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis). On top of the original project it adds research tools for US stocks and options (research and record keeping only — it **never places broker orders**):
 
 - **Trade Desk (US options research)**: live moomoo OpenD quotes, strategy comparisons (expiry payoff, model probabilities, scenarios), exact pricing of your own plan legs, paper and manual-live ledgers, and plan monitoring. See [trade-desk.md](trade-desk.md).
-- **Options ideas from reports**: after each scheduled stock-report run, options comparisons for the strongest calls, sent as one summary (`TRADE_DESK_REPORT_IDEAS`).
+- **Swing trade opportunities**: after each scheduled run, a rule-based trend scan of the watchlist and the S&P 500; model-confirmed long/short ideas with labelled ways to act (options at high conviction) and live volume breakout alerts (`TRADE_OPPORTUNITIES_ENABLED`).
 - **Market pulse**: market-hours alerts for big or fast moves, plus low-cost model triage of major news (`MARKET_PULSE_ENABLED`).
 - **Model tiers and second opinions**: routine work and your own requests can use different models, and your requests get independent opinions from other models (`TARGETED_GENERATION_BACKEND`, `SECOND_OPINION_BACKENDS`; Codex and Claude Code CLIs with per-tier model and effort).
 - **Free news sources**: Google News RSS, Yahoo Finance, Finnhub (`FREE_NEWS_SOURCES`).

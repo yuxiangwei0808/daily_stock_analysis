@@ -1464,6 +1464,7 @@ class MoomooProvider:
                 if not ticker or price is None or price <= 0:
                     continue
                 quote = {"price": price, "prev_close": prev_close, "name": _text(row.get("name")),
+                         "volume": _safe_float(row.get("volume")),
                          "change_pct": (price / prev_close - 1) * 100 if prev_close else None,
                          "updated_at": _text(row.get("update_time")), "session": session, "extended": None}
                 if extended_fields:

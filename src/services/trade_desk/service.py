@@ -238,7 +238,7 @@ class TradeDeskService:
             # Model tiers: automatic scans use the routine model; user requests use
             # Codex plus independent second opinions from SECOND_OPINION_BACKENDS.
             # Automatic scans and report-driven ideas are routine work.
-            proactive = job.get("source") in {"proactive", "report"}
+            proactive = job.get("source") in {"proactive", "report", "opportunity"}
             advisor = self.routine_advisor if proactive and config.targeted_generation_backend else self.advisor
             panel_backends = [] if proactive else [
                 item for item in config.second_opinion_backends if item != "codex_cli"]

@@ -37,8 +37,13 @@ class TradeDeskWorker:
         from . import pulse
         self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit)
                        if pulse.enabled() else None)
-        from .report_ideas import ReportIdeas
-        self._ideas = ReportIdeas(service, self._emit)
+        from . import opportunities
+        self._breakouts = self._opportunities = None
+        if opportunities.enabled():
+            self._breakouts = opportunities.BreakoutWatch(lambda: service.provider("live"), self._emit,
+                                                          watchlist=pulse.watch_tickers)
+            self._opportunities = opportunities.OpportunityRunner(
+                service, self._emit, watchlist=pulse.watch_tickers, breakouts=self._breakouts)
 
     def start(self):
         if self._thread or not self.service.enabled:
@@ -59,8 +64,9 @@ class TradeDeskWorker:
         if self._thread:
             self._thread.join(timeout=5)
         self._scan_pool.shutdown(wait=False, cancel_futures=True)
-        if self._pulse is not None:
-            self._pulse.stop()
+        for part in (self._pulse, self._breakouts, self._opportunities):
+            if part is not None:
+                part.stop()
         self.repo.release(self.owner)
 
     def _loop(self):
@@ -199,10 +205,15 @@ class TradeDeskWorker:
                 self._pulse.tick(now)
             except Exception as exc:  # the watch must never stop plan monitoring
                 logger.warning("Market pulse check failed: %s", type(exc).__name__)
-        try:
-            self._ideas.tick(regular_session)
-        except Exception as exc:  # ideas are optional
-            logger.warning("Report options ideas failed: %s", type(exc).__name__)
+        if self._opportunities is not None:
+            try:
+                self._breakouts.tick(now, session_window(now)[0])
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Breakout watch failed: %s", type(exc).__name__)
+            try:
+                self._opportunities.tick(regular_session)
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Trade opportunities failed: %s", type(exc).__name__)
         self._proactive()
         self._deliver()
 
@@ -343,7 +354,7 @@ class TradeDeskWorker:
             if event["event_type"] in {"discord_attempt", "discord_delivery"}:
                 deliveries.setdefault(event["payload"].get("event_id"), event)
         wanted = {"opportunity", "price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
-                  "market_move", "market_news", "options_ideas"}
+                  "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout"}
         for event in reversed(events):
             if event["event_type"] not in wanted:
                 continue
@@ -374,10 +385,15 @@ class TradeDeskWorker:
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
             ticker = payload.get("underlying", "")
-            if event["event_type"] == "options_ideas":
-                content = f"🧭 **Options ideas** · strongest calls from the latest report\n{message}"
+            if event["event_type"] == "trade_opportunities":
+                content = message  # carries its own header
+            elif event["event_type"] == "options_ideas":
+                content = f"🧭 **Options ideas** · for today's high-conviction trades\n{message}"
                 if base:
                     content += f"\n{base}/trade-desk"
+            elif event["event_type"] == "breakout":
+                up = payload.get("kind") == "breakout"
+                content = f"{'🚀' if up else '🔻'} **{ticker}** · {'Breakout' if up else 'Breakdown'}\n{message}"
             elif event["event_type"] in {"market_move", "market_news"}:
                 if event["event_type"] == "market_news":
                     icon, label = "📰", "News"

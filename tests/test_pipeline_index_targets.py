@@ -502,9 +502,10 @@ class PipelineDailySourceAttributionTestCase(unittest.TestCase):
         # V8 — persisted history uses canonical code plus registry Chinese name.
         self.assertEqual(history_result.code, "csi930955")
         self.assertEqual(history_result.name, "红利低波100")
+        # The push brief omits per-stock sources; the full report keeps them.
         self.assertIn(
             "*📋 数据来源：agent:openai,daily:AkshareFetcher*",
-            _render_aggregate_report(result, ReportType.BRIEF),
+            _render_aggregate_report(result, ReportType.FULL),
         )
 
     def test_v10_daily_source_deduplicates_complete_tokens_only(self) -> None:

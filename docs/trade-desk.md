@@ -186,18 +186,50 @@ session only) watches the US tickers in `STOCK_LIST`:
 Both event types use the worker's deduplicated, retried Discord delivery
 (labelled "Market move" / "Market news") and never create plans or orders.
 
-## Options ideas from stock reports
+## Swing trade opportunities
 
-With `TRADE_DESK_REPORT_IDEAS=N` (default 0 = off), once a scheduled report
-run finishes during the regular session (at least five fresh US reports, none in
-the last three minutes), the worker submits comparisons for the N reports with
-the strongest directional view (score furthest from 50; bullish ≥ 60, bearish
-≤ 40, otherwise neutral) with the report as evidence. They run on the routine
-model without tools. When all finish (or after 30 minutes), one `options_ideas`
-Discord message lists, per stock, the leading candidate's legs, debit/credit,
-max loss/gain, break-even and model probability, or "wait" with the reason.
-Runs finishing after the close are skipped because option quotes are no longer
-tradable. Ideas are research only; nothing is ordered.
+With `TRADE_OPPORTUNITIES_ENABLED=true` (default off) the worker looks for
+strong trends to go long or short over days to weeks. Nothing is ordered.
+
+- **When:** after each scheduled stock-report run (at least five fresh US
+  reports, none in the last three minutes), including the after-close run.
+- **Universe:** the watchlist plus `SCREENING_US_UNIVERSE` (S&P 500 by default,
+  loaded once a day), about 520 names, from one batched yfinance download of six
+  months of daily bars (~10–40 s).
+- **Rules** (`trend.py`, 0–100 per direction, the stronger one kept):
+  MA20/MA50 alignment 30, MA slopes 20, a close past the prior 20-day high/low 25
+  (within 2 %: 12), 20-day momentum 15, volume vs. the 50-day average 10 (an
+  unfinished session's volume is scaled by a typical intraday profile); more
+  than 3 ATR past MA20 costs 10. Price ≥ $5 and ≥ $20M average daily dollar
+  volume are required. Strength ≥ 70 is a strong trend. ATR levels: stop 1.5 ATR,
+  targets 3 and 4.5 ATR.
+- **Review:** up to `2 × TRADE_OPPORTUNITIES_MAX` (at least 6) strong setups —
+  watchlist names first on ties, plus watchlist names at strength ≥ 55 whose
+  report score is ≥ 75 (long) or ≤ 25 (short) — go to the routine generation
+  backend in one call with 20 recent bars, up to five headlines from the free
+  news sources, the report summary and the SPY/QQQ regime. It keeps the rule
+  direction or rejects, and gives a conviction (low/medium/high), entry, stop,
+  targets, horizon, thesis and invalidation. Stops or targets on the wrong side
+  of the price fall back to the ATR levels.
+- **Delivery:** medium/high ideas (at most `TRADE_OPPORTUNITIES_MAX`) are sent as
+  one `trade_opportunities` Discord message with labelled ways to act. Long: buy
+  shares. Short: sell or trim if held; short shares (margin and borrow needed,
+  loss unbounded); an inverse ETF for broad index/sector ETFs (e.g. SPY → SH,
+  QQQ → PSQ). High conviction adds calls/call spread or puts/put spread; during
+  the regular session a Trade Desk options comparison (swing horizon, routine
+  model) runs for each new high-conviction name and one `options_ideas` message
+  follows. An idea already sent today with the same direction and conviction
+  is listed only under "Still on"; a run with nothing new sends nothing.
+- **Live breakouts:** in the regular session, after the first 15 minutes, the
+  watchlist and scan names at strength ≥ 60 within 2 % of their 20-day high/low
+  are quoted every minute through OpenD. A price above the prior 20-day high and
+  MA50 (or below the low and MA50) at ≥ 1.3× normal volume pace emits one
+  `breakout` alert per stock, direction and day, with ATR stop and targets.
+  Names outside the watchlist are capped at five alerts a day.
+- **Leveraged/inverse ETFs** (detected from the name, e.g. "Bear 3X", "UltraPro
+  Short"): long ideas say "short-term, small size"; bearish ones only say sell or
+  trim if held (never short the fund); no options follow-up, and breakout alerts
+  show the stop without ATR targets.
 
 ## Your own trade plan and fresh news
 
