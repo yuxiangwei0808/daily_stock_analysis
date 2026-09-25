@@ -1179,6 +1179,6 @@ def test_market_pulse_alerts_are_delivered_with_their_own_label(repo, monkeypatc
 
     monkeypatch.setattr(src.notification, 'NotificationService', Delivery)
     worker._deliver()
-    assert sent == ['Market move · NVDA\nNVDA up 5.2% today (past +5%) at 230.00.']
+    assert sent == ['📈 **NVDA** · Big move\nNVDA up 5.2% today (past +5%) at 230.00.']
     worker.stop()
     svc.stop()

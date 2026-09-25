@@ -15,6 +15,11 @@ from .models import TradeAdviceRequest, identity, utcnow
 logger = logging.getLogger(__name__)
 
 
+_EVENT_LABELS = {"opportunity": "Opportunity", "price_trigger": "Price trigger", "invalidation": "Invalidated",
+                 "target": "Target reached", "time_exit": "Time to exit", "data_outage": "Data outage",
+                 "position_reconciliation": "Reconcile position", "monitor_capacity": "Monitor capacity"}
+
+
 class TradeDeskWorker:
     def __init__(self, service):
         self.service = service
@@ -32,6 +37,8 @@ class TradeDeskWorker:
         from . import pulse
         self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit)
                        if pulse.enabled() else None)
+        from .report_ideas import ReportIdeas
+        self._ideas = ReportIdeas(service, self._emit)
 
     def start(self):
         if self._thread or not self.service.enabled:
@@ -192,6 +199,10 @@ class TradeDeskWorker:
                 self._pulse.tick(now)
             except Exception as exc:  # the watch must never stop plan monitoring
                 logger.warning("Market pulse check failed: %s", type(exc).__name__)
+        try:
+            self._ideas.tick(regular_session)
+        except Exception as exc:  # ideas are optional
+            logger.warning("Report options ideas failed: %s", type(exc).__name__)
         self._proactive()
         self._deliver()
 
@@ -332,7 +343,7 @@ class TradeDeskWorker:
             if event["event_type"] in {"discord_attempt", "discord_delivery"}:
                 deliveries.setdefault(event["payload"].get("event_id"), event)
         wanted = {"opportunity", "price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
-                  "market_move", "market_news"}
+                  "market_move", "market_news", "options_ideas"}
         for event in reversed(events):
             if event["event_type"] not in wanted:
                 continue
@@ -362,12 +373,22 @@ class TradeDeskWorker:
             # Messages can quote model output built from news text; never let it
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
-            if event["event_type"] in {"market_move", "market_news"}:
-                label = "Market move" if event["event_type"] == "market_move" else "Market news"
-                content = f"{label} · {payload.get('underlying', '')}\n{message}"
+            ticker = payload.get("underlying", "")
+            if event["event_type"] == "options_ideas":
+                content = f"🧭 **Options ideas** · strongest calls from the latest report\n{message}"
+                if base:
+                    content += f"\n{base}/trade-desk"
+            elif event["event_type"] in {"market_move", "market_news"}:
+                if event["event_type"] == "market_news":
+                    icon, label = "📰", "News"
+                else:
+                    moved_up = (payload.get("change_pct") or 0) >= 0 if payload.get("kind") == "day_move" \
+                        else " moved +" in message or " up " in message
+                    icon, label = ("📈" if moved_up else "📉"), ("Fast move" if payload.get("kind") == "fast_move" else "Big move")
+                content = f"{icon} **{ticker}** · {label}\n{message}"
             else:
-                content = (f"Trade Desk · {event['event_type']} · {payload.get('underlying', '')}\n"
-                           f"{message}\n{link}")
+                label = _EVENT_LABELS.get(event["event_type"], event["event_type"].replace("_", " ").capitalize())
+                content = f"🧭 **Trade Desk · {label}** · {ticker}\n{message}\n{link}"
             if payload.get("data_mode") == "replay":
                 content = "SYNTHETIC REPLAY / PAPER ONLY\n" + content
             try:

@@ -255,6 +255,17 @@ class ChannelDetector:
         return names.get(channel, "未知渠道")
 
 
+BRIEF_WATCH_DETAIL = 6  # Watch names shown with levels and a reason; the rest go in a table
+_BRIEF_TEXT = {
+    "en": {"buy": "🟢 Buy / Add", "sell": "🔴 Sell / Reduce", "setup": "🟡 Watch — closest to a setup",
+           "rest": "🟡 Watch — no setup yet (ticker · price · change · score)", "score": "score"},
+    "zh": {"buy": "🟢 买入 / 加仓", "sell": "🔴 卖出 / 减仓", "setup": "🟡 观望 — 最接近买点",
+           "rest": "🟡 观望 — 暂无买点（代码 · 价格 · 涨跌 · 评分）", "score": "评分"},
+    "ko": {"buy": "🟢 매수 / 추가", "sell": "🔴 매도 / 축소", "setup": "🟡 관망 — 매수 시점에 가장 근접",
+           "rest": "🟡 관망 — 아직 매수 시점 아님 (종목 · 가격 · 등락 · 점수)", "score": "점수"},
+}
+
+
 class NotificationService(
     AstrbotSender,
     CustomWebhookSender,
@@ -1167,6 +1178,15 @@ class NotificationService(
         lines += ["", f"**{verdict}**", ""]
         return lines
 
+    @staticmethod
+    def _brief_day_quote(result: AnalysisResult) -> Tuple[Optional[float], Optional[float]]:
+        """The price and change to show for the day: the regular close after the bell."""
+        snapshot = getattr(result, "market_snapshot", None) or {}
+        close = snapshot.get("regular_close") if isinstance(snapshot, dict) else None
+        if isinstance(snapshot, dict) and snapshot.get("quote_session") == "postmarket" and close:
+            return close, snapshot.get("regular_change_pct")
+        return getattr(result, "current_price", None), getattr(result, "change_pct", None)
+
     @classmethod
     def _brief_price(cls, result: AnalysisResult) -> str:
         price = getattr(result, "current_price", None)
@@ -2049,34 +2069,59 @@ class NotificationService(
         # Fallback: brief summary from dashboard report
         if not results:
             return f"# {report_date} {labels['brief_title']}\n\n{labels['no_results']}"
-        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
-        buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
+        # Decisions first: Buy and Sell/Reduce in full, the Watch names closest to a
+        # setup with their levels, and the remaining Watch names as one table.
+        texts = _BRIEF_TEXT.get(report_language, _BRIEF_TEXT["en"])
+        buckets: Dict[str, List[AnalysisResult]] = {"buy": [], "sell": [], "watch": []}
+        for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
+            kind = display_decision_type_for_result(r, report_language=report_language)
+            buckets[kind if kind in ("buy", "sell") else "watch"].append(r)
         lines = [
             f"# {report_date} {labels['brief_title']}",
             "",
-            f"> {len(results)} {labels['stock_unit_compact']} | 🟢{buy_count} 🟡{hold_count} 🔴{sell_count}",
+            f"> {len(results)} {labels['stock_unit_compact']} · 🟢 {len(buckets['buy'])} · "
+            f"🟡 {len(buckets['watch'])} · 🔴 {len(buckets['sell'])}",
         ]
         self._append_market_status_line(lines, results, report_language)
-        for r in sorted_results:
+
+        def entry(r: AnalysisResult, with_levels: bool) -> List[str]:
             signal_text, emoji, _ = self._get_signal_level(r)
-            name = self._get_display_name(r, report_language)
-            dash = r.dashboard or {}
-            core = dash.get('core_conclusion', {}) or {}
-            one = self._clip(core.get('one_sentence') or r.analysis_summary or '', 60)
-            lines.append(
-                f"**{name}({r.code})** {emoji} "
-                f"{signal_text} | "
-                f"{labels['score_label']} {r.sentiment_score}{self._brief_price(r)} | {one}"
-            )
-            levels = self._brief_levels(r, labels)
+            name = self._clip(self._get_display_name(r, report_language), 8)
+            quote = self._brief_price(r).removeprefix(" | ")
+            parts = [f"{emoji} **{r.code}** {name}".strip(), quote, signal_text, f"{texts['score']} {r.sentiment_score}"]
+            out = [" · ".join(part for part in parts if part)]
+            levels = self._brief_levels(r, labels) if with_levels else ""
             if levels:
-                lines.append(levels)
-            lines.extend(self._model_panel_lines(r, report_language, compact=True))
-            news_disclosure = self._empty_news_disclosure(r, report_language)
-            if news_disclosure:
-                lines.append(news_disclosure)
-            if self._append_data_sources_line(lines, r, labels, limit=40):
+                out.append(levels)
+            core = (r.dashboard or {}).get('core_conclusion', {}) or {}
+            one = self._clip(core.get('one_sentence') or r.analysis_summary or '', 60)
+            if one:
+                out.append(f"> {one}")
+            out.extend(self._model_panel_lines(r, report_language, compact=True))
+            disclosure = self._empty_news_disclosure(r, report_language)
+            if disclosure:
+                out.append(disclosure)
+            return out
+
+        watch = buckets["watch"]
+        for title, group, with_levels in ((texts["buy"], buckets["buy"], True), (texts["sell"], buckets["sell"], False),
+                                          (texts["setup"], watch[:BRIEF_WATCH_DETAIL], True)):
+            if not group:
+                continue
+            lines.append(f"**{title}**")
+            for r in group:
+                lines.extend(entry(r, with_levels))
                 lines.append("")
+        rest = watch[BRIEF_WATCH_DETAIL:]
+        if rest:
+            lines.append(f"**{texts['rest']}**")
+            lines.append("```")
+            for r in rest:
+                price, change = self._brief_day_quote(r)
+                price_text = self._display_price(price) if price else "-"
+                change_text = f"{change:+.2f}%" if change is not None else ""
+                lines.append(f"{r.code:<6} {price_text:>9} {change_text:>7}  {r.sentiment_score:>3}")
+            lines.append("```")
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         models = self._collect_models_used(results)

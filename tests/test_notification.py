@@ -817,9 +817,9 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         out = service.generate_brief_report([result], report_date="2026-07-11")
 
-        self.assertIn("🟢1 🟡0 🔴0", out)
-        self.assertIn("Buy | Score 72", out)
-        self.assertNotIn("Hold | Score 72", out)
+        self.assertIn("🟢 1 · 🟡 0 · 🔴 0", out)
+        self.assertIn("Buy · score 72", out)
+        self.assertNotIn("Hold · score 72", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_aggregate_report_routes_by_report_type(self, mock_get_config: mock.MagicMock):
@@ -891,7 +891,13 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         empty = self._source_result("NONE", "NoSource", 70, "")
         beta = self._source_result("BBB", "Beta", 60, "daily:BetaFetcher")
 
-        for renderer_enabled in (False, True):
+        # The built-in push brief keeps provenance in the full report only.
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        builtin = NotificationService().generate_brief_report([beta, empty, alpha], report_date="2026-08-27")
+        self.assertNotIn("daily:AlphaFetcher", builtin)
+        self.assertNotIn("daily:BetaFetcher", builtin)
+
+        for renderer_enabled in (True,):
             with self.subTest(renderer_enabled=renderer_enabled):
                 mock_get_config.return_value = _make_config(
                     report_renderer_enabled=renderer_enabled
@@ -957,9 +963,9 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertEqual(render.call_count, 2)
         self.assertEqual(dashboard.count("daily:AlphaFetcher"), 1)
-        self.assertEqual(brief.count("daily:AlphaFetcher"), 1)
+        # Push briefs keep one line per decision; provenance stays in the full report.
+        self.assertEqual(brief.count("daily:AlphaFetcher"), 0)
         self.assertIn("*📋 数据来源：daily:AlphaFetcher*", dashboard)
-        self.assertIn("*📋 数据来源：daily:AlphaFetcher*", brief)
 
     @mock.patch("src.notification.get_config")
     def test_source_labels_render_in_all_supported_languages(
@@ -973,6 +979,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         for language, expected_label in labels_by_language.items():
             for renderer_enabled in (False, True):
                 for report_type in ("simple", "brief"):
+                    if report_type == "brief" and not renderer_enabled:
+                        continue  # the built-in push brief omits per-stock sources
                     with self.subTest(
                         language=language,
                         renderer_enabled=renderer_enabled,

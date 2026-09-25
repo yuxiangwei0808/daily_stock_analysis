@@ -24,6 +24,19 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 </div>
 
+## 🧭 What this fork adds
+
+Forked from [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis). On top of the original project it adds research tools for US stocks and options (research and record keeping only — it **never places broker orders**):
+
+- **Trade Desk (US options research)**: live moomoo OpenD quotes, strategy comparisons (expiry payoff, model probabilities, scenarios), exact pricing of your own plan legs, paper and manual-live ledgers, and plan monitoring. See [trade-desk.md](trade-desk.md).
+- **Options ideas from reports**: after each scheduled stock-report run, options comparisons for the strongest calls, sent as one summary (`TRADE_DESK_REPORT_IDEAS`).
+- **Market pulse**: market-hours alerts for big or fast moves, plus low-cost model triage of major news (`MARKET_PULSE_ENABLED`).
+- **Model tiers and second opinions**: routine work and your own requests can use different models, and your requests get independent opinions from other models (`TARGETED_GENERATION_BACKEND`, `SECOND_OPINION_BACKENDS`; Codex and Claude Code CLIs with per-tier model and effort).
+- **Free news sources**: Google News RSS, Yahoo Finance, Finnhub (`FREE_NEWS_SOURCES`).
+- **Home and notifications**: watchlist grouped by moomoo groups with live quotes; a Discord brief grouped by decision, with tables rendered as code blocks.
+
+See [.env.example](../.env.example) and [LLM_CONFIG_GUIDE_EN.md](LLM_CONFIG_GUIDE_EN.md) for configuration.
+
 ## 💖 Sponsors
 
 <div align="center">
@@ -155,7 +168,7 @@ By default, the workflow runs every weekday at 18:00 Beijing time and skips non-
 
 ```bash
 # Clone the project
-git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+git clone https://github.com/yuxiangwei0808/daily_stock_analysis.git && cd daily_stock_analysis
 
 # Install dependencies
 pip install -r requirements.txt

@@ -186,6 +186,19 @@ session only) watches the US tickers in `STOCK_LIST`:
 Both event types use the worker's deduplicated, retried Discord delivery
 (labelled "Market move" / "Market news") and never create plans or orders.
 
+## Options ideas from stock reports
+
+With `TRADE_DESK_REPORT_IDEAS=N` (default 0 = off), once a scheduled report
+run finishes during the regular session (at least five fresh US reports, none in
+the last three minutes), the worker submits comparisons for the N reports with
+the strongest directional view (score furthest from 50; bullish ≥ 60, bearish
+≤ 40, otherwise neutral) with the report as evidence. They run on the routine
+model without tools. When all finish (or after 30 minutes), one `options_ideas`
+Discord message lists, per stock, the leading candidate's legs, debit/credit,
+max loss/gain, break-even and model probability, or "wait" with the reason.
+Runs finishing after the close are skipped because option quotes are no longer
+tradable. Ideas are research only; nothing is ordered.
+
 ## Your own trade plan and fresh news
 
 A request may carry `plan_legs`: up to four legs, either objects

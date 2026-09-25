@@ -6,6 +6,7 @@ Discord 发送提醒服务
 1. 通过 webhook 或 Discord bot API 发送 Discord 消息
 """
 import logging
+import re
 import time
 from typing import Optional
 
@@ -71,7 +72,7 @@ class DiscordSender:
         Returns:
             是否发送成功
         """
-        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        sanitized_content = _discord_markdown(strip_hidden_markdown_metadata(content)).strip()
         if not sanitized_content:
             logger.warning("Discord 消息内容为空，跳过推送")
             return False
@@ -103,14 +104,16 @@ class DiscordSender:
     def _split_discord_content(self, content: str) -> list[str]:
         """按 Discord content 上限拆分消息。"""
         try:
-            chunks = chunk_content_by_max_words(content, self._discord_max_words)
+            # Leave room for re-opening a code block that spans two messages.
+            limit = max(200, self._discord_max_words - 8)
+            chunks = chunk_content_by_max_words(content, limit)
             if len(chunks) > 1:
                 chunks = chunk_content_by_max_words(
                     content,
-                    self._discord_max_words,
+                    limit,
                     add_page_marker=True,
                 )
-            return chunks
+            return _balance_code_fences(chunks)
         except ValueError as e:
             logger.error("分割 Discord 消息失败: %s", e)
             return chunk_content_by_max_words(
@@ -297,3 +300,47 @@ class DiscordSender:
             pass
 
         return float(2 ** attempt)
+
+
+_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}")
+
+
+def _discord_markdown(content: str) -> str:
+    """Discord renders no Markdown tables or rules: tables become aligned code blocks."""
+    lines = content.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith("|") and i + 1 < len(lines) and _TABLE_RULE.match(lines[i + 1]):
+            block = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                block.append(lines[i])
+                i += 1
+            # Long parenthetical notes and all-N/A columns make phone-width tables scroll.
+            rows = [[re.sub(r"\s*\([^)]{15,}\)", "", cell.strip().replace("**", "")) for cell in row.strip().strip("|").split("|")]
+                    for row in block if not _TABLE_RULE.match(row)]
+            width = max(len(row) for row in rows)
+            empty = {k for k in range(width) if len(rows) > 1 and all(
+                (row[k] if k < len(row) else "").strip() in {"", "N/A", "-", "—"} for row in rows[1:])}
+            rows = [[cell for k, cell in enumerate(row) if k not in empty] for row in rows]
+            width = max(len(row) for row in rows)
+            widths = [max(len(row[k]) if k < len(row) else 0 for row in rows) for k in range(width)]
+            out.append("```")
+            out.extend("  ".join(cell.ljust(widths[k]) for k, cell in enumerate(row)).rstrip() for row in rows)
+            out.append("```")
+            continue
+        out.append("" if re.fullmatch(r"\s*(-{3,}|\*{3,}|_{3,})\s*", line) else line)
+        i += 1
+    return "\n".join(out)
+
+
+def _balance_code_fences(chunks: list[str]) -> list[str]:
+    """Close a code block cut at a message boundary and reopen it in the next message."""
+    balanced = []
+    carry = False
+    for chunk in chunks:
+        text = ("```\n" + chunk) if carry else chunk
+        carry = text.count("```") % 2 == 1
+        balanced.append(text + "\n```" if carry else text)
+    return balanced

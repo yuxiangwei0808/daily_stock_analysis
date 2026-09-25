@@ -22,6 +22,19 @@
 
 </div>
 
+## 🧭 本分支新增（Fork）
+
+本仓库 fork 自 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)，在原有功能之上增加了面向美股与期权的研究工具（仅研究与记录，**从不向券商下单**）：
+
+- **Trade Desk（美股期权研究）**：接入 moomoo OpenD 实时报价，对比多种期权策略（到期损益、模型概率、情景分析），可按你给出的具体合约腿精确定价，支持纸面/手动实盘账本与计划监控。详见 [docs/trade-desk.md](docs/trade-desk.md)。
+- **报告期权方案**：每轮定时个股报告完成后，为方向性最强的几只股票生成期权方案并推送一条汇总（`TRADE_DESK_REPORT_IDEAS`）。
+- **盘中监控**：交易时段内按规则提醒大幅/快速波动，并用低成本模型筛选重大新闻（`MARKET_PULSE_ENABLED`）。
+- **模型分层与第二意见**：常规任务与用户主动请求使用不同模型，用户请求附带其他模型的独立意见（`TARGETED_GENERATION_BACKEND`、`SECOND_OPINION_BACKENDS`；支持 Codex / Claude Code CLI 按层设置模型与推理强度）。
+- **免费新闻源**：Google News RSS、Yahoo Finance、Finnhub（`FREE_NEWS_SOURCES`）。
+- **首页与推送**：自选按 moomoo 分组并显示实时行情；Discord 简报按决策分组、表格转为代码块，更易阅读。
+
+配置项说明见 [.env.example](.env.example) 与 [docs/LLM_CONFIG_GUIDE.md](docs/LLM_CONFIG_GUIDE.md)。
+
 ## 💖 赞助商 (Sponsors)
 <div align="center">
   <p align="center">
@@ -154,7 +167,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+git clone https://github.com/yuxiangwei0808/daily_stock_analysis.git && cd daily_stock_analysis
 
 # 安装依赖
 pip install -r requirements.txt

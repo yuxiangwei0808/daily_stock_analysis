@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 定时报告期权方案（`TRADE_DESK_REPORT_IDEAS`，默认关闭）：常规交易时段内每轮定时个股报告完成后，为方向性最强的 N 只美股生成期权方案对比，并推送一条 Discord 汇总（腿、成本、最大亏损/盈利、盈亏平衡点、模型概率或“等待”及理由）。
+- [改进] Discord 推送更易读：简报按决策分组（买入/卖出完整列出，观望中最接近买点的 6 只附价位，其余汇总为代码块表格），去掉每只股票的数据来源行（完整报告保留）；Markdown 表格在 Discord 中转为对齐的代码块并去掉全为 N/A 的列；跨消息拆分的代码块自动闭合；Trade Desk 与盘中监控提醒使用清晰的标题与图标。
+
 - [新功能] Claude Code CLI 后端支持 `CLAUDE_CODE_CLI_EFFORT`（`--effort`），并新增 `TARGETED_CLAUDE_CODE_CLI_MODEL` / `TARGETED_CLAUDE_CODE_CLI_EFFORT`，用户主动发起的分析与第二意见可使用与常规任务不同的 Claude 模型和强度（第二意见在工作线程中也按用户请求处理）。
 - [修复] 美股按价格结构校准买卖结论时，提示语不再引用“主力资金流入/流出”，改为基于支撑、压力与突破的表述。
 
