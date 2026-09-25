@@ -175,6 +175,7 @@ class MarketPulse:
         quotes = self._provider().watchlist_quotes(tickers)
         local = now.astimezone(_NEW_YORK)
         day = local.date().isoformat()
+        self._prune(day)
         opening = datetime.combine(local.date(), datetime.min.time().replace(hour=9, minute=30), _NEW_YORK)
         in_grace = local < opening + OPENING_GRACE
         levels, fast_pct = _levels(), _fast_pct()
@@ -216,6 +217,17 @@ class MarketPulse:
                     "message": f"{ticker} moved {move:+.1f}% within 15 min to {price:.2f}"
                                + (f" (day {change:+.1f}%)" if change is not None else "") + f".{self._reason(ticker)}"},
                     f"pulse-fast:{ticker}:{now.strftime('%Y%m%d%H%M')}")
+
+    def _prune(self, day: str) -> None:
+        """Day-keyed state from earlier days and old headline hashes are dropped (weeks of uptime)."""
+        if getattr(self, "_pruned_day", None) == day:
+            return
+        self._pruned_day = day
+        self._level_high = {k: v for k, v in self._level_high.items() if k[0] == day}
+        self._fast_counts = {k: v for k, v in self._fast_counts.items() if k[0] == day}
+        self._news_alerts = {k: v for k, v in self._news_alerts.items() if k == day}
+        if len(self._seen) > 20000:
+            self._seen = set(list(self._seen)[-10000:])
 
     def _reason(self, ticker: str) -> str:
         with self._lock:

@@ -13,6 +13,8 @@ mode and can report an honest live-provider health state.
 """
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import math
 import os
@@ -48,6 +50,8 @@ _CALENDAR_HORIZON_DAYS = 5 * 366
 _XNYS_CALENDAR: Any = None
 _XNYS_CALENDAR_LOCK = threading.Lock()
 
+
+logger = logging.getLogger(__name__)
 
 class ProviderError(RuntimeError):
     """A provider failure with a stable, machine-readable error code."""
@@ -1456,8 +1460,7 @@ class MoomooProvider:
                            "postmarket": ("after_price", "after_change_rate")}.get(session)
         quotes: dict[str, dict[str, Any]] = {}
         for start in range(0, len(tickers), 400):  # OpenD allows 400 codes per snapshot
-            data = self._call("get_market_snapshot", [f"US.{ticker}" for ticker in tickers[start:start + 400]])
-            rows = data.to_dict("records") if hasattr(data, "to_dict") else list(data or [])
+            rows = self._snapshot_rows([f"US.{ticker}" for ticker in tickers[start:start + 400]])
             for row in rows:
                 ticker = _text(row.get("code"))[3:]
                 price, prev_close = _safe_float(row.get("last_price")), _safe_float(row.get("prev_close_price"))
@@ -1474,6 +1477,21 @@ class MoomooProvider:
                         quote["extended"] = {"price": ext_price, "change_pct": ext_change}
                 quotes[ticker] = quote
         return quotes
+
+    def _snapshot_rows(self, codes: list[str]) -> list[dict[str, Any]]:
+        """One snapshot; a code OpenD rejects (delisted, mistyped) is dropped instead of failing the batch."""
+        try:
+            data = self._call("get_market_snapshot", codes)
+        except ProviderError as error:
+            if len(codes) == 1 or error.code in {"connection_unavailable", "request_timeout", "opend_not_configured",
+                                                 "provider_closed", "quote_permission", "subscription_quota"}:
+                if len(codes) == 1 and error.code not in {"connection_unavailable", "request_timeout"}:
+                    logger.info("Snapshot skipped %s: %s", codes[0], error.code)
+                    return []
+                raise
+            middle = len(codes) // 2
+            return self._snapshot_rows(codes[:middle]) + self._snapshot_rows(codes[middle:])
+        return data.to_dict("records") if hasattr(data, "to_dict") else list(data or [])
 
     def broker_positions(self, account: str, security_firm: str = "FUTUINC") -> dict[str, Any]:
         """Read-only positions and USD account value for one real account.

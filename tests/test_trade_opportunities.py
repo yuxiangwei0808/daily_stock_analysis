@@ -8,13 +8,13 @@ from src.services.trade_desk import earnings, trend
 NY_MIDDAY = datetime(2026, 9, 25, 16, 30, tzinfo=timezone.utc)  # 12:30 New York
 
 
-def _bars(n=80, start=100.0, step=0.5, volume=1_000_000, last_volume=None, jump=0.0):
+def _bars(n=80, start=100.0, step=0.5, volume=1_000_000, last_volume=None, jump=0.0, spread=0.5):
     rows, price = [], start
     for i in range(n):
         price += step
         close = price + (jump if i == n - 1 else 0)
         rows.append({"date": (date(2026, 5, 1) + timedelta(days=i)).isoformat(), "open": close - 0.2,
-                     "high": close + 0.5, "low": close - 0.5, "close": close,
+                     "high": close + spread, "low": close - spread, "close": close,
                      "volume": last_volume if (i == n - 1 and last_volume) else volume})
     return rows
 
@@ -104,8 +104,8 @@ class FakeService:
         return job
 
 
-def _runner(service, sent, clock, review, earnings_date=lambda ticker, day: None):
-    strong = _bars(last_volume=2_000_000, jump=2)
+def _runner(service, sent, clock, review, earnings_date=lambda ticker, day: None, confirm_checks=1):
+    strong = _bars(last_volume=2_000_000, jump=2, spread=2.5)  # a trend, not a stretched spike
     return opp.OpportunityRunner(
         service, lambda t, p, k: sent.append((t, p, k)) or {"id": len(sent)}, watchlist=lambda: ["NVDA", "JPM"],
         now=lambda: clock["now"],
@@ -193,7 +193,7 @@ def test_breakouts_alert_once_on_volume_and_cap_scan_names():
     sent, tick = [], {"clock": 0.0}
     watch = opp.BreakoutWatch(lambda: provider, lambda t, p, k: sent.append((t, p, k)) or {"id": 1},
                               watchlist=lambda: ["NVDA", "JPM"], bars=lambda tickers: {t: history for t in tickers},
-                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None)
+                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None, confirm_checks=1)
     watch.tick(NY_MIDDAY, "regular")  # loads the day's levels in the background
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
@@ -298,7 +298,7 @@ def test_leveraged_and_inverse_funds_are_never_suggested_as_shorts_or_options():
     sent = []
     watch = opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": 1},
                               watchlist=lambda: ["SOXS"], bars=lambda tickers: {t: history for t in tickers},
-                              clock=lambda: 0.0, earnings_date=lambda ticker, day: None)
+                              clock=lambda: 0.0, earnings_date=lambda ticker, day: None, confirm_checks=1)
     watch.tick(NY_MIDDAY, "regular")
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
@@ -359,7 +359,7 @@ def test_breakout_alerts_carry_the_earnings_warning():
     sent = []
     watch = opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": 1},
                               watchlist=lambda: ["NVDA"], bars=lambda tickers: {t: history for t in tickers},
-                              clock=lambda: 0.0, earnings_date=lambda ticker, day: date(2026, 9, 29))
+                              clock=lambda: 0.0, earnings_date=lambda ticker, day: date(2026, 9, 29), confirm_checks=1)
     watch.tick(NY_MIDDAY, "regular")
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
@@ -399,7 +399,7 @@ def test_published_state_survives_a_restart():
 def _watch(history, quotes, sent, watchlist=("NVDA",)):
     return opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": len(sent)},
                              watchlist=lambda: list(watchlist), bars=lambda tickers: {t: history for t in tickers},
-                             clock=lambda: 0.0, earnings_date=lambda ticker, day: None)
+                             clock=lambda: 0.0, earnings_date=lambda ticker, day: None, confirm_checks=1)
 
 
 def test_breakouts_need_a_real_margin_and_reuse_the_ideas_levels():
@@ -444,7 +444,7 @@ def test_a_failed_level_load_is_retried():
 
     tick = {"clock": 0.0}
     watch = opp.BreakoutWatch(lambda: FakeProvider({}), lambda *a: None, watchlist=lambda: ["NVDA"], bars=bars,
-                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None)
+                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None, confirm_checks=1)
     watch.tick(NY_MIDDAY, "regular")
     watch._loading.exception(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
@@ -460,7 +460,7 @@ def test_a_partial_level_load_keeps_what_loaded():
     history = _bars(n=80, step=0.5)
     watch = opp.BreakoutWatch(lambda: FakeProvider({}), lambda *a: None, watchlist=lambda: ["NVDA", "NEW1", "NEW2"],
                               bars=lambda tickers: {"NVDA": history, "NEW1": history[:10]}, clock=lambda: 0.0,
-                              earnings_date=lambda ticker, day: None)
+                              earnings_date=lambda ticker, day: None, confirm_checks=1)
     watch.tick(NY_MIDDAY, "regular")
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
@@ -472,3 +472,88 @@ def test_a_late_catch_up_batch_still_belongs_to_its_slot():
     runner._schedule_times = lambda: ["09:40", "16:10"]
     assert runner._slot(datetime(2026, 9, 25, 10, 50)) == "2026-09-25 09:40"  # restarted run, 70 minutes late
     assert runner._slot(datetime(2026, 9, 25, 12, 0)) is None
+
+
+def test_breakouts_confirm_on_a_second_check_and_rest_for_a_week():
+    history = _bars(n=80, step=0.5)
+    quotes = {"NVDA": {"price": 150.0, "volume": 900_000, "change_pct": 3.0},
+              "VOO": {"price": 150.0, "volume": 900_000, "change_pct": 3.0},
+              "SPY": {"price": 150.0, "volume": 900_000, "change_pct": 3.0}}
+    sent, tick = [], {"clock": 0.0}
+    watch = opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": 1},
+                              watchlist=lambda: ["NVDA", "SPY", "VOO"], bars=lambda tickers: {t: history for t in tickers},
+                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None,
+                              history=lambda: [("NVDA", "up", date(2026, 9, 22))])
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.result(timeout=10)
+    watch.tick(NY_MIDDAY, "regular")
+    assert sent == []  # first sighting only
+    tick["clock"] += opp.QUOTE_SECONDS
+    watch.tick(NY_MIDDAY + timedelta(minutes=1), "regular")
+    # NVDA broke out three days ago (cooldown); SPY and VOO are one group: a single alert.
+    assert [payload["underlying"] for payload in sent] == ["SPY"]
+
+
+def test_mirror_and_single_stock_funds_group_together():
+    assert opp._breakout_group("SOXL", "") == opp._breakout_group("SOXS", "")
+    assert opp._breakout_group("TSLL", "Direxion Daily TSLA Bull 2X Shares") == "TSLA"
+    assert opp._breakout_group("AAPL", "Apple Inc.") == "AAPL"
+
+
+def test_candidates_keep_room_for_the_watchlist_and_skip_stretched_setups():
+    scores = {f"S{i}": _setup(strength=95) for i in range(12)}
+    scores["MINE"] = _setup(strength=72)
+    scores["HOT"] = {**_setup(strength=100), "extended": True}
+    picked = [item["ticker"] for item in opp.select_candidates(scores, ["MINE"], {}, 6)]
+    assert "MINE" in picked and "HOT" not in picked and len(picked) == 6
+
+
+def test_the_message_shows_risk_reward_and_risks():
+    idea = {"ticker": "AAA", "direction": "long", "conviction": "medium", "strength": 80, "source": "scan",
+            "price": 100.0, "stop": 95.0, "targets": [110.0, 115.0], "risks": "Extended after a gap."}
+    text = opp.format_message([idea], [], "", options_follow=set())
+    assert "R:R 2.0" in text and "Risks: Extended after a gap." in text
+
+
+def test_bad_bars_and_malformed_review_rows_do_not_break_the_scan():
+    rows = _bars(n=80, spread=2.5)
+    rows[-5] = {**rows[-5], "low": 0.0}
+    assert trend.score_bars(rows) is not None
+    candidates = [{"ticker": "AAA", "source": "scan", **_setup("long")}, {"ticker": "BBB", "source": "scan", **_setup()}]
+    ideas = opp.merge_review(candidates, [
+        {"ticker": "AAA", "direction": "long", "conviction": "medium", "targets": 120.0, "stop": "n/a"},
+        "garbage", {"ticker": "BBB", "direction": "long", "conviction": "high", "targets": {"x": 1}}])
+    assert [idea["ticker"] for idea in ideas] == ["BBB", "AAA"]
+    assert ideas[1]["targets"] == [120.0] and ideas[1]["stop"] == 97.0
+
+
+def test_wording_follows_the_side_you_hold():
+    def ways(direction, side):
+        return opp.expressions({"ticker": "NVDA", "direction": direction, "conviction": "medium",
+                                "held_side": side, "held_note": "You hold: …" if side else ""}, options_follow=False)
+    assert ways("long", "long") == ["already held — hold, or add small"]
+    assert ways("long", "short") == ["your position leans the other way — review it"]
+    assert ways("short", "long") == ["sell or trim your position"]
+    assert ways("short", "short") == ["already positioned for a drop — hold, with the stop"]
+    assert ways("short", "")[0].startswith("short shares")
+    assert ways("short", None)[0] == "sell or trim if you hold it"
+
+
+def test_pre_market_review_notes_survive_the_session_rollover():
+    watch = opp.BreakoutWatch(lambda: FakeProvider({}), lambda *a: None, watchlist=lambda: [],
+                              bars=lambda tickers: {}, clock=lambda: 0.0, earnings_date=lambda t, d: None)
+    watch.add({}, date(2026, 9, 25), {"NVDA": {"direction": "long", "text": "Trend review: long"}})
+    watch.add({}, date(2026, 9, 24), {"AMD": {"direction": "long", "text": "old"}})
+    watch.tick(NY_MIDDAY, "regular")
+    assert list(watch._context) == ["NVDA"]
+
+
+def test_failed_earnings_lookups_are_not_cached(monkeypatch):
+    import yfinance as yf
+
+    def boom(symbol):
+        raise RuntimeError("rate limited")
+    earnings._cache.clear()
+    monkeypatch.setattr(yf, "Ticker", boom)
+    assert earnings.next_earnings("NVDA", date(2026, 9, 25)) is None
+    assert earnings.peek("NVDA", date(2026, 9, 25)) == (False, None)

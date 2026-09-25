@@ -258,12 +258,13 @@ export const tradeDeskApi = {
   },
 
   async refreshHoldings(): Promise<HoldingsResponse> {
-    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/refresh`);
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/refresh`, undefined, { timeout: 90_000 });
     return toCamelCase<HoldingsResponse>(response.data);
   },
 
   async buildPortfolioSummary(): Promise<PortfolioSummary> {
-    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/summary`);
+    // Bars, quotes and earnings lookups: slower than the default request timeout.
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/summary`, undefined, { timeout: 180_000 });
     return toCamelCase<PortfolioSummary>(response.data);
   },
 
@@ -280,8 +281,9 @@ export const tradeDeskApi = {
   },
 
   async parseHoldingRule(text: string, positionKey?: string | null): Promise<HoldingRuleDraft> {
+    // Unusual wording falls back to the routine model, which can take a while.
     const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/rules/parse`,
-      withoutUndefined({ text, position_key: positionKey ?? undefined }));
+      withoutUndefined({ text, position_key: positionKey ?? undefined }), { timeout: 180_000 });
     return toCamelCase<HoldingRuleDraft>(response.data);
   },
 

@@ -225,8 +225,12 @@ async def holdings_view(request: Request):
         return {"enabled": False, "view": None, "rules": [], "error": None, "summary": None}
     service = get_service(request)
     worker = getattr(service, "worker", None)
-    error = worker.status().get("holdings_error") if worker is not None else None
+    status = worker.status() if worker is not None else {}
     view = await invoke(service.holdings.view)
+    # A sync that succeeded after the failure (e.g. "Sync now") clears the banner.
+    error = status.get("holdings_error")
+    if error and view.get("synced_at") and (status.get("holdings_error_at") or "") < view["synced_at"]:
+        error = None
     return {"enabled": True, "view": view, "rules": service.holdings.rules(), "error": error,
             "summary": service.holdings.last_summary()}
 

@@ -98,15 +98,23 @@ class TradeDeskRepository:
                 return None
             raise
 
-    def events(self, after=0, limit=100, newest=False):
+    def events(self, after=0, limit=100, newest=False, since=None, types=None):
+        """Events after an id; ``since`` (ISO UTC) and ``types`` filter in SQL."""
         with self.db.get_session() as session:
             query = select(EventRecord).where(EventRecord.id > after)
+            if since:
+                query = query.where(EventRecord.created_at >= since)
+            if types:
+                query = query.where(EventRecord.event_type.in_(list(types)))
             query = query.order_by(EventRecord.id.desc() if newest else EventRecord.id)
             rows = session.execute(query.limit(limit)).scalars().all()
-            return [{"id": r.id, "event_type": r.event_type, "created_at": r.created_at,
-                     "payload": json.loads(r.payload),
-                     "plan_id": json.loads(r.payload).get("plan_id"),
-                     "advice_id": json.loads(r.payload).get("advice_id")} for r in rows]
+            result = []
+            for r in rows:
+                payload = json.loads(r.payload)
+                result.append({"id": r.id, "event_type": r.event_type, "created_at": r.created_at,
+                               "payload": payload, "plan_id": payload.get("plan_id"),
+                               "advice_id": payload.get("advice_id")})
+            return result
 
     def research_evidence(self, ticker, source_report_id=None):
         """Read stock research as attributed context, never as option probabilities."""

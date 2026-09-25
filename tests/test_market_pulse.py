@@ -143,3 +143,13 @@ def test_a_fading_move_does_not_alert_again_at_lower_levels():
         pulse.check_moves(NOW + timedelta(minutes=minute * 20))
     day_moves = [e[1]["message"] for e in events if e[1]["kind"] == "day_move"]
     assert len(day_moves) == 1 and "past +8%" in day_moves[0]
+
+
+def test_old_days_are_pruned():
+    provider, events = Provider(), []
+    pulse = _pulse(provider, events)
+    pulse._level_high[("2026-09-01", "AAPL", "+")] = 5.0
+    pulse._fast_counts[("2026-09-01", "AAPL")] = 2
+    provider.quotes = {"AAPL": {"price": 100.0, "change_pct": 0.1}}
+    pulse.check_moves(NOW)
+    assert pulse._level_high == {} and pulse._fast_counts == {}

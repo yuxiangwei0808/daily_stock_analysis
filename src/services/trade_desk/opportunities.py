@@ -27,7 +27,7 @@ import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -50,7 +50,28 @@ NEAR_TRIGGER = 0.02
 NEAR_STRENGTH = 60
 SCAN_BREAKOUTS_PER_DAY = 5
 BREAKOUT_MARGIN_ATR = 0.15  # beyond the level by this much, not a one-cent poke
-LEVELS_RETRY_SECONDS = 300  # names outside the watchlist; watchlist breakouts are not capped
+LEVELS_RETRY_SECONDS = 300
+BREAKOUT_PACE_EARLY = 2.0
+EARLY_UNTIL = dtime(10, 30)
+BREAKOUT_COOLDOWN_DAYS = 7  # about five sessions per ticker and direction
+# Funds tracking the same index move together: one breakout alert per group and day.
+_EQUIVALENT = [{"SPY", "VOO", "IVV", "SPLG", "SH", "SSO", "SDS", "UPRO", "SPXU", "SPXL", "SPXS"},
+               {"QQQ", "QQQM", "QLD", "QID", "TQQQ", "SQQQ", "PSQ"},
+               {"SOXX", "SMH", "SOXL", "SOXS", "USD", "SSG"},
+               {"IWM", "TNA", "TZA", "RWM", "UWM", "TWM"},
+               {"DIA", "DOG", "DDM", "DXD", "UDOW", "SDOW"}]
+
+
+def _breakout_group(ticker: str, name: str) -> str:
+    for group in _EQUIVALENT:
+        if ticker in group:
+            return min(group)
+    if geared_fund(name):
+        # Single-stock funds ("Direxion Daily TSLA Bull 2X") group with their stock.
+        for word in re.findall(r"\b[A-Z]{2,5}\b", name or ""):
+            if word not in {"ETF", "ETN", "USD", "SHARES", "DAILY", "BULL", "BEAR", "LONG", "SHORT"}:
+                return word
+    return ticker  # names outside the watchlist; watchlist breakouts are not capped
 OPENING_GRACE = timedelta(minutes=15)
 REGIME = ("SPY", "QQQ")
 # Broad inverse ETFs; single stocks are shorted directly or with puts.
@@ -146,23 +167,41 @@ def format_options(job: Dict[str, Any], label: str) -> List[str]:
 
 
 # -- candidates and model review ------------------------------------------------
+REPORT_BULLISH, REPORT_BEARISH = 65, 35  # report scores cluster near 50; beyond these they lean clearly
+
+
+def _quality(setup: Dict[str, Any]) -> float:
+    """A continuous tie-breaker among equal strengths: volume and ATR-scaled momentum."""
+    momentum = abs(setup.get("momentum20_pct") or 0) / max(setup.get("atr_pct") or 0, 0.5)
+    return min(setup.get("volume_ratio") or 0, 3.0) + momentum / 5
+
+
 def select_candidates(scores: Dict[str, Dict[str, Any]], watchlist: List[str], reports: Dict[str, Dict[str, Any]],
                       limit: int) -> List[Dict[str, Any]]:
-    """Strong trends first (watchlist names break ties), then watchlist names whose report agrees."""
+    """Strong, not stretched trends; half the slots are kept for watchlist/held names.
+
+    Stretched setups (more than 3 ATR past MA20) are chasing and are left out; watchlist
+    names also qualify at strength REPORT_AGREES when their report leans the same way.
+    """
     watch = set(watchlist)
     picked = []
     for ticker, setup in scores.items():
-        if ticker in REGIME and ticker not in watch:
+        if (ticker in REGIME and ticker not in watch) or setup.get("extended"):
             continue
         report = reports.get(ticker) or {}
         score = report.get("score")
         agrees = isinstance(score, (int, float)) and (
-            (setup["direction"] == "long" and score >= 75) or (setup["direction"] == "short" and score <= 25))
-        if setup["strength"] >= trend.STRONG or (agrees and setup["strength"] >= REPORT_AGREES):
+            (setup["direction"] == "long" and score >= REPORT_BULLISH)
+            or (setup["direction"] == "short" and score <= REPORT_BEARISH))
+        if setup["strength"] >= trend.STRONG or (ticker in watch and agrees and setup["strength"] >= REPORT_AGREES):
             picked.append({"ticker": ticker, "source": "watchlist" if ticker in watch else "scan",
                            "name": report.get("name", ""), **setup})
-    picked.sort(key=lambda item: (item["strength"] + (5 if item["source"] == "watchlist" else 0)), reverse=True)
-    return picked[:limit]
+    rank = lambda item: (item["strength"], _quality(item))  # noqa: E731
+    own = sorted((item for item in picked if item["source"] == "watchlist"), key=rank, reverse=True)
+    scan = sorted((item for item in picked if item["source"] == "scan"), key=rank, reverse=True)
+    reserved = own[:max(1, limit // 2)]
+    rest = sorted(own[len(reserved):] + scan, key=rank, reverse=True)
+    return sorted(reserved + rest[:limit - len(reserved)], key=rank, reverse=True)
 
 
 def regime_text(scores: Dict[str, Dict[str, Any]]) -> str:
@@ -182,7 +221,8 @@ For each, decide whether the trend is worth acting on now, using the bars, headl
 - conviction: "high" only when trend, catalyst/news and regime all agree and risk/reward is at least 2:1;
   "medium" when the trend is clean but something is missing; "low" otherwise.
 - Penalize: a stretched move (chasing), news that contradicts the trend, a short against a strong market,
-  thin reasons. next_earnings inside your horizon rules out "high" (gap risk); name it in risks.
+  thin reasons. earnings_inside_hold=true rules out "high" (gap risk); name it in risks. Otherwise do not treat
+  later earnings as a reason to lower conviction. Aim for a first target at least 1.5x the risk to the stop.
 - entry: a short instruction (e.g. "buy 224-226 or on a pullback to 218"); stop and targets as prices;
   the provided stop/targets are ATR-based starting points you may adjust.
 - thesis: at most 35 words, concrete; invalidation: what would prove it wrong; risks: at most 20 words.
@@ -207,6 +247,8 @@ def build_prompt(candidates: List[Dict[str, Any]], regime: str, context: Dict[st
             "headlines": extra.get("headlines", []),
             "report": extra.get("report"),
             "next_earnings": _earnings_text(item.get("earnings"), today),
+            "earnings_inside_hold": bool(item.get("earnings") and (date.fromisoformat(item["earnings"])
+                                          - date.fromisoformat(today)).days <= earnings.INSIDE_HOLD_DAYS),
         })
     return (f"{_REVIEW_RULES}\n\nDate: {today}. Market regime: {regime or 'unknown'}.\n"
             f"Candidates:\n{json.dumps(rows, ensure_ascii=False)}")
@@ -243,31 +285,40 @@ def merge_review(candidates: List[Dict[str, Any]], review: List[Dict[str, Any]],
 
     Earnings inside the swing hold cap conviction at medium, which also skips options.
     """
-    by_ticker = {str(row.get("ticker", "")).upper(): row for row in review}
+    by_ticker = {str(row.get("ticker", "")).upper(): row for row in review if isinstance(row, dict)}
     ideas = []
     for item in candidates:
         row = by_ticker.get(item["ticker"])
         if not row or row.get("direction") != item["direction"] or row.get("conviction") not in {"medium", "high"}:
             continue
-        sign = 1 if item["direction"] == "long" else -1
-        price = item["price"]
-        stop = _float(row.get("stop"))
-        if stop is None or sign * (price - stop) <= 0:
-            stop = item["stop"]
-        targets = [value for value in (_float(t) for t in (row.get("targets") or [])[:2])
-                   if value is not None and sign * (value - price) > 0] or item["targets"]
-        conviction = row["conviction"]
-        when = date.fromisoformat(item["earnings"]) if item.get("earnings") else None
-        inside = today is not None and when is not None and (when - today).days <= earnings.INSIDE_HOLD_DAYS
-        if inside and conviction == "high":
-            conviction = "medium"
-        ideas.append({**item, "conviction": conviction, "stop": round(stop, 2),
-                      "earnings_note": earnings.note(when, today) if today is not None else "",
-                      "targets": [round(t, 2) for t in targets],
-                      **{key: " ".join(str(row.get(key) or "").split())[:300]
-                         for key in ("entry", "horizon", "thesis", "invalidation", "risks")}})
+        try:
+            ideas.append(_merged_idea(item, row, today))
+        except Exception as exc:  # one malformed row drops only that idea
+            logger.info("Review row for %s skipped: %s", item["ticker"], type(exc).__name__)
     ideas.sort(key=lambda idea: (idea["conviction"] == "high", idea["strength"]), reverse=True)
     return ideas
+
+
+def _merged_idea(item: Dict[str, Any], row: Dict[str, Any], today: Optional[date]) -> Dict[str, Any]:
+    sign = 1 if item["direction"] == "long" else -1
+    price = item["price"]
+    stop = _float(row.get("stop"))
+    if stop is None or sign * (price - stop) <= 0:
+        stop = item["stop"]
+    raw_targets = row.get("targets")
+    raw_targets = raw_targets if isinstance(raw_targets, (list, tuple)) else [raw_targets] if raw_targets else []
+    targets = [value for value in (_float(t) for t in raw_targets[:2])
+               if value is not None and sign * (value - price) > 0] or item["targets"]
+    conviction = row["conviction"]
+    when = date.fromisoformat(item["earnings"]) if item.get("earnings") else None
+    inside = today is not None and when is not None and (when - today).days <= earnings.INSIDE_HOLD_DAYS
+    if inside and conviction == "high":
+        conviction = "medium"
+    return {**item, "conviction": conviction, "stop": round(stop, 2),
+            "earnings_note": earnings.note(when, today) if today is not None else "",
+            "targets": [round(t, 2) for t in targets],
+            **{key: " ".join(str(row.get(key) or "").split())[:300]
+               for key in ("entry", "horizon", "thesis", "invalidation", "risks")}}
 
 
 def expressions(idea: Dict[str, Any], *, options_follow: bool) -> List[str]:
@@ -277,22 +328,30 @@ def expressions(idea: Dict[str, Any], *, options_follow: bool) -> List[str]:
     """
     high = idea["conviction"] == "high"
     options_note = " (options comparison follows)" if options_follow else ""
-    known, held = idea.get("held_note") is not None, bool(idea.get("held_note"))
     long = idea["direction"] == "long"
+    # held_side: None = holdings unknown, "" = not held, else the net side of what is held.
+    side = idea.get("held_side", "long" if idea.get("held_note") else idea.get("held_note"))
+    known = side is not None
+    aligned = side == idea["direction"]
+    opposed = side in {"long", "short"} and not aligned
     if geared_fund(idea.get("name", "")):
         if long:
-            return [("already held — keep it short-term" if held else "buy shares")
+            return [("already held — keep it short-term" if aligned else "buy shares")
                     + " (leveraged/inverse ETF: short-term, small size)"]
-        if held or not known:
-            return [("sell or trim your position" if held else "sell or trim if you hold it")
+        if opposed or not known:
+            return [("sell or trim your position" if opposed else "sell or trim if you hold it")
                     + " (leveraged/inverse ETF: shorting it is not advised)"]
         return ["stay out (leveraged/inverse ETF: shorting it is not advised)"]
     if long:
-        ways = ["already held — hold, or add small" if held else "buy shares"]
+        first = ("already held — hold, or add small" if aligned else
+                 "your position leans the other way — review it" if opposed else "buy shares")
+        ways = [first]
         if high:
             ways.append(f"calls / call debit spread (defined risk){options_note}")
         return ways
-    if held:
+    if aligned:
+        return ["already positioned for a drop — hold, with the stop"]
+    if opposed:
         ways = ["sell or trim your position"]
         if high:
             ways.append(f"or hedge it with puts / a put debit spread (defined risk){options_note}")
@@ -304,6 +363,15 @@ def expressions(idea: Dict[str, Any], *, options_follow: bool) -> List[str]:
     if high:
         ways.append(f"puts / put debit spread (defined risk){options_note}")
     return ways
+
+
+def _reward_risk(idea: Dict[str, Any]) -> Optional[float]:
+    """First target's reward over the risk to the stop, from the last price."""
+    try:
+        risk = abs(idea["price"] - idea["stop"])
+        return abs(idea["targets"][0] - idea["price"]) / risk if risk else None
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def format_message(ideas: List[Dict[str, Any]], repeats: List[Dict[str, Any]], regime: str, *,
@@ -319,13 +387,16 @@ def format_message(ideas: List[Dict[str, Any]], repeats: List[Dict[str, Any]], r
                   f"{'LONG' if long else 'SHORT'} · {idea['conviction']} conviction · "
                   f"trend {idea['strength']} · {idea['source']}",
                   f"Price {_price(idea['price'])} · entry: {idea.get('entry') or 'near ' + _price(idea['price'])} · "
-                  f"stop {_price(idea['stop'])} · targets {targets}" + (f" · {idea['horizon']}" if idea.get("horizon") else "")]
+                  f"stop {_price(idea['stop'])} · targets {targets}" + (f" · {idea['horizon']}" if idea.get("horizon") else "")
+                  + (f" · R:R {_reward_risk(idea):.1f}" if _reward_risk(idea) else "")]
         if idea.get("held_note"):
             lines.append(idea["held_note"])
         if idea.get("earnings_note"):
             lines.append(idea["earnings_note"])
         if idea.get("thesis"):
             lines.append(f"> {idea['thesis']}")
+        if idea.get("risks"):
+            lines.append(f"Risks: {idea['risks']}")
         if idea.get("invalidation"):
             lines.append(f"Wrong if: {idea['invalidation']}")
         lines.append("How: " + " · ".join(expressions(idea, options_follow=idea["ticker"] in options_follow)))
@@ -359,10 +430,18 @@ class BreakoutWatch:
                  watchlist: Callable[[], List[str]], bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]]
                  = trend.download_bars, clock: Callable[[], float] = None,
                  earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
-                 held: Optional[Callable[[str], str]] = None):
+                 held: Optional[Callable[[str], str]] = None,
+                 history: Optional[Callable[[], List[tuple]]] = None, confirm_checks: int = 2,
+                 held_side: Optional[Callable[[str], Optional[str]]] = None):
         import time
+        self._held_side = held_side
+        self._confirm = max(1, confirm_checks)
         self._earnings_date = earnings_date
         self._held = held
+        self._history = history  # past breakout alerts: (ticker, "up"|"down", date)
+        self._recent: Dict[tuple, date] = {}
+        self._pending: Dict[tuple, int] = {}  # (ticker, direction) -> consecutive checks beyond the level
+        self._groups_alerted: set = set()
         self._provider = provider
         self._emit = emit
         self._watchlist = watchlist
@@ -373,7 +452,7 @@ class BreakoutWatch:
         self._context: Dict[str, str] = {}
         self._extra: List[str] = []
         self._scan_alerts: Dict[date, int] = {}
-        self._alerted: set = set()  # near-breakout names from the latest scan, kept for the next day
+        self._alerted: set = set()
         self._next = 0.0
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="breakout-levels")
         self._loading = None
@@ -386,7 +465,8 @@ class BreakoutWatch:
             context: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         """Levels for names from a scan, computed from bars already downloaded."""
         self._extra = list(bars)
-        self._context.update(context or {})
+        # Tagged with the scan's day: a pre-market review still rides on that session's alerts.
+        self._context.update({ticker: {**note, "day": day.isoformat()} for ticker, note in (context or {}).items()})
         if self._day != day:
             return  # an after-close scan: the next session loads these names itself
         for ticker, rows in bars.items():
@@ -406,7 +486,12 @@ class BreakoutWatch:
         if self._day != day or (self._retry_at is not None and clock >= self._retry_at and self._loading is None):
             if self._day != day:
                 # Notes from an earlier day's review never ride on today's alerts.
-                self._day, self._levels, self._context = day, {}, {}
+                self._day, self._levels = day, {}
+                self._context = {ticker: note for ticker, note in self._context.items()
+                                 if note.get("day") == day.isoformat()}
+                self._alerted, self._pending, self._groups_alerted = set(), {}, set()
+                self._scan_alerts = {}
+                self._load_recent(day)
             self._retry_at = None
             tickers = list(dict.fromkeys([*self._watchlist(), *self._extra]))
             self._loading = self._pool.submit(self._load, day, tickers)
@@ -434,7 +519,11 @@ class BreakoutWatch:
         quotes = self._provider().watchlist_quotes(list(self._levels))
         fraction = trend.volume_fraction(now)
         watchlist = set(self._watchlist())
-        for ticker, quote in quotes.items():
+        # Early prints may include pre-market volume in the snapshot: ask for more pace then.
+        needed = BREAKOUT_PACE_EARLY if local.time() < EARLY_UNTIL else BREAKOUT_PACE
+        beyond = set()
+        # Watchlist (and held) names first, so a mirror fund you hold is the one that alerts.
+        for ticker, quote in sorted(quotes.items(), key=lambda item: item[0] not in watchlist):
             levels, price, volume = self._levels.get(ticker), quote.get("price"), quote.get("volume")
             if not levels or not price or not volume or levels["avg_volume"] <= 0:
                 continue
@@ -442,13 +531,24 @@ class BreakoutWatch:
             margin = BREAKOUT_MARGIN_ATR * levels["atr"]
             up = price > levels["high20"] + margin and price > levels["ma50"]
             down = price < levels["low20"] - margin and price < levels["ma50"]
-            if pace < BREAKOUT_PACE or not (up or down):
+            if pace < needed or not (up or down):
                 continue
-            key = f"breakout:{day.isoformat()}:{ticker}:{'up' if up else 'down'}"
-            if key in self._alerted or (ticker not in watchlist
-                                        and self._scan_alerts.get(day, 0) >= SCAN_BREAKOUTS_PER_DAY):
+            direction = "up" if up else "down"
+            beyond.add((ticker, direction))
+            # The move must hold for two consecutive checks: one-minute pokes reverse often.
+            self._pending[(ticker, direction)] = self._pending.get((ticker, direction), 0) + 1
+            if self._pending[(ticker, direction)] < self._confirm:
+                continue
+            key = f"breakout:{day.isoformat()}:{ticker}:{direction}"
+            group = _breakout_group(ticker, quote.get("name", ""))
+            last = self._recent.get((ticker, direction))
+            if (key in self._alerted or group in self._groups_alerted
+                    or (last is not None and (day - last).days < BREAKOUT_COOLDOWN_DAYS)
+                    or (ticker not in watchlist and self._scan_alerts.get(day, 0) >= SCAN_BREAKOUTS_PER_DAY)):
                 continue
             self._alerted.add(key)
+            self._groups_alerted.add(group)
+            self._recent[(ticker, direction)] = day
             sign, level = (1, levels["high20"]) if up else (-1, levels["low20"])
             stop, atr = price - sign * 1.5 * levels["atr"], levels["atr"]
             change = quote.get("change_pct")
@@ -457,20 +557,21 @@ class BreakoutWatch:
             note = (review.get("text", "") if same_way else
                     f"Today's trend review was {review['direction']}; this move goes against it." if review else "")
             geared = geared_fund(quote.get("name", ""))
-            held_note = self._held(ticker) if self._held is not None else ""
+            held_note = (self._held(ticker) if self._held is not None else "") or ""
+            side = self._held_side(ticker) if self._held_side is not None else ("long" if held_note else "")
+            aligned, opposed = side == ("long" if up else "short"), side in {"long", "short"} and side != (
+                "long" if up else "short")
             if geared:  # daily-reset funds: ATR targets mean little and shorting them is not advised
                 levels_line = f"Stop {stop:.2f} (1.5 ATR)"
                 how = ("buy shares — leveraged/inverse ETF: short-term, small size" if up else
                        "sell/trim if held — leveraged/inverse ETF: shorting it is not advised")
-                if held_note:
-                    how = ("already held — keep it short-term" if up else
-                           "sell or trim your position — leveraged/inverse ETF")
+                if aligned and up:
+                    how = "already held — keep it short-term"
+                elif opposed and not up:
+                    how = "sell or trim your position — leveraged/inverse ETF"
                 earnings_line = ""
             else:
-                try:
-                    earnings_line = earnings.note(self._earnings_date(ticker, day), day)
-                except Exception:  # the alert goes out without the note
-                    earnings_line = ""
+                earnings_line = self._earnings_line(ticker, day)
                 if same_way and review.get("stop") and review.get("targets"):
                     # The trend review's own levels, so the two messages agree.
                     levels_line = (f"Idea levels: stop {review['stop']:.2f} · targets "
@@ -480,8 +581,11 @@ class BreakoutWatch:
                                    f"{price + sign * 4.5 * atr:.2f}")
                 how = ("buy shares with that stop" if up else
                        "sell/trim if held · short shares (margin + borrow; loss unbounded — use the stop)")
-                if held_note:
+                if aligned:
                     how = ("already held — hold with that stop, or add small" if up else
+                           "already positioned for a drop — hold, with the stop")
+                elif opposed:
+                    how = ("your position leans the other way — review it" if up else
                            "sell or trim your position, or tighten your stop")
             message = (f"{ticker} broke {'above its 20-day high' if up else 'below its 20-day low'} {level:.2f} "
                        f"at {price:.2f}" + (f" ({change:+.1f}% today)" if change is not None else "")
@@ -493,6 +597,34 @@ class BreakoutWatch:
                                             "message": message}, key)
             if event is not None and ticker not in watchlist:
                 self._scan_alerts[day] = self._scan_alerts.get(day, 0) + 1
+        for pending in list(self._pending):
+            if pending not in beyond:
+                del self._pending[pending]  # back inside the level: start counting again
+
+    def _earnings_line(self, ticker: str, day: date) -> str:
+        """From the day's cache only; a miss is looked up in the background, never on the worker loop."""
+        hit, when = earnings.peek(ticker, day)
+        if not hit and self._earnings_date is earnings.next_earnings:
+            self._pool.submit(earnings.next_earnings, ticker, day)
+            return ""
+        if not hit:
+            try:
+                when = self._earnings_date(ticker, day)
+            except Exception:
+                return ""
+        return earnings.note(when, day)
+
+    def _load_recent(self, day: date) -> None:
+        """Breakouts already alerted in the last week, so a running trend is not re-announced daily."""
+        self._recent = {}
+        if self._history is None:
+            return
+        try:
+            for ticker, direction, when in self._history():
+                if (day - when).days < BREAKOUT_COOLDOWN_DAYS:
+                    self._recent[(ticker, direction)] = max(when, self._recent.get((ticker, direction), when))
+        except Exception as exc:  # the cooldown then starts from today
+            logger.info("Breakout history unavailable: %s", type(exc).__name__)
 
 
 # -- runner ------------------------------------------------------------------------
@@ -506,9 +638,11 @@ class OpportunityRunner:
                  review: Callable[[str], Optional[List[Dict[str, Any]]]] = _review_with_llm,
                  earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
                  held: Optional[Callable[[str], str]] = None,
-                 schedule_times: Optional[Callable[[], List[str]]] = None):
+                 schedule_times: Optional[Callable[[], List[str]]] = None,
+                 held_side: Optional[Callable[[str], Optional[str]]] = None):
         self.service = service
         self._held = held
+        self._held_side = held_side
         self._schedule_times = schedule_times or _configured_schedule_times
         self._earnings_date = earnings_date
         self.emit = emit
@@ -593,6 +727,18 @@ class OpportunityRunner:
                                  "summary": " ".join(str(row.analysis_summary or "").split())[:400]}
         self._scan = self._pool.submit(self.scan, reports, self._last_id, slot)
 
+    def _fill_names(self, candidates: List[Dict[str, Any]]) -> None:
+        """Full names (display, leveraged-fund check) from one OpenD snapshot; report names are cut short."""
+        try:
+            quotes = self.service.provider("live").watchlist_quotes([item["ticker"] for item in candidates])
+        except Exception as exc:  # names are a nicety; the scan goes on without them
+            logger.info("Candidate names unavailable: %s", type(exc).__name__)
+            return
+        for item in candidates:
+            name = (quotes.get(item["ticker"]) or {}).get("name")
+            if name:
+                item["name"] = name
+
     def _state(self) -> Dict[str, Any]:
         try:
             return self.service.repo.setting("opportunity_state", {}) or {}
@@ -634,11 +780,16 @@ class OpportunityRunner:
         scores = {}
         for ticker, rows in bars.items():
             fraction = partial if rows and rows[-1]["date"] == today else 1.0
-            setup = trend.score_bars(rows, partial_fraction=fraction)
+            try:
+                setup = trend.score_bars(rows, partial_fraction=fraction)
+            except Exception as exc:  # one ticker's bad data never ends the scan
+                logger.info("Trend score skipped %s: %s", ticker, type(exc).__name__)
+                continue
             if setup:
                 scores[ticker] = setup
         limit = max_ideas()
         candidates = select_candidates(scores, watchlist, reports, max(6, limit * 2))
+        self._fill_names(candidates)
         regime = regime_text(scores)
         day = _session_day(now)
         dates = earnings.many([item["ticker"] for item in candidates if not geared_fund(item.get("name", ""))],
@@ -666,6 +817,7 @@ class OpportunityRunner:
         # Watch near-breakout scan names live, besides the watchlist.
         near = {ticker: bars[ticker] for ticker, setup in scores.items()
                 if ticker not in REGIME and setup["strength"] >= NEAR_STRENGTH
+                and setup["high20"] > 0 and setup["low20"] > 0
                 and min(abs(setup["price"] / setup["high20"] - 1), abs(setup["price"] / setup["low20"] - 1)) <= NEAR_TRIGGER}
         notes = {idea["ticker"]: {"direction": idea["direction"], "stop": idea["stop"], "targets": idea["targets"],
                                   "text": f"Trend review: {idea['direction']} · {idea['conviction']} conviction — "
@@ -686,6 +838,8 @@ class OpportunityRunner:
         for idea in result["ideas"]:
             if self._held is not None:
                 idea["held_note"] = self._held(idea["ticker"])  # None when holdings are unknown
+            if self._held_side is not None:
+                idea["held_side"] = self._held_side(idea["ticker"])
             previous = self._announced.get(idea["ticker"])
             (repeats if previous == f"{idea['direction']}:{idea['conviction']}" else fresh).append(idea)
         if not fresh:

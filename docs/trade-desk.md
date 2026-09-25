@@ -209,14 +209,18 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   than 3 ATR past MA20 costs 10. Price ≥ $5 and ≥ $20M average daily dollar
   volume are required. Strength ≥ 70 is a strong trend. ATR levels: stop 1.5 ATR,
   targets 3 and 4.5 ATR.
-- **Review:** up to `2 × TRADE_OPPORTUNITIES_MAX` (at least 6) strong setups —
-  watchlist names first on ties, plus watchlist names at strength ≥ 55 whose
-  report score is ≥ 75 (long) or ≤ 25 (short) — go to the routine generation
+- **Review:** up to `2 × TRADE_OPPORTUNITIES_MAX` (at least 6) setups at strength
+  ≥ 70 — stretched ones (more than 3 ATR past MA20) are left out as chasing, half
+  the slots are kept for watchlist/held names, and ties rank by volume and
+  ATR-scaled momentum; watchlist names also qualify at strength ≥ 55 when their
+  report score is ≥ 65 (long) or ≤ 35 (short) — go to the routine generation
   backend in one call with 20 recent bars, up to five headlines from the free
-  news sources, the report summary and the SPY/QQQ regime. It keeps the rule
-  direction or rejects, and gives a conviction (low/medium/high), entry, stop,
-  targets, horizon, thesis and invalidation. Stops or targets on the wrong side
-  of the price fall back to the ATR levels.
+  news sources, the report summary, the SPY/QQQ regime and full names from OpenD.
+  It keeps the rule direction or rejects, and gives a conviction
+  (low/medium/high), entry, stop, targets, horizon, thesis, risks and
+  invalidation. Stops or targets on the wrong side of the price fall back to the
+  ATR levels; a malformed row drops only that idea. The message shows the first
+  target's reward/risk ("R:R") and a "Risks:" line.
 - **Earnings:** each reviewed candidate's next earnings date comes from Yahoo's
   calendar (`earnings.py`, cached per day; funds have none; for an unconfirmed
   window the earliest day). The model sees it. Earnings within 14 days (inside
@@ -239,7 +243,12 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   are quoted every minute through OpenD. A price above the prior 20-day high and
   MA50 (or below the low and MA50) at ≥ 1.3× normal volume pace emits one
   `breakout` alert per stock, direction and day, with ATR stop and targets.
-  Names outside the watchlist are capped at five alerts a day. The price must
+  Names outside the watchlist are capped at five alerts a day (watchlist names
+  are checked first). A break must hold on two consecutive minute checks, needs
+  2× pace before 10:30 (early snapshots can include pre-market volume), and a
+  ticker/direction alerts at most once a week; funds on the same index or stock
+  (SPY/VOO/SH…, QQQ/TQQQ/SQQQ…, SOXL/SOXS…, TSLL with TSLA) alert once per group
+  and day. The price must
   clear the level by 0.15 ATR (no one-cent pokes); when today's trend review has
   an idea in the same direction its stop and targets are shown instead of ATR
   levels, and a move against the review says so. Notes reset each session; a
@@ -284,9 +293,17 @@ unlocked and nothing is ordered. The snapshot is stored locally
   expiry", "alert if I lose 40%") are read by a pattern first and the routine model
   second; the draft is shown for confirmation and nothing is saved until you do.
 - **Everywhere else:** held tickers join the market pulse and breakout watch;
-  trade ideas and breakout alerts on something you hold add a "You hold: …" line
-  and say "sell or trim your position" / "already held — hold, or add small"
-  instead of generic wording.
+  trade ideas and breakout alerts on something you hold add a "You hold: …" line,
+  worded by the side you hold (shares by sign, options by payoff shape: a bull
+  call spread or short puts are long, long puts are short): "already held — hold,
+  or add small", "sell or trim your position", "already positioned for a drop",
+  or "your position leans the other way — review it".
+- **Expired contracts** the broker still lists show as expired, never fire
+  rules, and are flagged in the summary. Expiry alerts say which legs are in or
+  out of the money. Rule notes are masked for amounts and sizes before Discord.
+  Earnings lookups run in the background, never on the monitor loop; a failed
+  lookup is retried instead of cached. A sync-problem banner clears as soon as a
+  later sync succeeds.
 - **Daily portfolio summary** (`portfolio.py`): each trading day at 16:15 New
   York time, after the post-close sync, one `portfolio_summary` Discord message
   (and the Holdings tab card; **Build now** / `POST /holdings/summary` rebuilds it

@@ -85,3 +85,39 @@ def test_a_crash_after_the_claim_does_not_resend_delivered_parts(repo, monkeypat
     monkeypatch.setattr(worker_module, "utcnow", lambda: later)
     desk._deliver()  # the newest record is a claim from a crashed attempt
     assert [part[:6] for part in sent] == ["PART-B"]
+
+
+def test_events_filter_by_time_and_type_in_sql(repo):
+    repo.event("breakout", {"underlying": "AAA"}, "b1")
+    repo.event("market_move", {"underlying": "BBB"}, "m1")
+    assert [e["event_type"] for e in repo.events(limit=10, types=["breakout"])] == ["breakout"]
+    assert repo.events(limit=10, since="2999-01-01") == []
+
+
+def test_mentions_in_messages_cannot_ping(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    repo.set_preferences({"discord_enabled": True})
+    monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid"))
+    sent = []
+    monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(c) or True)
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
+    repo.event("market_news", {"underlying": "AAA", "message": "@everyone look"}, "n1")
+    desk._deliver()
+    assert "@everyone" not in sent[0] and "@​everyone" in sent[0]
+
+
+def test_one_unquotable_code_does_not_blank_the_batch():
+    from src.services.trade_desk.providers import MoomooProvider, ProviderError
+
+    class Stub(MoomooProvider):
+        def __init__(self):
+            pass
+
+        def _call(self, method, codes):
+            if "US.BAD" in codes:
+                raise ProviderError("provider_error", "unknown code")
+            return [{"code": code} for code in codes]
+
+    assert [row["code"] for row in Stub()._snapshot_rows(["US.A", "US.BAD", "US.B", "US.C"])] == ["US.A", "US.B", "US.C"]

@@ -69,7 +69,8 @@ def score_bars(bars: List[Dict[str, float]], *, partial_fraction: float = 1.0) -
     its volume is scaled up by the typical intraday profile before comparing.
     Returns None when history is too short or the stock is illiquid.
     """
-    rows = [bar for bar in bars if all(_num(bar.get(key)) is not None for key in ("high", "low", "close"))]
+    # Yahoo sometimes returns zero or missing prices; such bars would divide by zero below.
+    rows = [bar for bar in bars if all((_num(bar.get(key)) or 0) > 0 for key in ("high", "low", "close"))]
     if len(rows) < MIN_BARS:
         return None
     closes = [float(bar["close"]) for bar in rows]

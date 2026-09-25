@@ -434,3 +434,42 @@ def test_a_ticker_alert_that_already_holds_warns(store):
     store.service.provider("live").quotes["SPY"] = {"price": 610.0}
     created = store.add_rule({"ticker": "SPY", "kind": "price_above", "value": 600})
     assert "already holds" in created["warning"] and "warning" not in store.rules()[-1]
+
+
+def test_holding_side_reads_the_payoff_shape(store):
+    assert store.side("USO") == "long"  # bull call spread
+    assert store.side("NVDA") == "long" and store.side("AAPL") == ""
+    raw = {**RAW, "positions": [{"code": "US.SPY261016P550000", "qty": 1.0, "side": "LONG", "average_cost": 5.0,
+                                 "price": 5.0}]}
+    store.repo.set_setting("broker_holdings", raw)
+    assert store.side("SPY") == "short"  # a long put
+
+
+def test_expired_options_are_labelled_in_the_summary_and_skip_rules(store):
+    from src.services.trade_desk.portfolio import build_summary
+    raw = store.raw()
+    for row in raw["positions"]:
+        row["code"] = row["code"].replace("261016", "260921")
+    store.repo.set_setting("broker_holdings", raw)
+    store.add_rule({"position_key": "USO 2026-09-21", "kind": "days_to_expiry", "value": 5})
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY)
+    assert not [e for e in events if e[1]["kind"] == "rule"]
+    view = store.view(live=False, now=MIDDAY)
+    summary = build_summary(view, raw, {}, [], TODAY, earnings_date=lambda t, d: None)
+    assert "has expired but is still listed" in summary["upcoming"][0]["text"]
+    assert build_summary({**view, "total_assets": 0}, raw, {}, [], TODAY,
+                         earnings_date=lambda t, d: None)["day_pct"] is None
+
+
+def test_notes_and_expiry_alerts_stay_discord_safe_and_say_where_the_legs_are(store):
+    assert h.discord_safe("close if my 10 contracts lose $2,000") == "close if my [n] contracts lose [amount]"
+    raw = store.raw()
+    for row in raw["positions"]:
+        row["code"] = row["code"].replace("261016", "260929")
+    store.repo.set_setting("broker_holdings", raw)
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY)
+    [expiry] = [e[1]["message"] for e in events if e[1]["kind"] == "expiry"]
+    assert "USO 150.00: long 160C out of the money, short 170C out of the money" in expiry
+    assert "trading days left" not in expiry.split("\n")[0]

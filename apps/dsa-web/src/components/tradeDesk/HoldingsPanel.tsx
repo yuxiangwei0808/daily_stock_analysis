@@ -42,9 +42,10 @@ function errorText(error: unknown): string {
 
 type RuleTarget = { positionKey: string | null; ticker: string; isOption: boolean; label: string };
 
-function ruleText(rule: HoldingRule, t: (key: UiTextKey) => string): string {
+function ruleText(rule: HoldingRule, t: (key: UiTextKey) => string, withTarget = false): string {
   const unit = rule.kind.startsWith('pnl') ? '%' : '';
-  return `${t(`tradeDesk.holdings.kind.${rule.kind}` as UiTextKey)} ${rule.value}${unit}`;
+  const text = `${t(`tradeDesk.holdings.kind.${rule.kind}` as UiTextKey)} ${rule.value}${unit}`;
+  return withTarget ? `${rule.positionLabel || rule.ticker} · ${text}` : text;
 }
 
 function SummaryLine({ text }: { text: string }) {
@@ -111,7 +112,6 @@ function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: 
       if (!kinds.includes(draft.kind)) throw new Error(t('tradeDesk.holdings.kindNotAllowed'));
       setKind(draft.kind);
       setValue(String(draft.value));
-      if (!note) setNote(draft.note || text);
     } catch (error) {
       setProblem(errorText(error));
     } finally {
@@ -184,7 +184,7 @@ function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: 
   );
 }
 
-function RuleList({ rules, onChanged }: { rules: HoldingRule[]; onChanged: () => void }) {
+function RuleList({ rules, onChanged, withTarget = false }: { rules: HoldingRule[]; onChanged: () => void; withTarget?: boolean }) {
   const { t } = useUiLanguage();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [problem, setProblem] = useState('');
@@ -208,7 +208,7 @@ function RuleList({ rules, onChanged }: { rules: HoldingRule[]; onChanged: () =>
       {rules.map((rule) => (
         <li key={rule.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-elevated/50 px-3 py-2 text-sm">
           <div className="min-w-0">
-            <span className="font-medium text-foreground">{ruleText(rule, t)}</span>
+            <span className="font-medium text-foreground">{ruleText(rule, t, withTarget)}</span>
             <span className="ml-2 text-xs text-muted-text">{rule.repeat === 'daily' ? t('tradeDesk.holdings.daily') : t('tradeDesk.holdings.once')}</span>
             {rule.note ? <p className="truncate text-xs text-secondary-text">{rule.note}</p> : null}
           </div>
@@ -245,8 +245,9 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel }: {
             {t('tradeDesk.holdings.underlying')} {money(position.underlyingPrice)}
           </p>
         </div>
-        <Badge variant={urgent ? 'danger' : position.daysLeft <= 5 ? 'warning' : 'info'}>
-          {position.daysLeft === 0 ? t('tradeDesk.holdings.expiresToday') : `${position.daysLeft} ${t('tradeDesk.holdings.tradingDaysLeft')}`}
+        <Badge variant={position.expired ? 'default' : urgent ? 'danger' : position.daysLeft <= 5 ? 'warning' : 'info'}>
+          {position.expired ? t('tradeDesk.holdings.expired')
+            : position.daysLeft === 0 ? t('tradeDesk.holdings.expiresToday') : `${position.daysLeft} ${t('tradeDesk.holdings.tradingDaysLeft')}`}
         </Badge>
       </div>
       <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
@@ -449,7 +450,7 @@ export const HoldingsPanel: React.FC = () => {
           {adding === '__ticker__' ? null : <Button size="sm" variant="ghost" onClick={() => setAdding('__ticker__')}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.tickerAlert')}</Button>}
         </div>
         {adding === '__ticker__' ? <TickerRuleForm onSaved={changed} onCancel={() => setAdding(null)} /> : null}
-        {otherRules.length ? <RuleList rules={otherRules} onChanged={changed} /> : <p className="mt-2 text-xs text-muted-text"><BellOff className="mr-1 inline h-3 w-3" />{t('tradeDesk.holdings.noOtherAlerts')}</p>}
+        {otherRules.length ? <RuleList rules={otherRules} onChanged={changed} withTarget /> : <p className="mt-2 text-xs text-muted-text"><BellOff className="mr-1 inline h-3 w-3" />{t('tradeDesk.holdings.noOtherAlerts')}</p>}
         <p className="mt-4 text-xs text-muted-text">{t('tradeDesk.holdings.defaults')}</p>
       </Card>
     </div>

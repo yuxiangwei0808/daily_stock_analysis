@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .models import TradeAdviceRequest, identity, utcnow
@@ -72,10 +72,13 @@ class TradeDeskWorker:
                        if pulse.enabled() else None)
         self._breakouts = self._opportunities = None
         if opportunities.enabled():
+            held_side = self._held_side if self._holdings is not None else None
             self._breakouts = opportunities.BreakoutWatch(lambda: service.provider("live"), self._emit,
-                                                          watchlist=watched, held=held_note)
+                                                          watchlist=watched, held=held_note,
+                                                          history=self._breakout_history, held_side=held_side)
             self._opportunities = opportunities.OpportunityRunner(
-                service, self._emit, watchlist=watched, breakouts=self._breakouts, held=held_note)
+                service, self._emit, watchlist=watched, breakouts=self._breakouts, held=held_note,
+                held_side=held_side)
 
     def _watched(self):
         """The watchlist plus held stocks and option underlyings."""
@@ -85,6 +88,22 @@ class TradeDeskWorker:
         except Exception:
             held = []
         return list(dict.fromkeys([*pulse.watch_tickers(), *held]))
+
+    def _breakout_history(self):
+        new_york = ZoneInfo("America/New_York")
+        return [(event["payload"].get("underlying"), "up" if event["payload"].get("kind") == "breakout" else "down",
+                 datetime.fromisoformat(event["created_at"]).astimezone(new_york).date())
+                for event in self.repo.events(limit=500, newest=True, types=["breakout"],
+                                              since=(utcnow() - timedelta(days=10)).isoformat())]
+
+    def _held_side(self, ticker):
+        """"long"/"short"/"mixed", "" when not held, None when holdings are unknown."""
+        try:
+            if not self.service.holdings.raw().get("synced_at"):
+                return None
+            return self.service.holdings.side(ticker)
+        except Exception:
+            return None
 
     def _held_note(self, ticker):
         """The "You hold" line, "" when not held, None when holdings are unknown."""
@@ -108,7 +127,8 @@ class TradeDeskWorker:
         return {"running": bool(self._thread and self._thread.is_alive()), "leader": self._leader,
                 "last_tick": self._last_tick, "error": self._error,
                 "unmonitored_count": self._unmonitored_count, "plan_limit": 20,
-                "holdings_error": self._holdings.last_error if self._holdings is not None else None}
+                "holdings_error": self._holdings.last_error if self._holdings is not None else None,
+                "holdings_error_at": self._holdings.error_at.get("sync") if self._holdings is not None else None}
 
     def stop(self):
         self._stop.set()
@@ -284,7 +304,9 @@ class TradeDeskWorker:
             return
         now = utcnow()
         day = now.astimezone(ZoneInfo("America/New_York")).date()
-        events = self.repo.events(limit=5000, newest=True)
+        start_of_day = datetime.combine(day, datetime.min.time(), ZoneInfo("America/New_York"))
+        events = self.repo.events(limit=5000, newest=True, since=start_of_day.astimezone(timezone.utc).isoformat(),
+                                  types=["opportunity"])
         opportunities = [e for e in events if e["event_type"] == "opportunity" and
             datetime.fromisoformat(e["created_at"]).astimezone(ZoneInfo("America/New_York")).date() == day]
         for job in self.repo.advice_list(50):
@@ -408,7 +430,9 @@ class TradeDeskWorker:
         if not (getattr(config, "discord_webhook_url", None) or
                 (getattr(config, "discord_bot_token", None) and getattr(config, "discord_main_channel_id", None))):
             return
-        events = self.repo.events(limit=2000, newest=True)
+        # Only recent rows matter: events older than 15 minutes are never delivered.
+        events = self.repo.events(limit=2000, newest=True,
+                                  since=(utcnow() - timedelta(minutes=40)).isoformat())
         deliveries, delivered_parts = {}, {}
         for event in events:
             if event["event_type"] in {"discord_attempt", "discord_delivery"}:

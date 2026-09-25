@@ -104,7 +104,11 @@ def build_summary(view: Dict[str, Any], raw: Dict[str, Any], bars: Dict[str, Lis
                     key=lambda row: abs(row["day_pct"]) * (row.get("weight_pct") or 0), reverse=True)[:3]  # account impact
     upcoming = []
     for row in options:
-        if row["days_left"] <= EXPIRY_DAYS:
+        if row.get("expired"):
+            upcoming.append({"kind": "expiry", "ticker": row["underlying"], "days": -1,
+                             "text": f"{row['underlying']} {row['expiry'][5:].replace('-', '/')} {row['label']} "
+                                     "has expired but is still listed — check moomoo"})
+        elif row["days_left"] <= EXPIRY_DAYS:
             upcoming.append({"kind": "expiry", "ticker": row["underlying"], "days": row["days_left"],
                              "text": f"{row['underlying']} {row['expiry'][5:].replace('-', '/')} {row['label']} "
                                      f"expires in {row['days_left']} trading day{'s' if row['days_left'] != 1 else ''}"
@@ -121,7 +125,7 @@ def build_summary(view: Dict[str, Any], raw: Dict[str, Any], bars: Dict[str, Lis
     top = sorted(stocks + options, key=lambda row: row.get("weight_pct") or 0, reverse=True)[:TOP]
     return {
         "date": today.isoformat(),
-        "day_pct": today_pl / prior * 100 if prior > 0 else None,
+        "day_pct": today_pl / prior * 100 if total > 0 and prior > 0 else None,
         "invested_pct": share(stock_value), "options_pct": share(option_value),
         "cash_pct": share(raw.get("cash") or 0),
         "beta_exposure": beta_weight if covered else None, "beta_coverage_pct": covered,

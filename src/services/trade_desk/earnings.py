@@ -48,12 +48,20 @@ def _quiet_fund_404s() -> None:
         _filter_installed = True
 
 
+def peek(ticker: str, today: date) -> Tuple[bool, Optional[date]]:
+    """(cached, date) without a network call."""
+    with _lock:
+        key = (ticker.upper(), today)
+        return (key in _cache, _cache.get(key))
+
+
 def next_earnings(ticker: str, today: date) -> Optional[date]:
     key = (ticker.upper(), today)
     with _lock:
         if key in _cache:
             return _cache[key]
     found = None
+    ok = False
     _quiet_fund_404s()
     try:
         import yfinance as yf
@@ -62,10 +70,14 @@ def next_earnings(ticker: str, today: date) -> Optional[date]:
         dates = sorted(d for d in (_as_date(item) for item in (raw if isinstance(raw, (list, tuple)) else [raw]))
                        if d is not None and d >= today)
         found = dates[0] if dates else None
+        ok = True
     except Exception as exc:  # funds have no calendar; a lookup failure only drops the note
         logger.debug("Earnings date unavailable for %s: %s", ticker, type(exc).__name__)
-    with _lock:
-        _cache[key] = found
+    if ok:  # a failed lookup is retried next time instead of hiding the day's earnings
+        with _lock:
+            for stale in [k for k in _cache if k[1] != today]:
+                del _cache[stale]  # only today's entries are kept
+            _cache[key] = found
     return found
 
 

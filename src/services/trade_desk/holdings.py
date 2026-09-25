@@ -37,7 +37,7 @@ from .models import identity, utcnow
 logger = logging.getLogger(__name__)
 
 _NEW_YORK = ZoneInfo("America/New_York")
-OPTION_CODE = re.compile(r"^(?:US\.)?([A-Z][A-Z.]*?)(\d{6})([CP])(\d+)$")
+OPTION_CODE = re.compile(r"^(?:US\.)?([A-Z][A-Z0-9.]*?)(\d{6})([CP])(\d+)$")  # adjusted roots: TSLA1
 SYNC_SECONDS = 600
 QUOTE_SECONDS = 60
 EXPIRY_WARN_DAYS = (2, 1)
@@ -49,6 +49,7 @@ PROFIT_ON_COST = (50.0, 100.0)
 LOSS_ON_COST = -50.0
 STOCK_EARNINGS_DAYS = 7
 SUMMARY_AT = dtime(16, 15)  # after the post-close sync at 16:05
+LEVELS_RETRY_SECONDS = 300
 RULE_KINDS = {
     "price_below": "price at or below", "price_above": "price at or above",
     "days_to_expiry": "trading days to expiry at most", "pnl_below": "P&L at or below", "pnl_above": "P&L at or above",
@@ -195,15 +196,35 @@ def _pct(value: Optional[float]) -> str:
     return f"{value:+.1f}%" if isinstance(value, (int, float)) else "n/a"
 
 
-def describe_option(position: Dict[str, Any]) -> str:
+def moneyness(position: Dict[str, Any]) -> str:
+    """Each leg in or out of the money at the current underlying price."""
+    spot = position.get("underlying_price")
+    if not spot:
+        return ""
+    parts = []
+    for leg in sorted(position["legs"], key=lambda leg: leg["strike"]):
+        itm = spot > leg["strike"] if leg["right"] == "call" else spot < leg["strike"]
+        parts.append(f"{'short' if leg['qty'] < 0 else 'long'} {leg['strike']:g}{'C' if leg['right'] == 'call' else 'P'} "
+                     f"{'in' if itm else 'out of'} the money")
+    return f"{position['underlying']} {spot:.2f}: " + ", ".join(parts)
+
+
+def discord_safe(text: str) -> str:
+    """Your note may mention amounts or sizes; Discord gets percentages only."""
+    text = re.sub(r"[$€£¥]\s?[\d,.]+\s*[kKmM]?\b|\b[\d,.]+\s*(?:usd|dollars?)\b", "[amount]", text, flags=re.I)
+    return re.sub(r"\b\d[\d,]*\s*(contracts?|shares?|lots?)\b", r"[n] \1", text, flags=re.I)
+
+
+def describe_option(position: Dict[str, Any], with_days: bool = True) -> str:
     """Discord-safe summary: no quantities or amounts."""
     expiry = date.fromisoformat(position["expiry"])
     parts = [f"{position['underlying']} {expiry:%m/%d} {position['label']}", f"{_pct(position['pnl_pct'])} on cost"]
     if (position.get("pct_of_max") or 0) > 0:
         parts.append(f"{position['pct_of_max']:.0f}% of max profit")
     days = position["days_left"]
-    parts.append("expired" if position.get("expired") else "expires today" if days == 0
-                 else f"{days} trading day{'s' if days != 1 else ''} left")
+    if with_days or position.get("expired"):
+        parts.append("expired" if position.get("expired") else "expires today" if days == 0
+                     else f"{days} trading day{'s' if days != 1 else ''} left")
     return " · ".join(parts)
 
 
@@ -352,6 +373,29 @@ class Holdings:
         parts = [describe_stock(row) for row in view["stocks"] if row["ticker"] == ticker]
         parts += [describe_option(row) for row in view["options"] if row["underlying"] == ticker]
         return "You hold: " + "; ".join(parts) if parts else ""
+
+    def side(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> str:
+        """Net direction of what you hold in a ticker: "long", "short", "mixed", or "" when not held.
+
+        Shares count by sign; options by their expiry payoff across the strikes (a bull call
+        spread or short puts are long, long puts or a bear spread are short).
+        """
+        view = view or self.view(live=False)
+        held, exposure = False, 0.0
+        for row in view["stocks"]:
+            if row["ticker"] == ticker:
+                held, exposure = True, exposure + (1 if row["qty"] > 0 else -1)
+        for row in view["options"]:
+            if row["underlying"] != ticker or row.get("expired"):
+                continue
+            held = True
+            strikes = [leg["strike"] for leg in row["legs"]]
+            low, high = min(strikes) * 0.9, max(strikes) * 1.1
+            slope = _intrinsic(row["legs"], high) - _intrinsic(row["legs"], low)
+            exposure += 1 if slope > 0 else -1 if slope < 0 else 0
+        if not held:
+            return ""
+        return "long" if exposure > 0 else "short" if exposure < 0 else "mixed"
 
     def weight(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> Optional[float]:
         view = view or self.view(live=False)
@@ -506,11 +550,14 @@ class HoldingsMonitor:
         self._next_quotes = 0.0
         self._after_close_day: Optional[date] = None
         self._summary_day: Optional[date] = None
-        self._levels_day: Optional[date] = None
+        self._levels_day: Optional[date] = None  # set once a load succeeds
+        self._levels_for: Optional[date] = None
+        self._levels_retry_at = 0.0
         self._levels: Dict[str, Dict[str, float]] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="holdings")
         self._tasks: Dict[str, Any] = {}
         self.errors: Dict[str, str] = {}
+        self.error_at: Dict[str, str] = {}
 
     @property
     def last_error(self) -> Optional[str]:
@@ -534,19 +581,27 @@ class HoldingsMonitor:
             self.errors.pop(name, None)
         except Exception as exc:  # the next tick retries; alerts keep using the last snapshot
             self.errors[name] = type(exc).__name__
+            self.error_at[name] = utcnow().isoformat()
             logger.warning("Holdings %s failed: %s", name, type(exc).__name__)
 
     def _load_levels(self, day: date) -> None:
         tickers = self.holdings.tickers()
         levels = {}
-        earnings.many([t for t in tickers if not self._geared(t)], day, lookup=self._earnings_date)  # warm the cache
+        self._warm_earnings(day)
         from .opportunities import breakout_levels
         for ticker, rows in self._bars(tickers).items():
             found = breakout_levels(rows, day)
             if found:
                 history = [row for row in rows if row["date"] < day.isoformat()]
                 levels[ticker] = {**found, "last_close": history[-1]["close"]}
+        stock_tickers = [row["ticker"] for row in self.holdings.view(live=False)["stocks"]]
+        if stock_tickers and not levels:
+            raise RuntimeError("no daily bars for held stocks")  # retried in a few minutes
         self._levels, self._levels_day = levels, day
+
+    def _warm_earnings(self, day: date) -> None:
+        tickers = [t for t in self.holdings.tickers() if not self._geared(t)]
+        earnings.many(tickers, day, lookup=self._earnings_date)
 
     def tick(self, now: datetime, session: str) -> None:
         local = _local(now)
@@ -575,8 +630,10 @@ class HoldingsMonitor:
         if session != "regular" or clock < self._next_quotes:
             return
         if self._levels_day != day:
-            self._levels_day, self._levels = day, {}  # yesterday's levels never judge today
-            self._run("levels", self._load_levels, day)
+            if self._levels_for != day:
+                self._levels_for, self._levels = day, {}  # yesterday's levels never judge today
+            if clock >= self._levels_retry_at and self._run("levels", self._load_levels, day):
+                self._levels_retry_at = clock + LEVELS_RETRY_SECONDS
         self._next_quotes = clock + QUOTE_SECONDS
         self.check(now)
 
@@ -628,6 +685,8 @@ class HoldingsMonitor:
             position = self.holdings.position(rule.get("position_key"), view)
             if rule.get("position_key") and position is None:
                 continue  # the position was closed; the rule waits in the list
+            if position is not None and position.get("expired"):
+                continue  # expired contracts the broker still lists
             if rule["kind"] == "days_to_expiry" and _local(now).time() < MORNING:
                 continue
             observed = rule_fires(rule, position, prices.get(rule["ticker"]))
@@ -638,7 +697,7 @@ class HoldingsMonitor:
             message = (f"Your alert: {rule['ticker']} {RULE_KINDS[rule['kind']]} "
                        f"{rule['value']:g}{'%' if rule['kind'].startswith('pnl') else ''} — now {observed}."
                        + (f"\nPosition: {context}" if context else "")
-                       + (f"\nNote: {rule['note']}" if rule.get("note") else ""))
+                       + (f"\nNote: {discord_safe(rule['note'])}" if rule.get("note") else ""))
             key = f"rule:{rule['id']}:{rule.get('arm') or 0}:{day if rule['repeat'] == 'daily' else 'once'}"
             self._alert("rule", rule["ticker"], message, key)
             self.holdings.mark_triggered(rule["id"], utcnow().isoformat(), rule["repeat"] == "once")
@@ -649,13 +708,17 @@ class HoldingsMonitor:
         # The legs' signature keeps a rolled position on the same expiry from inheriting old alerts.
         key, ticker, days = f"{position['key']}:{position.get('signature', '')}", position["underlying"], position["days_left"]
         text = describe_option(position)
+        brief = describe_option(position, with_days=False)
+        where = moneyness(position)
         if morning and days in EXPIRY_WARN_DAYS:
-            self._alert("expiry", ticker, f"Expires in {days} trading day{'s' if days != 1 else ''}: {text}",
-                        f"hold-expiry:{key}:{days}")
+            self._alert("expiry", ticker, f"Expires in {days} trading day{'s' if days != 1 else ''}: {brief}"
+                        + (f"\n{where}" if where else ""), f"hold-expiry:{key}:{days}")
         if days == 0 and morning:
-            self._alert("expiry", ticker, f"Expires today: {text}", f"hold-expiry:{key}:0")
+            self._alert("expiry", ticker, f"Expires today: {brief}" + (f"\n{where}" if where else ""),
+                        f"hold-expiry:{key}:0")
         if days == 0 and last_hour:
-            self._alert("expiry", ticker, f"One hour to the close on expiration day: {text}", f"hold-expiry:{key}:last")
+            self._alert("expiry", ticker, f"One hour to the close on expiration day: {brief}"
+                        + (f"\n{where}" if where else ""), f"hold-expiry:{key}:last")
         spot = position.get("underlying_price")
         if spot and days <= ASSIGNMENT_DAYS:
             for leg in position["legs"]:
@@ -703,8 +766,14 @@ class HoldingsMonitor:
         return bool(names) and geared_fund(names[0])
 
     def _earnings(self, ticker: str, day: date) -> Optional[date]:
+        """Cached dates only: the monitor loop never waits on Yahoo; misses are warmed in the background."""
         if self._geared(ticker):
             return None
+        if self._earnings_date is earnings.next_earnings:
+            hit, when = earnings.peek(ticker, day)
+            if not hit:
+                self._run("earnings", self._warm_earnings, day)
+            return when
         try:
             return self._earnings_date(ticker, day)
         except Exception:

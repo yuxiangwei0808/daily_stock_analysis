@@ -355,6 +355,7 @@ export interface HoldingOption {
   underlying: string;
   expiry: string;
   daysLeft: number;
+  expired?: boolean;
   label: string;
   legs: HoldingOptionLeg[];
   cost: number;
