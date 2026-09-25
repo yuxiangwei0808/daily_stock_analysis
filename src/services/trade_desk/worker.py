@@ -34,16 +34,36 @@ class TradeDeskWorker:
         self._error = None
         self._leader = False
         self._unmonitored_count = 0
-        from . import pulse
-        self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit)
+        from . import holdings, opportunities, pulse
+        # Broker holdings join the watchlist for every live watch and add a
+        # "You hold" line to ideas and breakouts.
+        self._holdings = (holdings.HoldingsMonitor(service.holdings, self._emit)
+                          if holdings.enabled() else None)
+        watched = self._watched if self._holdings is not None else pulse.watch_tickers
+        held_note = self._held_note if self._holdings is not None else None
+        self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit, tickers=watched)
                        if pulse.enabled() else None)
-        from . import opportunities
         self._breakouts = self._opportunities = None
         if opportunities.enabled():
             self._breakouts = opportunities.BreakoutWatch(lambda: service.provider("live"), self._emit,
-                                                          watchlist=pulse.watch_tickers)
+                                                          watchlist=watched, held=held_note)
             self._opportunities = opportunities.OpportunityRunner(
-                service, self._emit, watchlist=pulse.watch_tickers, breakouts=self._breakouts)
+                service, self._emit, watchlist=watched, breakouts=self._breakouts, held=held_note)
+
+    def _watched(self):
+        """The watchlist plus held stocks and option underlyings."""
+        from . import pulse
+        try:
+            held = self.service.holdings.tickers()
+        except Exception:
+            held = []
+        return list(dict.fromkeys([*pulse.watch_tickers(), *held]))
+
+    def _held_note(self, ticker):
+        try:
+            return self.service.holdings.note(ticker)
+        except Exception:  # the idea goes out without the position line
+            return ""
 
     def start(self):
         if self._thread or not self.service.enabled:
@@ -57,14 +77,15 @@ class TradeDeskWorker:
     def status(self):
         return {"running": bool(self._thread and self._thread.is_alive()), "leader": self._leader,
                 "last_tick": self._last_tick, "error": self._error,
-                "unmonitored_count": self._unmonitored_count, "plan_limit": 20}
+                "unmonitored_count": self._unmonitored_count, "plan_limit": 20,
+                "holdings_error": self._holdings.last_error if self._holdings is not None else None}
 
     def stop(self):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
         self._scan_pool.shutdown(wait=False, cancel_futures=True)
-        for part in (self._pulse, self._breakouts, self._opportunities):
+        for part in (self._pulse, self._breakouts, self._opportunities, self._holdings):
             if part is not None:
                 part.stop()
         self.repo.release(self.owner)
@@ -205,6 +226,11 @@ class TradeDeskWorker:
                 self._pulse.tick(now)
             except Exception as exc:  # the watch must never stop plan monitoring
                 logger.warning("Market pulse check failed: %s", type(exc).__name__)
+        if self._holdings is not None:
+            try:
+                self._holdings.tick(now, session_window(now)[0])
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Holdings monitor failed: %s", type(exc).__name__)
         if self._opportunities is not None:
             try:
                 self._breakouts.tick(now, session_window(now)[0])
@@ -354,7 +380,8 @@ class TradeDeskWorker:
             if event["event_type"] in {"discord_attempt", "discord_delivery"}:
                 deliveries.setdefault(event["payload"].get("event_id"), event)
         wanted = {"opportunity", "price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
-                  "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout"}
+                  "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout",
+                  "holding_alert"}
         for event in reversed(events):
             if event["event_type"] not in wanted:
                 continue
@@ -391,6 +418,12 @@ class TradeDeskWorker:
                 content = f"🧭 **Options ideas** · for today's high-conviction trades\n{message}"
                 if base:
                     content += f"\n{base}/trade-desk"
+            elif event["event_type"] == "holding_alert":
+                icon, label = {"rule": ("🛎️", "Your alert"), "expiry": ("⏳", "Expiry"),
+                               "assignment": ("⚠️", "Assignment risk"), "profit": ("💰", "Profit"),
+                               "loss": ("🩸", "Loss"), "earnings": ("📅", "Earnings"),
+                               "trend": ("📉", "Trend break")}.get(payload.get("kind"), ("🛎️", "Holding"))
+                content = f"{icon} **{ticker}** · {label}\n{message}"
             elif event["event_type"] == "breakout":
                 up = payload.get("kind") == "breakout"
                 content = f"{'🚀' if up else '🔻'} **{ticker}** · {'Breakout' if up else 'Breakdown'}\n{message}"

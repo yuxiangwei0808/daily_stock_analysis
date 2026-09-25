@@ -6,6 +6,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { tradeDeskApi } from '../api/tradeDesk';
 import { focusPayoffPoints } from '../utils/payoff';
 import { AppPage, Badge, Button, Card, EmptyState, InlineAlert, Loading, PageHeader } from '../components/common';
+import { HoldingsPanel } from '../components/tradeDesk/HoldingsPanel';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type {
   CreateTradePlanRequest,
@@ -30,7 +31,7 @@ import type {
   TradePreferences,
 } from '../types/tradeDesk';
 
-type TradeDeskView = 'opportunities' | 'ask' | 'positions' | 'journal';
+type TradeDeskView = 'opportunities' | 'ask' | 'holdings' | 'positions' | 'journal';
 
 type AdviceFormState = {
   ticker: string;
@@ -785,7 +786,7 @@ const TradeDeskPage: React.FC = () => {
 
   if (isLoading && !health) return <AppPage><Loading label={t('common.loading')} /></AppPage>;
   if (health && !health.enabled) return <AppPage><InlineAlert variant="warning" title={t('tradeDesk.unavailable')} message="Trade Desk is disabled by the server configuration." /></AppPage>;
-  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.opportunities')], ['ask', t('tradeDesk.ask')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<div className="mt-5">{view === 'opportunities' ? renderOpportunities() : view === 'ask' ? renderAsk() : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
+  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.opportunities')], ['ask', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<div className="mt-5">{view === 'opportunities' ? renderOpportunities() : view === 'ask' ? renderAsk() : view === 'holdings' ? <HoldingsPanel /> : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
 };
 
 export default TradeDeskPage;

@@ -295,6 +295,16 @@ class TradeDeskRepository:
             session.merge(SettingsRecord(id="preferences", payload=encoded(prefs)))
         return prefs
 
+    def setting(self, key, default=None):
+        with self.db.get_session() as session:
+            row = session.get(SettingsRecord, key)
+            return json.loads(row.payload) if row else default
+
+    def set_setting(self, key, value):
+        with self.db.session_scope() as session:
+            session.merge(SettingsRecord(id=key, payload=encoded(value)))
+        return value
+
     def lease(self, owner, seconds=45):
         now = utcnow()
         expiry = (now + timedelta(seconds=seconds)).isoformat()

@@ -260,18 +260,34 @@ def merge_review(candidates: List[Dict[str, Any]], review: List[Dict[str, Any]],
 
 
 def expressions(idea: Dict[str, Any], *, options_follow: bool) -> List[str]:
-    """Labelled ways to act on an idea; options only at high conviction."""
+    """Labelled ways to act on an idea; options only at high conviction.
+
+    ``held_note`` is None when holdings are unknown, "" when not held.
+    """
     high = idea["conviction"] == "high"
     options_note = " (options comparison follows)" if options_follow else ""
+    known, held = idea.get("held_note") is not None, bool(idea.get("held_note"))
+    long = idea["direction"] == "long"
     if geared_fund(idea.get("name", "")):
-        return (["buy shares (leveraged/inverse ETF: short-term, small size)"] if idea["direction"] == "long"
-                else ["sell or trim if you hold it (leveraged/inverse ETF: shorting it is not advised)"])
-    if idea["direction"] == "long":
-        ways = ["buy shares"]
+        if long:
+            return [("already held — keep it short-term" if held else "buy shares")
+                    + " (leveraged/inverse ETF: short-term, small size)"]
+        if held or not known:
+            return [("sell or trim your position" if held else "sell or trim if you hold it")
+                    + " (leveraged/inverse ETF: shorting it is not advised)"]
+        return ["stay out (leveraged/inverse ETF: shorting it is not advised)"]
+    if long:
+        ways = ["already held — hold, or add small" if held else "buy shares"]
         if high:
             ways.append(f"calls / call debit spread (defined risk){options_note}")
         return ways
-    ways = ["sell or trim if you hold it", "short shares (needs margin + borrow; loss unbounded — use the stop)"]
+    if held:
+        ways = ["sell or trim your position"]
+        if high:
+            ways.append(f"or hedge it with puts / a put debit spread (defined risk){options_note}")
+        return ways
+    ways = ([] if known else ["sell or trim if you hold it"]) + [
+        "short shares (needs margin + borrow; loss unbounded — use the stop)"]
     if idea["ticker"] in INVERSE_ETFS:
         ways.append(f"inverse ETF {INVERSE_ETFS[idea['ticker']]}")
     if high:
@@ -293,6 +309,8 @@ def format_message(ideas: List[Dict[str, Any]], repeats: List[Dict[str, Any]], r
                   f"trend {idea['strength']} · {idea['source']}",
                   f"Price {_price(idea['price'])} · entry: {idea.get('entry') or 'near ' + _price(idea['price'])} · "
                   f"stop {_price(idea['stop'])} · targets {targets}" + (f" · {idea['horizon']}" if idea.get("horizon") else "")]
+        if idea.get("held_note"):
+            lines.append(idea["held_note"])
         if idea.get("earnings_note"):
             lines.append(idea["earnings_note"])
         if idea.get("thesis"):
@@ -328,9 +346,11 @@ class BreakoutWatch:
     def __init__(self, provider: Callable[[], Any], emit: Callable[[str, Dict[str, Any], str], Any], *,
                  watchlist: Callable[[], List[str]], bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]]
                  = trend.download_bars, clock: Callable[[], float] = None,
-                 earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings):
+                 earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
+                 held: Optional[Callable[[str], str]] = None):
         import time
         self._earnings_date = earnings_date
+        self._held = held
         self._provider = provider
         self._emit = emit
         self._watchlist = watchlist
@@ -410,10 +430,14 @@ class BreakoutWatch:
             change = quote.get("change_pct")
             note = self._context.get(ticker, "")
             geared = geared_fund(quote.get("name", ""))
+            held_note = self._held(ticker) if self._held is not None else ""
             if geared:  # daily-reset funds: ATR targets mean little and shorting them is not advised
                 levels_line = f"Stop {stop:.2f} (1.5 ATR)"
                 how = ("buy shares — leveraged/inverse ETF: short-term, small size" if up else
                        "sell/trim if held — leveraged/inverse ETF: shorting it is not advised")
+                if held_note:
+                    how = ("already held — keep it short-term" if up else
+                           "sell or trim your position — leveraged/inverse ETF")
                 earnings_line = ""
             else:
                 try:
@@ -424,9 +448,13 @@ class BreakoutWatch:
                                f"{price + sign * 4.5 * atr:.2f}")
                 how = ("buy shares with that stop" if up else
                        "sell/trim if held · short shares (margin + borrow; loss unbounded — use the stop)")
+                if held_note:
+                    how = ("already held — hold with that stop, or add small" if up else
+                           "sell or trim your position, or tighten your stop")
             message = (f"{ticker} broke {'above its 20-day high' if up else 'below its 20-day low'} {level:.2f} "
                        f"at {price:.2f}" + (f" ({change:+.1f}% today)" if change is not None else "")
                        + f" on {pace:.1f}x normal volume pace.\n{levels_line}"
+                       + (f"\n{held_note}" if held_note else "")
                        + (f"\n{earnings_line}" if earnings_line else "") + (f"\n{note}" if note else "") + f"\nHow: {how}.")
             event = self._emit("breakout", {"underlying": ticker, "kind": "breakout" if up else "breakdown",
                                             "price": price, "level": round(level, 2), "change_pct": change,
@@ -444,8 +472,10 @@ class OpportunityRunner:
                  bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
                  news: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
                  review: Callable[[str], Optional[List[Dict[str, Any]]]] = _review_with_llm,
-                 earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings):
+                 earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
+                 held: Optional[Callable[[str], str]] = None):
         self.service = service
+        self._held = held
         self._earnings_date = earnings_date
         self.emit = emit
         self.breakouts = breakouts
@@ -579,6 +609,8 @@ class OpportunityRunner:
             self._announced_day, self._announced = result["day"], {}
         fresh, repeats = [], []
         for idea in result["ideas"]:
+            if self._held is not None:
+                idea["held_note"] = self._held(idea["ticker"]) or ""
             previous = self._announced.get(idea["ticker"])
             (repeats if previous == f"{idea['direction']}:{idea['conviction']}" else fresh).append(idea)
             self._announced[idea["ticker"]] = f"{idea['direction']}:{idea['conviction']}"

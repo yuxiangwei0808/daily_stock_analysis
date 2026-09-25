@@ -190,6 +190,94 @@ async def update_preferences(body: Preferences, request: Request):
                         body.model_dump(exclude_unset=True, exclude_none=True))
 
 
+class HoldingRuleInput(Model):
+    position_key: Optional[str] = Field(default=None, max_length=64)
+    ticker: Optional[str] = Field(default=None, max_length=12)
+    kind: Literal["price_below", "price_above", "days_to_expiry", "pnl_below", "pnl_above"]
+    value: float
+    note: str = Field(default="", max_length=200)
+    repeat: Literal["once", "daily"] = "once"
+
+
+class HoldingRuleUpdate(Model):
+    status: Optional[Literal["active", "paused"]] = None
+    value: Optional[float] = None
+    note: Optional[str] = Field(default=None, max_length=200)
+
+
+class HoldingRuleText(Model):
+    text: str = Field(min_length=1, max_length=300)
+    position_key: Optional[str] = Field(default=None, max_length=64)
+
+
+def _holdings(request: Request):
+    from src.services.trade_desk import holdings
+    if not holdings.enabled():
+        raise HTTPException(409, detail="Set TRADE_DESK_BROKER_ACCOUNT to read moomoo holdings")
+    return get_service(request).holdings
+
+
+@router.get("/holdings")
+async def holdings_view(request: Request):
+    """Read-only broker positions with live marks, plus your alert rules."""
+    from src.services.trade_desk import holdings
+    if not holdings.enabled():
+        return {"enabled": False, "view": None, "rules": [], "error": None}
+    service = get_service(request)
+    worker = getattr(service, "worker", None)
+    error = worker.status().get("holdings_error") if worker is not None else None
+    view = await invoke(service.holdings.view)
+    return {"enabled": True, "view": view, "rules": service.holdings.rules(), "error": error}
+
+
+@router.post("/holdings/refresh")
+async def holdings_refresh(request: Request):
+    store = _holdings(request)
+    await invoke(store.sync)
+    return {"enabled": True, "view": await invoke(store.view), "rules": store.rules(), "error": None}
+
+
+@router.post("/holdings/rules", status_code=201)
+async def holding_rule_create(body: HoldingRuleInput, request: Request):
+    return await invoke(_holdings(request).add_rule, body.model_dump())
+
+
+@router.post("/holdings/rules/parse")
+async def holding_rule_parse(body: HoldingRuleText, request: Request):
+    """A rule draft from plain words (pattern first, then the routine model); nothing is saved."""
+    from src.services.trade_desk import holdings
+    store = _holdings(request)
+    draft = holdings.parse_rule_text(body.text)
+    source = "pattern"
+    if draft is None:
+        position = store.position(body.position_key)
+        try:
+            draft = await asyncio.to_thread(holdings.parse_rule_with_model, body.text,
+                                            {k: v for k, v in (position or {}).items() if k != "legs"})
+        except Exception:
+            draft = None
+        source = "model"
+    if draft is None:
+        raise HTTPException(422, detail="Could not read an alert from that text; pick the type and value instead")
+    return {**draft, "position_key": body.position_key, "source": source}
+
+
+@router.patch("/holdings/rules/{rule_id}")
+async def holding_rule_update(rule_id: str, body: HoldingRuleUpdate, request: Request):
+    try:
+        return await invoke(_holdings(request).update_rule, rule_id, body.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(404, detail="Alert not found") from exc
+
+
+@router.delete("/holdings/rules/{rule_id}", status_code=204)
+async def holding_rule_delete(rule_id: str, request: Request):
+    try:
+        await invoke(_holdings(request).delete_rule, rule_id)
+    except KeyError as exc:
+        raise HTTPException(404, detail="Alert not found") from exc
+
+
 @router.get("/events")
 async def events(request: Request, after: Optional[int] = Query(default=None, ge=0)):
     try:

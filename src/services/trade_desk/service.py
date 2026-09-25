@@ -55,6 +55,8 @@ class TradeDeskService:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trade-advice")
         self.worker = None
         self.enabled = os.getenv("TRADE_DESK_ENABLED", "true").lower() == "true"
+        from .holdings import Holdings
+        self.holdings = Holdings(self)
 
     def provider(self, mode):
         with self._lock:

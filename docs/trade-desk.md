@@ -239,6 +239,47 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   trim if held (never short the fund); no options follow-up, and breakout alerts
   show the stop without ATR targets.
 
+## Broker holdings and your alerts
+
+With `TRADE_DESK_BROKER_ACCOUNT` set (a real moomoo account id or its last
+digits; `TRADE_DESK_BROKER_SECURITY_FIRM`, default `FUTUINC`), the worker reads
+that account's positions and USD account value through the same OpenD (and RSA
+encryption) as quotes: every 10 minutes in the regular session, once after 16:05
+New York time, and on **Sync now**. It opens a short-lived trade context and calls
+only `get_acc_list`, `position_list_query` and `accinfo_query`; trading is never
+unlocked and nothing is ordered. The snapshot is stored locally
+(`trade_desk_settings`, id `broker_holdings`).
+
+- **View** (Trade Desk → Holdings, `GET /holdings`): stocks with quantity,
+  average cost, live price, value, weight of the account and P&L on average
+  cost; options grouped per underlying and expiry (a vertical spread is one
+  position) with legs, net cost, value at the bid/ask mid, P&L on cost, share of
+  the maximum profit when it is bounded, and trading days to expiry (US holiday
+  calendar).
+- **Built-in alerts** (regular session, deduplicated): options: 2 and 1 trading
+  days before expiry (from 09:45), expiration day at 09:45 and 15:00, a short leg
+  in the money within 2 trading days (assignment risk, daily), 75 % of a bounded
+  maximum profit (otherwise +50 % and +100 % on cost), −50 % on cost, earnings on
+  or before expiry. Stocks: price below the prior 20-day low or a first drop below
+  the 50-day average (daily each), earnings within 7 days. Leveraged/inverse funds
+  get no earnings lookups.
+- **Your alerts** (`POST /holdings/rules`, `PATCH`/`DELETE /holdings/rules/{id}`):
+  underlying price at or below / above X, trading days to expiry ≤ N (options),
+  position P&L at or below / above X % on cost; once (then "triggered", re-arm it)
+  or once a day. They attach to a position (`position_key`, e.g.
+  `USO 2026-10-16` or `NVDA`) or, for price alerts, to any ticker. A rule on a
+  closed position waits and never fires. Plain words (`POST /holdings/rules/parse`,
+  e.g. "stop loss if the underlying drops to 145", "warn me 3 days before
+  expiry", "alert if I lose 40%") are read by a pattern first and the routine model
+  second; the draft is shown for confirmation and nothing is saved until you do.
+- **Everywhere else:** held tickers join the market pulse and breakout watch;
+  trade ideas and breakout alerts on something you hold add a "You hold: …" line
+  and say "sell or trim your position" / "already held — hold, or add small"
+  instead of generic wording.
+- **Privacy:** Discord messages (`holding_alert`) contain percentages only —
+  weight of the account and P&L on cost — never share counts, cost or dollar
+  amounts. The dashboard shows full detail.
+
 ## Your own trade plan and fresh news
 
 A request may carry `plan_legs`: up to four legs, either objects
@@ -314,6 +355,8 @@ paper fills, manual fills, positions, journal, outcomes, preferences and SSE eve
 /plans/{id}/reconcile` records reconciliation notes after actual fills are entered. `POST
 /plans/{id}/paper-settle` (`underlying_price`) settles expired paper option legs.
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.
+`GET /holdings`, `POST /holdings/refresh` and the `/holdings/rules` routes serve
+the read-only broker holdings and your alerts (409 when no account is set).
 OpenAPI at `/docs` describes request validation.
 
 Additive `trade_desk_*` tables hold conversations, advice versions, plans, fills,

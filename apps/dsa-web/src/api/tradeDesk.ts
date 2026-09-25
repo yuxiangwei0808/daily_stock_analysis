@@ -3,6 +3,10 @@ import { toCamelCase } from './utils';
 import { API_BASE_URL } from '../utils/constants';
 import type {
   CreateTradePlanRequest,
+  HoldingRule,
+  HoldingRuleDraft,
+  HoldingRuleInput,
+  HoldingsResponse,
   PaperFillRequest,
   TradeAdviceJob,
   TradeAdviceListResponse,
@@ -245,6 +249,43 @@ export const tradeDeskApi = {
   async updatePreferences(request: TradePreferencesUpdate): Promise<TradePreferences> {
     const response = await apiClient.patch<Record<string, unknown>>(`${BASE_PATH}/preferences`, toPreferencesPayload(request));
     return toCamelCase<TradePreferences>(response.data);
+  },
+
+  async getHoldings(): Promise<HoldingsResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings`);
+    return toCamelCase<HoldingsResponse>(response.data);
+  },
+
+  async refreshHoldings(): Promise<HoldingsResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/refresh`);
+    return toCamelCase<HoldingsResponse>(response.data);
+  },
+
+  async createHoldingRule(rule: HoldingRuleInput): Promise<HoldingRule> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/rules`, withoutUndefined({
+      position_key: rule.positionKey ?? undefined,
+      ticker: rule.ticker,
+      kind: rule.kind,
+      value: rule.value,
+      note: rule.note,
+      repeat: rule.repeat,
+    }));
+    return toCamelCase<HoldingRule>(response.data);
+  },
+
+  async parseHoldingRule(text: string, positionKey?: string | null): Promise<HoldingRuleDraft> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/rules/parse`,
+      withoutUndefined({ text, position_key: positionKey ?? undefined }));
+    return toCamelCase<HoldingRuleDraft>(response.data);
+  },
+
+  async updateHoldingRule(ruleId: string, changes: { status?: 'active' | 'paused'; value?: number; note?: string }): Promise<HoldingRule> {
+    const response = await apiClient.patch<Record<string, unknown>>(`${BASE_PATH}/holdings/rules/${encodeURIComponent(ruleId)}`, changes);
+    return toCamelCase<HoldingRule>(response.data);
+  },
+
+  async deleteHoldingRule(ruleId: string): Promise<void> {
+    await apiClient.delete(`${BASE_PATH}/holdings/rules/${encodeURIComponent(ruleId)}`);
   },
 
   getEventsUrl(after?: string): string {

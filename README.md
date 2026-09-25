@@ -28,6 +28,7 @@
 
 - **Trade Desk（美股期权研究）**：接入 moomoo OpenD 实时报价，对比多种期权策略（到期损益、模型概率、情景分析），可按你给出的具体合约腿精确定价，支持纸面/手动实盘账本与计划监控。详见 [docs/trade-desk.md](docs/trade-desk.md)。
 - **波段交易机会**：每轮定时报告后按趋势规则扫描自选与标普 500，模型确认强趋势后推送做多/做空机会与分标签的操作方式（高信心附期权方案），盘中放量突破提醒（`TRADE_OPPORTUNITIES_ENABLED`）。
+- **券商持仓与提醒**：只读同步 moomoo 持仓，内置短线期权到期/指派/止盈止损提醒，可自定义“标的跌到 X 止损”“到期前 N 天提醒”等规则（`TRADE_DESK_BROKER_ACCOUNT`）。
 - **盘中监控**：交易时段内按规则提醒大幅/快速波动，并用低成本模型筛选重大新闻（`MARKET_PULSE_ENABLED`）。
 - **模型分层与第二意见**：常规任务与用户主动请求使用不同模型，用户请求附带其他模型的独立意见（`TARGETED_GENERATION_BACKEND`、`SECOND_OPINION_BACKENDS`；支持 Codex / Claude Code CLI 按层设置模型与推理强度）。
 - **免费新闻源**：Google News RSS、Yahoo Finance、Finnhub（`FREE_NEWS_SOURCES`）。

@@ -1465,6 +1465,7 @@ class MoomooProvider:
                     continue
                 quote = {"price": price, "prev_close": prev_close, "name": _text(row.get("name")),
                          "volume": _safe_float(row.get("volume")),
+                         "bid": _safe_float(row.get("bid_price")), "ask": _safe_float(row.get("ask_price")),
                          "change_pct": (price / prev_close - 1) * 100 if prev_close else None,
                          "updated_at": _text(row.get("update_time")), "session": session, "extended": None}
                 if extended_fields:
@@ -1473,6 +1474,62 @@ class MoomooProvider:
                         quote["extended"] = {"price": ext_price, "change_pct": ext_change}
                 quotes[ticker] = quote
         return quotes
+
+    def broker_positions(self, account: str, security_firm: str = "FUTUINC") -> dict[str, Any]:
+        """Read-only positions and USD account value for one real account.
+
+        ``account`` is the account id or its trailing digits. A short-lived trade
+        context is opened on the same OpenD (and encryption) as quotes; only
+        ``get_acc_list``, ``position_list_query`` and ``accinfo_query`` are called,
+        and trading is never unlocked.
+        """
+        if not self.configured:
+            raise ProviderError("opend_not_configured", "Trade Desk OpenD is not configured")
+        sdk = self._load_sdk()
+        factory = getattr(sdk, "OpenSecTradeContext", None) if sdk is not None else None
+        if not callable(factory):
+            raise ProviderError("sdk_unsupported", "SDK does not expose OpenSecTradeContext")
+        self._configure_encryption(sdk)
+        ok = getattr(sdk, "RET_OK", 0)
+        firm = getattr(getattr(sdk, "SecurityFirm", None), security_firm.upper(), None)
+        if firm is None:
+            raise ProviderError("broker_account_unavailable", f"Unknown security firm {security_firm}")
+        real = self._enum("TrdEnv", "REAL", "REAL")
+        ctx = factory(filter_trdmarket=self._enum("TrdMarket", "NONE", "N/A"), host=self._host, port=self._port,
+                      security_firm=firm)
+        try:
+            ret, accounts = ctx.get_acc_list()
+            if ret != ok:
+                raise ProviderError("broker_account_unavailable", f"get_acc_list: {_text(accounts)[:160]}")
+            wanted = str(account).strip()
+            matches = [row for row in accounts.to_dict("records")
+                       if str(row.get("trd_env")) == str(real) and str(row.get("acc_id")).endswith(wanted)]
+            if len(matches) != 1:
+                raise ProviderError("broker_account_unavailable",
+                                    f"{len(matches)} real accounts end with {wanted[-4:]}")
+            acc_id = int(matches[0]["acc_id"])
+            ret, positions = ctx.position_list_query(trd_env=real, acc_id=acc_id)
+            if ret != ok:
+                raise ProviderError("broker_positions_unavailable", f"position_list_query: {_text(positions)[:160]}")
+            ret, info = ctx.accinfo_query(trd_env=real, acc_id=acc_id,
+                                          currency=self._enum("Currency", "USD", "USD"))
+            if ret != ok:
+                raise ProviderError("broker_positions_unavailable", f"accinfo_query: {_text(info)[:160]}")
+        finally:
+            ctx.close()
+        summary = info.to_dict("records")[0] if hasattr(info, "to_dict") and len(info) else {}
+        rows = positions.to_dict("records") if hasattr(positions, "to_dict") else []
+        return {"account": f"…{str(acc_id)[-4:]}", "account_type": _text(matches[0].get("acc_type")),
+                "total_assets": _safe_float(summary.get("total_assets")), "cash": _safe_float(summary.get("cash")),
+                "positions": [{"code": _text(row.get("code")), "name": _text(row.get("stock_name")),
+                               "qty": _safe_float(row.get("qty")) or 0.0,
+                               "side": _text(row.get("position_side")),
+                               "average_cost": _safe_float(row.get("average_cost")),
+                               "price": _safe_float(row.get("nominal_price")),
+                               "market_value": _safe_float(row.get("market_val")),
+                               "pl_pct": _safe_float(row.get("pl_ratio_avg_cost")),
+                               "today_pl": _safe_float(row.get("today_pl_val"))}
+                              for row in rows if (_safe_float(row.get("qty")) or 0) != 0]}
 
     def _enum(self, group_name: str, member: str, default: str = "") -> Any:
         group = getattr(self._sdk, group_name, None) if self._sdk is not None else None

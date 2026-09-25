@@ -326,3 +326,90 @@ export interface TradePreferences {
 }
 
 export type TradePreferencesUpdate = Partial<Pick<TradePreferences, 'proactiveEnabled' | 'discordEnabled' | 'opportunityDailyLimit' | 'cooldownMinutes'>>;
+
+export type HoldingRuleKind = 'price_below' | 'price_above' | 'days_to_expiry' | 'pnl_below' | 'pnl_above';
+
+export interface HoldingStock {
+  key: string;
+  ticker: string;
+  name: string;
+  qty: number;
+  averageCost?: number | null;
+  price?: number | null;
+  value?: number | null;
+  weightPct?: number | null;
+  pnlPct?: number | null;
+}
+
+export interface HoldingOptionLeg {
+  code: string;
+  right: 'call' | 'put';
+  strike: number;
+  qty: number;
+  averageCost?: number | null;
+  mark?: number | null;
+}
+
+export interface HoldingOption {
+  key: string;
+  underlying: string;
+  expiry: string;
+  daysLeft: number;
+  label: string;
+  legs: HoldingOptionLeg[];
+  cost: number;
+  value?: number | null;
+  maxValue?: number | null;
+  pnlPct?: number | null;
+  pctOfMax?: number | null;
+  underlyingPrice?: number | null;
+  weightPct?: number | null;
+}
+
+export interface HoldingsView {
+  account?: string | null;
+  accountType?: string | null;
+  syncedAt?: string | null;
+  totalAssets?: number | null;
+  cash?: number | null;
+  stocks: HoldingStock[];
+  options: HoldingOption[];
+}
+
+export interface HoldingRule {
+  id: string;
+  ticker: string;
+  positionKey?: string | null;
+  positionLabel?: string;
+  kind: HoldingRuleKind;
+  value: number;
+  note?: string;
+  repeat: 'once' | 'daily';
+  status: 'active' | 'paused' | 'triggered';
+  createdAt: string;
+  triggeredAt?: string | null;
+}
+
+export interface HoldingsResponse {
+  enabled: boolean;
+  view: HoldingsView | null;
+  rules: HoldingRule[];
+  error?: string | null;
+}
+
+export interface HoldingRuleInput {
+  positionKey?: string | null;
+  ticker?: string;
+  kind: HoldingRuleKind;
+  value: number;
+  note?: string;
+  repeat?: 'once' | 'daily';
+}
+
+export interface HoldingRuleDraft {
+  kind: HoldingRuleKind;
+  value: number;
+  note?: string;
+  positionKey?: string | null;
+  source: 'pattern' | 'model';
+}
