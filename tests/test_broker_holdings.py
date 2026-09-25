@@ -412,3 +412,25 @@ def test_trading_days_beyond_the_calendar_do_not_warn(caplog):
     with caplog.at_level(logging.WARNING):
         days = h.trading_days_until(date(2028, 1, 21), TODAY)
     assert 320 <= days <= 340 and not caplog.records
+
+
+def test_resizing_a_position_keeps_its_alert_keys():
+    raw = {**RAW, "positions": [dict(row) for row in RAW["positions"]]}
+    first = h.build_view(raw, QUOTES, TODAY)["options"][0]["signature"]
+    raw["positions"][0]["qty"], raw["positions"][1]["qty"] = 2.0, -2.0
+    assert h.build_view(raw, QUOTES, TODAY)["options"][0]["signature"] == first
+
+
+def test_editing_a_daily_alert_lets_it_fire_again_today(store):
+    rule = store.add_rule({"position_key": "USO 2026-10-16", "kind": "price_below", "value": 151, "repeat": "daily"})
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY)
+    store.update_rule(rule["id"], {"value": 152})
+    monitor.check(MIDDAY + timedelta(minutes=1))
+    assert len([e for e in events if e[1]["kind"] == "rule"]) == 2
+
+
+def test_a_ticker_alert_that_already_holds_warns(store):
+    store.service.provider("live").quotes["SPY"] = {"price": 610.0}
+    created = store.add_rule({"ticker": "SPY", "kind": "price_above", "value": 600})
+    assert "already holds" in created["warning"] and "warning" not in store.rules()[-1]

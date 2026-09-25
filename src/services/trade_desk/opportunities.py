@@ -60,8 +60,9 @@ INVERSE_ETFS = {"SPY": "SH", "VOO": "SH", "IVV": "SH", "QQQ": "PSQ", "IWM": "RWM
 
 # Fund families that only issue daily-reset leveraged/inverse funds (report names are
 # often cut to ~31 characters, e.g. "Direxion Daily Semiconductor Be").
-_GEARED_FAMILY = re.compile(r"^(direxion daily|proshares (ultra|short)|tradr\b|t-rex\b|defiance daily|leverage shares|"
-                            r"microsectors|axs (\d|short))", re.I)
+_GEARED_FAMILY = re.compile(r"^(direxion daily|proshares (ultra|short)|tradr\b|t-rex\b|defiance (daily|leveraged)|"
+                            r"leverage shares|microsectors|axs (\d|short)|graniteshares (\d|short|long)|"
+                            r"tuttle capital short|yieldmax short)", re.I)
 _MULTIPLE = re.compile(r"(?<![\w.])-?[1-9](\.\d+)?x\b", re.I)
 _FUND_WORDS = re.compile(r"\b(daily|etf|shares|fund|trust|etn)\b", re.I)
 _INVERSE_WORDS = re.compile(r"\b(bear|bull|inverse)\b", re.I)
@@ -395,10 +396,7 @@ class BreakoutWatch:
 
     def _load(self, day: date, tickers: List[str]) -> Dict[str, Dict[str, float]]:
         bars = self._bars(tickers)
-        levels = {ticker: levels for ticker, rows in bars.items() if (levels := breakout_levels(rows, day))}
-        if tickers and len(levels) < len(tickers) / 2:
-            raise RuntimeError(f"levels for only {len(levels)}/{len(tickers)} tickers")
-        return levels
+        return {ticker: levels for ticker, rows in bars.items() if (levels := breakout_levels(rows, day))}
 
     def tick(self, now: datetime, session: str) -> None:
         if session != "regular":
@@ -417,7 +415,12 @@ class BreakoutWatch:
             if not self._loading.done():
                 return
             try:
-                self._levels = {**self._loading.result(), **self._levels}
+                loaded = self._loading.result()
+                self._levels = {**loaded, **self._levels}
+                requested = len(set(self._watchlist()) | set(self._extra))
+                if requested and len(loaded) < requested / 2:  # keep what loaded; try again for the rest
+                    logger.warning("Breakout levels for only %d/%d tickers; retrying", len(loaded), requested)
+                    self._retry_at = clock + LEVELS_RETRY_SECONDS
             except Exception as exc:  # retried in a few minutes; scans still add names
                 logger.warning("Breakout levels unavailable: %s", exc)
                 self._retry_at = clock + LEVELS_RETRY_SECONDS
@@ -581,6 +584,8 @@ class OpportunityRunner:
         slot = self._slot(min(row.created_at for row in batch))
         if slot is None:
             return  # one-off analyses, not a scheduled run
+        if slot in (self._state().get("published") or []):
+            return  # a split batch or a catch-up run of a slot already sent
         reports = {}
         for row in sorted(batch, key=lambda item: item.id):
             reports[row.code] = {"id": row.id, "name": str(getattr(row, "name", "") or ""),
@@ -594,10 +599,14 @@ class OpportunityRunner:
         except Exception:
             return {}
 
-    def _save_state(self, day: date) -> None:
+    def _save_state(self, day: date, published: Optional[str] = None) -> None:
         try:
+            state = self._state()
+            slots = [slot for slot in (state.get("published") or []) if slot.startswith(day.isoformat())]
+            if published and published not in slots:
+                slots.append(published)
             self.service.repo.set_setting("opportunity_state", {"last_id": self._last_id, "day": day.isoformat(),
-                                                                "announced": self._announced})
+                                                                "announced": self._announced, "published": slots})
         except Exception as exc:  # restarts may then repeat a scan; the slot key still stops a second send
             logger.info("Opportunity state not saved: %s", type(exc).__name__)
 
@@ -609,7 +618,7 @@ class OpportunityRunner:
             except ValueError:
                 continue
             start = first.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if start <= first <= start + WINDOW:
+            if start <= first <= start + WINDOW + CATCHUP:  # a restarted run lands late
                 return f"{first.date().isoformat()} {value}"
         return None
 
@@ -679,9 +688,8 @@ class OpportunityRunner:
                 idea["held_note"] = self._held(idea["ticker"])  # None when holdings are unknown
             previous = self._announced.get(idea["ticker"])
             (repeats if previous == f"{idea['direction']}:{idea['conviction']}" else fresh).append(idea)
-            self._announced[idea["ticker"]] = f"{idea['direction']}:{idea['conviction']}"
         if not fresh:
-            self._save_state(result["day"])
+            self._save_state(result["day"], published=result["slot"])
             return  # nothing new since the last run today
         follow = {idea["ticker"] for idea in fresh if idea["conviction"] == "high"
                   and not geared_fund(idea.get("name", ""))} if regular_session else set()
@@ -689,9 +697,11 @@ class OpportunityRunner:
                    f"{len(result['ideas'])} passed")
         event = self.emit("trade_opportunities", {"underlying": "", "message": format_message(
             fresh, repeats, result["regime"], options_follow=follow, scanned=scanned)}, f"opportunities:{result['slot']}")
-        self._save_state(result["day"])
         if event is None:
-            return  # already sent before a restart
+            self._save_state(result["day"], published=result["slot"])
+            return  # already sent before a restart; its ideas were recorded then
+        for idea in result["ideas"]:
+            self._announced[idea["ticker"]] = f"{idea['direction']}:{idea['conviction']}"
         jobs = {}
         for idea in fresh:
             if idea["ticker"] not in follow:
@@ -712,6 +722,7 @@ class OpportunityRunner:
                 logger.info("Options comparison for %s not submitted: %s", idea["ticker"], type(exc).__name__)
                 continue
             jobs[job["id"]] = f"{'long' if bullish else 'short'} · high"
+        self._save_state(result["day"], published=result["slot"])
         if jobs:
             self._pending = {"jobs": jobs, "batch": result["slot"], "started": self._now()}
 
@@ -731,6 +742,7 @@ class OpportunityRunner:
 
 
 NOT_TICKERS = {"MARKET"}  # the market review row
+CATCHUP = timedelta(minutes=60)  # the scheduler restarts an interrupted run up to an hour late
 
 
 def _configured_schedule_times() -> List[str]:

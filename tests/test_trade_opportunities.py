@@ -152,9 +152,13 @@ def test_a_finished_run_sends_opportunities_then_options_for_high_conviction():
     runner.tick(True)
     assert sent[-1][0] == "options_ideas" and sent[-1][1]["message"] == "**NVDA** (long · high) — wait\n> Spreads too wide."
 
-    # The next run finds the same ideas: nothing new, no message and no options rerun.
-    _run_batch(runner, service, clock, 30)
-    assert len(sent) == 2 and len(service.submitted) == 1
+    # A second batch for the same slot (a split run or a catch-up) is not scanned again.
+    local = opp._naive(clock["now"])
+    service.rows += [_row(30 + i, code, 70, local - timedelta(minutes=5))
+                     for i, code in enumerate(["NVDA", "JPM", "AAPL", "MSFT", "AMD"])]
+    clock["now"] += timedelta(minutes=1)
+    runner.tick(True)
+    assert runner._scan is None and len(sent) == 2 and len(service.submitted) == 1
 
 
 def test_after_the_close_ideas_are_sent_without_options_and_rejections_stay_quiet():
@@ -280,6 +284,9 @@ def test_leveraged_and_inverse_funds_are_never_suggested_as_shorts_or_options():
     assert opp.geared_fund("Direxion Daily Semiconductor Be")  # report names are cut to ~31 characters
     assert not opp.geared_fund("iShares Short Treasury Bond ETF")
     assert not opp.geared_fund("PIMCO Enhanced Short Maturity Active ETF")
+    for name in ("GraniteShares 2x Long NVDA Dail", "Tuttle Capital Short Innovation ETF",
+                 "YieldMax Short TSLA Option Income Strategy ETF", "Defiance Leveraged Long + Income MSTR ETF"):
+        assert opp.geared_fund(name), name
     idea = {"ticker": "SOXS", "name": "Direxion Daily Semiconductor Bear 3X Shares", "direction": "short",
             "conviction": "high"}
     assert opp.expressions(idea, options_follow=False) == [
@@ -447,3 +454,21 @@ def test_a_failed_level_load_is_retried():
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
     assert "NVDA" in watch._levels
+
+
+def test_a_partial_level_load_keeps_what_loaded():
+    history = _bars(n=80, step=0.5)
+    watch = opp.BreakoutWatch(lambda: FakeProvider({}), lambda *a: None, watchlist=lambda: ["NVDA", "NEW1", "NEW2"],
+                              bars=lambda tickers: {"NVDA": history, "NEW1": history[:10]}, clock=lambda: 0.0,
+                              earnings_date=lambda ticker, day: None)
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.result(timeout=10)
+    watch.tick(NY_MIDDAY, "regular")
+    assert list(watch._levels) == ["NVDA"] and watch._retry_at is not None
+
+
+def test_a_late_catch_up_batch_still_belongs_to_its_slot():
+    runner = _runner(FakeService(), [], {"now": NY_MIDDAY}, lambda prompt: [])
+    runner._schedule_times = lambda: ["09:40", "16:10"]
+    assert runner._slot(datetime(2026, 9, 25, 10, 50)) == "2026-09-25 09:40"  # restarted run, 70 minutes late
+    assert runner._slot(datetime(2026, 9, 25, 12, 0)) is None

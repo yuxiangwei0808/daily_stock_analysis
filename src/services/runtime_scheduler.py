@@ -109,6 +109,26 @@ def _write_run_record(record: Dict[str, Any]) -> None:
         logger.warning("Scheduled run record not written: %s", exc)
 
 
+def _process_alive(pid: Any) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:  # a reused pid of an unrelated program does not count
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return b"python" in handle.read()
+    except OSError:
+        return True
+
+
 def _latest_slot(times: List[str], now: datetime) -> Optional[str]:
     passed = [value for value in times if value <= now.strftime("%H:%M")]
     return f"{now.date().isoformat()} {max(passed)}" if passed else None
@@ -554,7 +574,7 @@ class RuntimeSchedulerService:
                 previous = _read_run_record()
                 attempts = previous.get("attempts", 0) + 1 if previous.get("slot") == slot else 1
                 _write_run_record({"slot": slot, "status": "started", "started_at": run_started_at.isoformat(),
-                                   "attempts": attempts})
+                                   "attempts": attempts, "pid": process.pid})
 
             result = None
             deadline = time.monotonic() + timeout
@@ -806,6 +826,10 @@ class RuntimeSchedulerService:
         if (now - started).total_seconds() > SCHEDULE_CATCHUP_MINUTES * 60:
             return False
         if record.get("attempts", 1) >= SCHEDULE_CATCHUP_ATTEMPTS + 1:
+            return False
+        if _process_alive(record.get("pid")):
+            # The old server died without shutting its worker down; that run is still going.
+            logger.warning("Scheduled run for %s is still running in pid %s; not starting another", slot, record["pid"])
             return False
         logger.warning("Scheduled run for %s was interrupted by a restart; starting it again", slot)
         return True

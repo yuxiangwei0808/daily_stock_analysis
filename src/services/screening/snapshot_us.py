@@ -89,6 +89,33 @@ def _ticker_frame(data, ticker):
     return data.dropna(subset=["Close"]).copy()
 
 
+def _previous_session_close(intraday, daily, now):
+    """The regular close of the session before today's, from daily bars or, when Yahoo's
+    daily series skips it, that session's last regular 5-minute bar."""
+    from datetime import datetime as _datetime, time as _time, timedelta as _timedelta
+    from src.core.trading_calendar import get_market_session_bounds, is_market_open
+    day = now.date() - _timedelta(days=1)
+    for _ in range(10):
+        try:
+            if is_market_open("us", day):
+                break
+        except Exception:
+            if day.weekday() < 5:
+                break
+        day -= _timedelta(days=1)
+    if not daily.empty:
+        rows = daily[[d.date() == day for d in daily.index]]
+        if not rows.empty:
+            return float(rows.iloc[-1]["Close"])
+    opening, closing = get_market_session_bounds("us", _datetime.combine(day, _time(12), NEW_YORK))
+    if opening is None or closing is None:
+        return None
+    regular = intraday[(intraday.index >= opening) & (intraday.index < closing)]
+    if not regular.empty and (closing - regular.index[-1]).total_seconds() <= 10 * 60:
+        return float(regular.iloc[-1]["Close"])
+    return None
+
+
 def _session_row(ticker, intraday, daily, now, session, start, end):
     """Build one row only from a fresh bar in the requested session."""
     if intraday.empty or intraday.index.tz is None:
@@ -114,8 +141,7 @@ def _session_row(ticker, intraday, daily, now, session, start, end):
         if not regular.empty and (closing - regular.index[-1]).total_seconds() <= 10 * 60:
             reference = float(regular.iloc[-1]["Close"])
             # The day's regular-session move beside the after-hours one (today's close vs the prior close).
-            earlier = daily[[d.date() < now.date() for d in daily.index]] if not daily.empty else daily
-            previous = float(earlier.iloc[-1]["Close"]) if not earlier.empty else None
+            previous = _previous_session_close(intraday, daily, now)
             if previous and math.isfinite(previous) and previous > 0:
                 day_change_pct = round((reference / previous - 1) * 100, 4)
             regular_volume = regular["Volume"].fillna(0).clip(lower=0)

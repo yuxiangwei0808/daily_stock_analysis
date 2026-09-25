@@ -407,6 +407,9 @@ def test_screening_preserves_session_metadata_through_ranking_and_api(monkeypatc
     config = Config(daily_enrich_enabled=False, post_analyzers=[], risk_enabled=False,
                     portfolio_diversity_enabled=False)
     result = pipeline.screen("us_gainers", market="us", use_llm=False, config=config)
+    # DatabaseManager is a process-wide singleton: build this in-memory one fresh and
+    # let monkeypatch put the previous instance back afterwards.
+    monkeypatch.setattr(DatabaseManager, "_instance", None)
     db = DatabaseManager(db_url="sqlite:///:memory:")
     service = ScreeningService(AppConfig(screening_enabled=True), db_manager=db)
     with patch("src.services.screening_service._call_screening_screen", return_value=result), \
@@ -1234,6 +1237,7 @@ def test_after_the_close_breadth_and_sectors_use_the_regular_session(monkeypatch
     assert result["change_basis"] == "regular_session"
     assert (result["advancers"], result["decliners"]) == (1, 1)
     assert result["gainers"][0]["code"] == "AAA" and result["gainers"][0]["change_pct"] == pytest.approx(5.0)
+    assert result["gainers"][0]["price"] == pytest.approx(105)  # today's close, not the after-hours print
     assert result["losers"][0]["change_pct"] == pytest.approx(-3.0)
     assert result["sectors"][0]["change_pct"] == pytest.approx(2.0)
     text = scan.render_us_market_scan(result)

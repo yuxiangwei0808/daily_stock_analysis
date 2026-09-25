@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import src.notification  # noqa: F401  (imported before get_config is stubbed, so nothing binds the stub)
 from src.services.trade_desk import worker as worker_module
 from src.services.trade_desk.repository import TradeDeskRepository
 
@@ -64,3 +65,23 @@ def test_a_failed_part_is_retried_alone(repo, monkeypatch):
     assert [part[:6] for part in sent] == ["PART-A", "PART-B"]  # part A was not posted twice
     desk._deliver()
     assert len(sent) == 2
+
+
+def test_a_crash_after_the_claim_does_not_resend_delivered_parts(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    repo.set_preferences({"discord_enabled": True})
+    monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid"))
+    sent = []
+    monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(c) or True)
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
+    message = "PART-A " + "a" * 1500 + "\n\n" + "PART-B " + "b" * 1500
+    event = repo.event("trade_opportunities", {"underlying": "", "message": message}, "opportunities:2")
+    repo.event("discord_attempt", {"event_id": event["id"], "attempt": 1, "success": False}, "discord-attempt:x:1")
+    repo.event("discord_delivery", {"event_id": event["id"], "attempt": 1, "success": False, "sent_parts": [0], "parts": 2})
+    repo.event("discord_attempt", {"event_id": event["id"], "attempt": 2, "success": False}, "discord-attempt:x:2")
+    later = worker_module.utcnow() + timedelta(seconds=61)
+    monkeypatch.setattr(worker_module, "utcnow", lambda: later)
+    desk._deliver()  # the newest record is a claim from a crashed attempt
+    assert [part[:6] for part in sent] == ["PART-B"]

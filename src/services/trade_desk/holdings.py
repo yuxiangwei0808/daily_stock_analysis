@@ -178,7 +178,8 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
         pct_of_max = ((value - cost) / (max_value - cost) * 100
                       if value is not None and max_value is not None and max_value > cost else None)
         spot = (quotes.get(underlying) or {}).get("price")
-        signature = hashlib.sha1("|".join(sorted(f"{leg['code']}:{leg['qty']:g}" for leg in legs)).encode()).hexdigest()[:10]
+        # The contracts, not the size: adding to or trimming a position keeps its alerts.
+        signature = hashlib.sha1("|".join(sorted(leg["code"] for leg in legs)).encode()).hexdigest()[:10]
         options.append({"key": f"{underlying} {expiry.isoformat()}", "underlying": underlying, "signature": signature,
                         "expired": expiry < today,
                         "expiry": expiry.isoformat(), "days_left": trading_days_until(expiry, today),
@@ -326,18 +327,23 @@ class Holdings:
         quotes = {}
         if live and raw.get("positions"):
             codes = self.codes(raw)
-            provider = self.service.provider("live")
             try:
-                quotes = provider.watchlist_quotes(codes)
-            except Exception as exc:
-                # One unquotable code must not blank every price: retry stocks and options apart.
+                provider = self.service.provider("live")
+            except Exception as exc:  # broker prices from the last sync remain
                 logger.info("Holdings quotes unavailable: %s", type(exc).__name__)
-                for part in ([c for c in codes if parse_code(c)["kind"] == "stock"],
-                             [c for c in codes if parse_code(c)["kind"] == "option"]):
-                    try:
-                        quotes.update(provider.watchlist_quotes(part) if part else {})
-                    except Exception:
-                        pass  # broker prices from the last sync remain
+                provider = None
+            if provider is not None:
+                try:
+                    quotes = provider.watchlist_quotes(codes)
+                except Exception as exc:
+                    # One unquotable code must not blank every price: retry stocks and options apart.
+                    logger.info("Holdings quotes unavailable: %s", type(exc).__name__)
+                    for part in ([c for c in codes if parse_code(c)["kind"] == "stock"],
+                                 [c for c in codes if parse_code(c)["kind"] == "option"]):
+                        try:
+                            quotes.update(provider.watchlist_quotes(part) if part else {})
+                        except Exception:
+                            pass  # broker prices from the last sync remain
         return build_view(raw, quotes, _local(now or utcnow()).date())
 
     def note(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> str:
@@ -400,16 +406,21 @@ class Holdings:
                 "repeat": "daily" if body.get("repeat") == "daily" else "once",
                 "status": "active", "arm": 0, "created_at": utcnow().isoformat(), "triggered_at": None}
         live = self.view()
-        now_value = rule_fires(rule, self.position(rule["position_key"], live),
-                               _prices(live).get(ticker) if rule["kind"].startswith("price") else None)
-        if now_value is not None:
-            rule["warning"] = f"This already holds (now {now_value}); it will fire at the next check in the session."
+        price = _prices(live).get(ticker)
+        if price is None and rule["kind"].startswith("price"):
+            try:  # a ticker you do not hold
+                price = (self.service.provider("live").watchlist_quotes([ticker]).get(ticker) or {}).get("price")
+            except Exception:
+                price = None
+        now_value = rule_fires(rule, self.position(rule["position_key"], live), price)
+        warning = (f"This already holds (now {now_value}); it will fire at the next check in the session."
+                   if now_value is not None else None)
         with self._lock:
             rules = self.rules()
             if len(rules) >= MAX_RULES:
                 raise ValueError(f"At most {MAX_RULES} alerts")
             self._save_rules([*rules, rule])
-        return rule
+        return {**rule, "warning": warning} if warning else rule
 
     def update_rule(self, rule_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
@@ -425,7 +436,7 @@ class Holdings:
                 rule["status"] = changes["status"]
             if "value" in changes:
                 rule.update(validate_rule({**rule, "value": changes["value"]}, None, check_position=False))
-                rearm = rearm or rule["status"] == "triggered"
+                rearm = rearm or rule["status"] != "paused"  # a new level is a new alert, daily ones too
                 if rule["status"] == "triggered":
                     rule["status"] = "active"
             if rearm:

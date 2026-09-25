@@ -101,7 +101,7 @@ def build_summary(view: Dict[str, Any], raw: Dict[str, Any], bars: Dict[str, Lis
             elif corr >= TOGETHER_CORR and min(a.get("weight_pct") or 0, b.get("weight_pct") or 0) >= PAIR_MIN_WEIGHT:
                 pairs_together.append((a["ticker"], b["ticker"], corr))
     movers = sorted((row for row in stocks + options if row.get("day_pct") is not None),
-                    key=lambda row: abs(row["day_pct"]) * (row.get("weight_pct") or 1) ** 0.5, reverse=True)[:3]
+                    key=lambda row: abs(row["day_pct"]) * (row.get("weight_pct") or 0), reverse=True)[:3]  # account impact
     upcoming = []
     for row in options:
         if row["days_left"] <= EXPIRY_DAYS:

@@ -33,3 +33,21 @@ def test_only_a_recent_interrupted_latest_slot_is_resumed(tmp_path, monkeypatch)
     assert check(service, times) is False  # too late to be useful
     rs._write_run_record({"slot": "2000-01-01 09:40", "status": "started", "started_at": started.isoformat()})
     assert check(service, times) is False  # a different slot
+
+
+def test_a_run_whose_worker_is_still_alive_is_not_started_again(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "db.sqlite"))
+    times = ["00:00"]
+    now = datetime.now()
+    slot = rs._latest_slot(times, now)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        rs._write_run_record({"slot": slot, "status": "started", "attempts": 1, "pid": child.pid,
+                              "started_at": (now - timedelta(minutes=1)).isoformat()})
+        assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is False
+    finally:
+        child.kill()
+        child.wait()
+    assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is True

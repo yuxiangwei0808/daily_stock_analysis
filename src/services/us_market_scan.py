@@ -37,6 +37,8 @@ def collect_us_market_scan(watchlist=(), *, now=None):
             # the after-hours move stays beside it and drives the unverified-mover list.
             snapshot["after_hours_pct"] = snapshot["change_pct"]
             snapshot["after_hours_amount"] = snapshot["amount"]
+            snapshot["after_hours_price"] = snapshot["price"]
+            snapshot["price"] = snapshot["reference_price"].fillna(snapshot["price"])  # today's close
             snapshot["change_pct"] = snapshot["day_change_pct"]
             snapshot["amount"] = snapshot["day_amount"].fillna(snapshot["amount"])
         result["change_basis"] = "regular_session" if day_basis else "session"
@@ -50,8 +52,10 @@ def collect_us_market_scan(watchlist=(), *, now=None):
         after_hours_movers = []
         if result["session"] in {"premarket", "postmarket"}:
             # Extended-session moves: after the close these use the after-hours columns.
-            move, amount = ("after_hours_pct", "after_hours_amount") if day_basis else ("change_pct", "amount")
-            extended = outside.assign(change_pct=outside[move], amount=outside[amount])
+            move, amount, price = (("after_hours_pct", "after_hours_amount", "after_hours_price") if day_basis
+                                   else ("change_pct", "amount", "price"))
+            extended = outside.assign(change_pct=outside[move], amount=outside[amount], price=outside[price])
+            extended = extended[extended.price >= 5]
             unverified = extended[extended.amount.fillna(0).le(0) & extended.change_pct.abs().ge(2)]
             unverified = unverified.assign(move_size=unverified.change_pct.abs()).sort_values(
                 "move_size", ascending=False, kind="stable",

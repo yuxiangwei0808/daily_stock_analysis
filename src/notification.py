@@ -3084,6 +3084,7 @@ class NotificationService(
         """
         from pathlib import Path
 
+        default_name = filename is None
         if filename is None:
             date_str = datetime.now().strftime('%Y%m%d')
             filename = f"report_{date_str}.md"
@@ -3096,6 +3097,15 @@ class NotificationService(
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
+        if default_name:
+            # The dated file is the latest run's; each run also keeps its own copy so a
+            # later (or one-off) run never erases an earlier run's report.
+            archive = reports_dir / f"{filepath.stem}_{datetime.now().strftime('%H%M')}{filepath.suffix}"
+            try:
+                with open(archive, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            except OSError as exc:
+                logger.warning(f"报告副本保存失败: {exc}")
 
         logger.info(f"日报已保存到: {filepath}")
         return str(filepath)

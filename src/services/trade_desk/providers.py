@@ -1533,7 +1533,8 @@ class MoomooProvider:
                               and _text(row.get("code")).startswith("US.")],
                 # Positions closed today keep their day P&L on a zero-quantity row.
                 "closed_today_pl": sum(_safe_float(row.get("today_pl_val")) or 0 for row in rows
-                                       if (_safe_float(row.get("qty")) or 0) == 0)}
+                                       if (_safe_float(row.get("qty")) or 0) == 0
+                                       and _text(row.get("code")).startswith("US."))}
 
     def _enum(self, group_name: str, member: str, default: str = "") -> Any:
         group = getattr(self._sdk, group_name, None) if self._sdk is not None else None

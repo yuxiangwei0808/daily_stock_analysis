@@ -48,7 +48,7 @@ NEWS_DAILY_LIMIT = 20
 OPENING_GRACE = timedelta(minutes=15)  # opening prints swing widely; day levels still alert
 FAST_DAILY_LIMIT = 3
 _LEVERAGE = [(re.compile(r"\b3x\b|ultrapro", re.I), 3.0),
-             (re.compile(r"\b2x\b|\bproshares ultra\b", re.I), 2.0)]
+             (re.compile(r"\b2x\b|\bproshares ultra(short)?\b", re.I), 2.0)]
 _NAME_STOPWORDS = {"the", "inc", "corp", "corporation", "company", "group", "holdings", "trust", "fund",
                    "daily", "etf", "shares", "class", "ltd", "plc", "technologies", "spdr", "ishares"}
 

@@ -347,7 +347,8 @@ class TradeDeskWorker:
                     # rests for four hours, so the same leaders do not repeat all day.
                     if any(j["request"]["ticker"] == symbol and j.get("source") == "proactive" and
                            now - datetime.fromisoformat(j["created_at"]) <
-                           (WAIT_COOLDOWN if j.get("assessment") == "wait" else timedelta(hours=1)) for j in existing):
+                           (WAIT_COOLDOWN if j.get("assessment") == "wait" and j.get("status") == "completed"
+                            and j.get("llm_status") != "unavailable" else timedelta(hours=1)) for j in existing):
                         continue
                     # One symbol's failure must not end the whole discovery cycle.
                     try:
@@ -408,10 +409,13 @@ class TradeDeskWorker:
                 (getattr(config, "discord_bot_token", None) and getattr(config, "discord_main_channel_id", None))):
             return
         events = self.repo.events(limit=2000, newest=True)
-        deliveries = {}
+        deliveries, delivered_parts = {}, {}
         for event in events:
             if event["event_type"] in {"discord_attempt", "discord_delivery"}:
                 deliveries.setdefault(event["payload"].get("event_id"), event)
+            if event["event_type"] == "discord_delivery":
+                # A crash after the claim leaves the claim newest; parts sent come from deliveries.
+                delivered_parts.setdefault(event["payload"].get("event_id"), set(event["payload"].get("sent_parts", [])))
         wanted = {"opportunity", "price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
                   "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout",
                   "holding_alert", "portfolio_summary"}
@@ -475,7 +479,7 @@ class TradeDeskWorker:
                 content = "SYNTHETIC REPLAY / PAPER ONLY\n" + content
             # Each part is sent once: a retry only sends the parts that failed.
             parts = discord_parts(content)
-            sent = set(prior["payload"].get("sent_parts", [])) if prior else set()
+            sent = set(delivered_parts.get(event["id"], set()))
             diagnostic = "delivered"
             for index, part in enumerate(parts):
                 if index in sent:
