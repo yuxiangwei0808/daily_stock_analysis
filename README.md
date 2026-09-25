@@ -24,17 +24,37 @@
 
 ## 🧭 本分支新增（Fork）
 
-本仓库 fork 自 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)，在原有功能之上增加了面向美股与期权的研究工具（仅研究与记录，**从不向券商下单**）：
+本仓库 fork 自 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)，在原有功能之上增加了面向美股与期权的研究工具。**只做研究与提醒，从不向券商下单**；读取券商持仓只用只读接口。
 
-- **Trade Desk（美股期权研究）**：接入 moomoo OpenD 实时报价，对比多种期权策略（到期损益、模型概率、情景分析），可按你给出的具体合约腿精确定价，支持纸面/手动实盘账本与计划监控。详见 [docs/trade-desk.md](docs/trade-desk.md)。
-- **波段交易机会**：每轮定时报告后按趋势规则扫描自选与标普 500，模型确认强趋势后推送做多/做空机会与分标签的操作方式（高信心附期权方案），盘中放量突破提醒（`TRADE_OPPORTUNITIES_ENABLED`）。
-- **券商持仓与提醒**：只读同步 moomoo 持仓，内置短线期权到期/指派/止盈止损提醒，可自定义“标的跌到 X 止损”“到期前 N 天提醒”等规则（`TRADE_DESK_BROKER_ACCOUNT`）。
-- **盘中监控**：交易时段内按规则提醒大幅/快速波动，并用低成本模型筛选重大新闻（`MARKET_PULSE_ENABLED`）。
-- **模型分层与第二意见**：常规任务与用户主动请求使用不同模型，用户请求附带其他模型的独立意见（`TARGETED_GENERATION_BACKEND`、`SECOND_OPINION_BACKENDS`；支持 Codex / Claude Code CLI 按层设置模型与推理强度）。
+**一个交易日里会发生什么**
+
+| 时间（美东） | 内容 |
+|---|---|
+| 09:40 / 12:00 / 16:10 | 定时个股报告与大盘复盘；收盘后按常规时段涨跌计算（盘后变动单列） |
+| 每轮报告后 | 🎯 **波段交易机会**：趋势规则扫描自选 + 标普 500，模型确认后推送做多/做空（入场、止损、目标、失效条件、财报提示、分标签的操作方式；高信心附期权方案） |
+| 交易时段每分钟 | 📈 大幅/快速波动与重大新闻、🚀 放量突破 20 日高低点、🛎️ 持仓提醒（到期、指派风险、止盈止损、你设的规则） |
+| 16:15 | 📊 **每日组合摘要**：账户当日涨跌、SPY 敞口与对冲、最大持仓、杠杆 ETF 占比、到期与财报 |
+
+**功能**
+
+- **Trade Desk（美股期权研究）**：moomoo OpenD 实时报价，对比多种期权策略（到期损益、模型概率、情景分析），可按你给出的合约腿精确定价，纸面/手动实盘账本与计划监控。详见 [docs/trade-desk.md](docs/trade-desk.md)。
+- **波段交易机会**（`TRADE_OPPORTUNITIES_ENABLED`）：确定性趋势评分（均线、20 日突破、动量、量能）+ 一次模型复核；14 天内有财报时信心上限为中等；杠杆/反向 ETF 不建议做空或期权。
+- **券商持仓与提醒**（`TRADE_DESK_BROKER_ACCOUNT`）：Trade Desk「券商持仓」页查看持仓（期权按价差合并、盈亏与最大收益占比）；内置短线期权提醒，可用表单或文字添加规则，如“标的跌到 145 止损”“到期前 2 天提醒我”；交易机会与突破提醒会注明你的持仓。
+- **盘中监控**（`MARKET_PULSE_ENABLED`）：规则判断大幅/快速波动，低成本模型筛选重大新闻。
+- **模型分层与第二意见**：常规任务与用户请求使用不同模型，用户请求附带其他模型的独立意见（`TARGETED_GENERATION_BACKEND`、`SECOND_OPINION_BACKENDS`；Codex / Claude Code CLI 可按层设置模型与推理强度）。
 - **免费新闻源**：Google News RSS、Yahoo Finance、Finnhub（`FREE_NEWS_SOURCES`）。
-- **首页与推送**：自选按 moomoo 分组并显示实时行情；Discord 简报按决策分组、表格转为代码块，更易阅读。
+- **首页与推送**：自选按 moomoo 分组并显示实时行情；Discord 消息分组清晰、按段落分片，持仓相关内容只显示百分比。
+- **稳定性**：服务重启打断的定时运行会自动续跑；Discord 推送去重、失败只补发缺失分片。
 
-配置项说明见 [.env.example](.env.example) 与 [docs/LLM_CONFIG_GUIDE.md](docs/LLM_CONFIG_GUIDE.md)。
+**最小配置示例**（完整说明见 [.env.example](.env.example)、[docs/trade-desk.md](docs/trade-desk.md) 与 [docs/LLM_CONFIG_GUIDE.md](docs/LLM_CONFIG_GUIDE.md)）：
+
+```env
+TRADE_DESK_OPEND_HOST=127.0.0.1          # moomoo OpenD
+TRADE_OPPORTUNITIES_ENABLED=true
+MARKET_PULSE_ENABLED=true
+TRADE_DESK_BROKER_ACCOUNT=1234           # 只读持仓：账户号末几位
+FREE_NEWS_SOURCES=google_news,yahoo_finance
+```
 
 ## 💖 赞助商 (Sponsors)
 <div align="center">

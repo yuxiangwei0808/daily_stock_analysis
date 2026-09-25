@@ -282,7 +282,35 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
 }) {
   const { t } = useUiLanguage();
   return (
-    <div className="overflow-x-auto">
+    <>
+    <ul className="space-y-3 md:hidden">
+      {stocks.map((stock) => {
+        const rules = rulesFor(stock.key);
+        return (
+          <li key={stock.key} className="rounded-xl bg-elevated/40 p-3 text-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <span className="font-mono font-semibold text-foreground">{stock.ticker}</span>
+                <p className="truncate text-xs text-secondary-text">{stock.name}</p>
+              </div>
+              <span className={`shrink-0 font-medium ${tone(stock.pnlPct)}`}>{pct(stock.pnlPct)}</span>
+            </div>
+            <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
+              <div><dt className="text-muted-text">{t('tradeDesk.quantity')}</dt><dd className="text-foreground">{stock.qty}</dd></div>
+              <div><dt className="text-muted-text">{t('tradeDesk.price')}</dt><dd className="text-foreground">{money(stock.price)}</dd></div>
+              <div><dt className="text-muted-text">{t('tradeDesk.holdings.weight')}</dt><dd className="text-foreground">{stock.weightPct == null ? '-' : `${stock.weightPct.toFixed(1)}%`}</dd></div>
+              <div><dt className="text-muted-text">{t('tradeDesk.holdings.avgCost')}</dt><dd className="text-foreground">{money(stock.averageCost)}</dd></div>
+              <div><dt className="text-muted-text">{t('tradeDesk.holdings.value')}</dt><dd className="text-foreground">{money(stock.value, 0)}</dd></div>
+            </dl>
+            <RuleList rules={rules} onChanged={onChanged} />
+            {adding === stock.key
+              ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onChanged} onCancel={onCancel} />
+              : <Button className="mt-2" size="sm" variant="ghost" onClick={() => onAdd(stock.key)}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>}
+          </li>
+        );
+      })}
+    </ul>
+    <div className="hidden overflow-x-auto md:block">
       <table className="w-full min-w-[640px] text-sm">
         <thead className="text-xs text-muted-text">
           <tr>
@@ -326,6 +354,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 
@@ -379,19 +408,22 @@ export const HoldingsPanel: React.FC = () => {
     <div className="space-y-5">
       <InlineAlert variant="info" message={t('tradeDesk.holdings.readOnly')} />
       {problem ? <InlineAlert variant="danger" message={problem} /> : null}
-      {data?.error ? <InlineAlert variant="warning" message={`${t('tradeDesk.holdings.syncProblem')}: ${data.error}`} /> : null}
+      {data?.error ? <InlineAlert variant="warning" message={`${t('tradeDesk.holdings.syncProblem')} (${data.error}). ${t('tradeDesk.holdings.syncHint')}`} /> : null}
       {notice ? <InlineAlert variant="warning" message={notice} action={<Button size="sm" variant="ghost" onClick={() => setNotice('')}>{t('tradeDesk.close')}</Button>} /> : null}
       <Card variant="gradient" padding="md">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.holdings.account')} {view?.account ?? ''} <span className="text-sm font-normal text-secondary-text">{view?.accountType ?? ''}</span></h2>
             <p className="mt-1 text-xs text-secondary-text">
-              {t('tradeDesk.holdings.total')} {money(view?.totalAssets, 0)} · {t('tradeDesk.holdings.cash')} {money(view?.cash, 0)} · {t('tradeDesk.holdings.synced')} {view?.syncedAt ? new Date(view.syncedAt).toLocaleString() : '-'}
+              {view?.syncedAt
+                ? `${t('tradeDesk.holdings.total')} ${money(view.totalAssets, 0)} · ${t('tradeDesk.holdings.cash')} ${money(view.cash, 0)} · ${t('tradeDesk.holdings.synced')} ${new Date(view.syncedAt).toLocaleString()}`
+                : t('tradeDesk.holdings.neverSynced')}
             </p>
           </div>
           <Button size="sm" variant="ghost" onClick={() => void refresh()} isLoading={refreshing}><RefreshCw className="h-4 w-4" />{t('tradeDesk.holdings.sync')}</Button>
         </div>
       </Card>
+      {view?.syncedAt ? <>
       <SummaryCard summary={data?.summary} onBuilt={(summary) => setData((current) => (current ? { ...current, summary } : current))} />
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.options')}</h2>
@@ -410,6 +442,7 @@ export const HoldingsPanel: React.FC = () => {
           ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onCancel={() => setAdding(null)} />
           : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noStocks')}</p>}
       </Card>
+      </> : null}
       <Card variant="bordered" padding="md">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.otherAlerts')}</h2>
