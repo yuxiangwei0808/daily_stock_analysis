@@ -557,3 +557,13 @@ def test_failed_earnings_lookups_are_not_cached(monkeypatch):
     monkeypatch.setattr(yf, "Ticker", boom)
     assert earnings.next_earnings("NVDA", date(2026, 9, 25)) is None
     assert earnings.peek("NVDA", date(2026, 9, 25)) == (False, None)
+
+
+def test_ideas_whose_first_target_is_below_the_risk_are_dropped():
+    clock, service, sent = {"now": NY_MIDDAY}, FakeService(), []
+    review = lambda prompt: [{"ticker": "NVDA", "direction": "long", "conviction": "medium",  # noqa: E731
+                              "stop": 100.0, "targets": [150.0]}]  # risk ~40, reward ~10
+    runner = _runner(service, sent, clock, review)
+    runner.tick(True)
+    _run_batch(runner, service, clock, 10)
+    assert sent == []

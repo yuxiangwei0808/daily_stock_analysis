@@ -167,6 +167,7 @@ def format_options(job: Dict[str, Any], label: str) -> List[str]:
 
 
 # -- candidates and model review ------------------------------------------------
+MIN_REWARD_RISK = 1.0
 REPORT_BULLISH, REPORT_BEARISH = 65, 35  # report scores cluster near 50; beyond these they lean clearly
 
 
@@ -813,7 +814,8 @@ class OpportunityRunner:
             review = self._review(build_prompt(candidates, regime, context, today))
             if review is None:
                 logger.warning("Trade opportunities review returned no ideas; %d candidates skipped", len(candidates))
-            ideas = merge_review(candidates, review or [], day)[:limit]
+            ideas = [idea for idea in merge_review(candidates, review or [], day)
+                     if (_reward_risk(idea) or 0) >= MIN_REWARD_RISK][:limit]  # a first target below the risk is no trade
         # Watch near-breakout scan names live, besides the watchlist.
         near = {ticker: bars[ticker] for ticker, setup in scores.items()
                 if ticker not in REGIME and setup["strength"] >= NEAR_STRENGTH
@@ -823,7 +825,9 @@ class OpportunityRunner:
                                   "text": f"Trend review: {idea['direction']} · {idea['conviction']} conviction — "
                                           f"{idea.get('thesis', '')}"}
                  for idea in ideas}
-        logger.info("Trade opportunities: %d scored, %d candidates, %d ideas", len(scores), len(candidates), len(ideas))
+        logger.info("Trade opportunities: %d scored, %d candidates (%s), %d ideas", len(scores), len(candidates),
+                    ", ".join(f"{item['ticker']} {item['direction']} {item['strength']}{'*' if item['source'] == 'watchlist' else ''}"
+                              for item in candidates), len(ideas))
         return {"batch": batch_id, "slot": slot or str(batch_id), "ideas": ideas, "regime": regime, "day": _session_day(now),
                 "watch_bars": {**{t: bars[t] for t in watchlist if t in bars}, **near}, "notes": notes,
                 "scored": len(scores), "candidates": len(candidates)}

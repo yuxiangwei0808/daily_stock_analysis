@@ -220,7 +220,9 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   (low/medium/high), entry, stop, targets, horizon, thesis, risks and
   invalidation. Stops or targets on the wrong side of the price fall back to the
   ATR levels; a malformed row drops only that idea. The message shows the first
-  target's reward/risk ("R:R") and a "Risks:" line.
+  target's reward/risk ("R:R") and a "Risks:" line; ideas whose first target is
+  smaller than the risk to the stop (R:R < 1) are dropped. The log lists the
+  reviewed candidates (watchlist names marked `*`).
 - **Earnings:** each reviewed candidate's next earnings date comes from Yahoo's
   calendar (`earnings.py`, cached per day; funds have none; for an unconfirmed
   window the earliest day). The model sees it. Earnings within 14 days (inside
