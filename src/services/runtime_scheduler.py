@@ -59,6 +59,25 @@ def run_with_global_analysis_lock(
     return True
 
 
+def _setup_child_logging() -> None:
+    """Give the spawned analysis process real log handlers.
+
+    A spawned child imports ``main`` without running ``main()``, so without
+    this only Python's last-resort handler (WARNING+, no timestamps) is active
+    and the run's progress is lost. A separate file prefix keeps the parent's
+    rotating log file owned by one process.
+    """
+    try:
+        from src.config import get_config
+        from src.logging_config import setup_logging
+
+        config = get_config()
+        setup_logging(log_prefix="stock_analysis_scheduled", log_dir=getattr(config, "log_dir", "./logs"),
+                      debug=bool(getattr(config, "debug", False)))
+    except Exception:  # never block a scheduled run on logging
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+
 def _run_scheduled_analysis_process(
     result_queue: Any,
     stock_codes: Optional[List[str]],
@@ -74,6 +93,7 @@ def _run_scheduled_analysis_process(
             # before analysis can create descendants.
             if os.getsid(0) != os.getpid():
                 raise
+    _setup_child_logging()
     service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
     success = service._run_analysis_locked(stock_codes)
     result_queue.put({"success": success, "error": service._last_error})

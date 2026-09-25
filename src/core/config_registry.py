@@ -71,6 +71,8 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
+    # Trade Desk startup-only switches; quote credentials remain in existing Settings.
+    "TRADE_DESK_ENABLED", "TRADE_DESK_OPEND_HOST", "TRADE_DESK_OPEND_PORT", "TRADE_DESK_PUBLIC_URL",
     "DATABASE_PATH",
     "SQLITE_WAL_ENABLED",
     "SQLITE_BUSY_TIMEOUT_MS",
@@ -80,6 +82,8 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "PROXY_HOST",
     "PROXY_PORT",
     "SEARXNG_TIMEOUT_SECONDS",
+    "FREE_NEWS_SOURCES",
+    "MARKET_PULSE_ENABLED",
 }
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {

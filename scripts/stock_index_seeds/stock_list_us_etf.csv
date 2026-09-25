@@ -1,0 +1,54 @@
+ts_code,symbol,name,enname,aliases
+SPY,SPY,标普500ETF,SPDR S&P 500 ETF Trust,S&P 500 ETF|标普500
+VOO,VOO,先锋标普500ETF,Vanguard S&P 500 ETF,Vanguard S&P 500
+IVV,IVV,安硕标普500ETF,iShares Core S&P 500 ETF,iShares S&P 500
+VTI,VTI,先锋全市场ETF,Vanguard Total Stock Market ETF,Total Stock Market
+QQQ,QQQ,纳指100ETF,Invesco QQQ Trust,Nasdaq 100 ETF|纳斯达克100
+DIA,DIA,道指ETF,SPDR Dow Jones Industrial Average ETF Trust,Dow Jones ETF|道琼斯
+IWM,IWM,罗素2000ETF,iShares Russell 2000 ETF,Russell 2000|罗素2000
+RSP,RSP,标普500等权ETF,Invesco S&P 500 Equal Weight ETF,Equal Weight S&P 500
+XLK,XLK,科技行业ETF,Technology Select Sector SPDR Fund,Technology Sector
+XLF,XLF,金融行业ETF,Financial Select Sector SPDR Fund,Financial Sector
+XLE,XLE,能源行业ETF,Energy Select Sector SPDR Fund,Energy Sector
+XLV,XLV,医疗保健行业ETF,Health Care Select Sector SPDR Fund,Health Care Sector
+XLY,XLY,可选消费行业ETF,Consumer Discretionary Select Sector SPDR Fund,Consumer Discretionary
+XLP,XLP,必需消费行业ETF,Consumer Staples Select Sector SPDR Fund,Consumer Staples
+XLI,XLI,工业行业ETF,Industrial Select Sector SPDR Fund,Industrial Sector
+XLB,XLB,原材料行业ETF,Materials Select Sector SPDR Fund,Materials Sector
+XLU,XLU,公用事业行业ETF,Utilities Select Sector SPDR Fund,Utilities Sector
+XLRE,XLRE,房地产行业ETF,Real Estate Select Sector SPDR Fund,Real Estate Sector
+XLC,XLC,通信服务行业ETF,Communication Services Select Sector SPDR Fund,Communication Services
+SMH,SMH,半导体ETF,VanEck Semiconductor ETF,Semiconductor ETF|半导体
+SOXX,SOXX,安硕半导体ETF,iShares Semiconductor ETF,iShares Semiconductor
+XBI,XBI,生物科技ETF,SPDR S&P Biotech ETF,Biotech ETF|生物科技
+KRE,KRE,地区银行ETF,SPDR S&P Regional Banking ETF,Regional Banks
+ARKK,ARKK,ARK创新ETF,ARK Innovation ETF,ARK Innovation
+TLT,TLT,20年期以上美债ETF,iShares 20+ Year Treasury Bond ETF,Long Treasury|美债
+IEF,IEF,7-10年期美债ETF,iShares 7-10 Year Treasury Bond ETF,Intermediate Treasury
+SHY,SHY,1-3年期美债ETF,iShares 1-3 Year Treasury Bond ETF,Short Treasury
+BND,BND,先锋全债市ETF,Vanguard Total Bond Market ETF,Total Bond Market
+AGG,AGG,安硕核心美债综合ETF,iShares Core U.S. Aggregate Bond ETF,Aggregate Bond
+HYG,HYG,高收益公司债ETF,iShares iBoxx High Yield Corporate Bond ETF,High Yield Bond
+LQD,LQD,投资级公司债ETF,iShares iBoxx Investment Grade Corporate Bond ETF,Investment Grade Bond
+GLD,GLD,黄金ETF,SPDR Gold Shares,Gold ETF|黄金
+IAU,IAU,安硕黄金ETF,iShares Gold Trust,iShares Gold
+SLV,SLV,白银ETF,iShares Silver Trust,Silver ETF|白银
+GDX,GDX,金矿股ETF,VanEck Gold Miners ETF,Gold Miners
+USO,USO,美国原油基金,United States Oil Fund,Oil ETF|原油
+UNG,UNG,美国天然气基金,United States Natural Gas Fund,Natural Gas|天然气
+EEM,EEM,新兴市场ETF,iShares MSCI Emerging Markets ETF,Emerging Markets|新兴市场
+VWO,VWO,先锋新兴市场ETF,Vanguard FTSE Emerging Markets ETF,Vanguard Emerging Markets
+EFA,EFA,发达市场ETF,iShares MSCI EAFE ETF,EAFE|Developed Markets
+VEA,VEA,先锋发达市场ETF,Vanguard FTSE Developed Markets ETF,Vanguard Developed Markets
+FXI,FXI,中国大盘股ETF,iShares China Large-Cap ETF,China Large-Cap|中国大盘
+KWEB,KWEB,中概互联网ETF,KraneShares CSI China Internet ETF,China Internet|中概互联
+EWJ,EWJ,日本ETF,iShares MSCI Japan ETF,Japan ETF|日本
+EWZ,EWZ,巴西ETF,iShares MSCI Brazil ETF,Brazil ETF|巴西
+SCHD,SCHD,嘉信美国股息ETF,Schwab U.S. Dividend Equity ETF,Dividend Equity
+JEPI,JEPI,摩根股票溢价收益ETF,JPMorgan Equity Premium Income ETF,Equity Premium Income
+VIXY,VIXY,短期波动率期货ETF,ProShares VIX Short-Term Futures ETF,VIX Short-Term
+UVXY,UVXY,1.5倍做多波动率ETF,ProShares Ultra VIX Short-Term Futures ETF,Ultra VIX
+TQQQ,TQQQ,3倍做多纳指100ETF,ProShares UltraPro QQQ,UltraPro QQQ
+SQQQ,SQQQ,3倍做空纳指100ETF,ProShares UltraPro Short QQQ,UltraPro Short QQQ
+SOXL,SOXL,3倍做多半导体ETF,Direxion Daily Semiconductor Bull 3X Shares,Semiconductor Bull 3X
+SPXL,SPXL,3倍做多标普500ETF,Direxion Daily S&P 500 Bull 3X Shares,S&P 500 Bull 3X

@@ -95,6 +95,16 @@ class StockProfileService:
             quote = None
         if not quote:
             return self._unavailable("quote_unavailable", data=None)
+        from data_provider.us_session import QUOTE_SESSIONS, is_us_quote
+
+        # Only US quotes carry the session/freshness contract; other markets keep
+        # their previous "fresh" classification.
+        if is_us_quote(quote, code):
+            if quote.get("is_stale") is True:
+                return {"status": "partial", "data": quote, "limitations": ["quote_stale"]}
+            if (quote.get("is_stale") is not False or not quote.get("provider_timestamp")
+                    or quote.get("quote_session") not in QUOTE_SESSIONS):
+                return {"status": "partial", "data": quote, "limitations": ["quote_unverified"]}
         return {"status": "fresh", "data": quote, "limitations": []}
 
     def _history_block(self, code: str, *, history_days: int) -> Dict[str, Any]:

@@ -364,4 +364,17 @@ describe('systemConfigApi', () => {
     expect(result.errorCode).toBe('unsupported_agent_arch');
     expect(result.message).toBe('single only');
   });
+
+  it('keeps ticker keys when reading watchlist quotes', async () => {
+    get.mockResolvedValue({ data: { available: true, quotes: {
+      AAPL: { price: 336.2, change_pct: -0.2, updated_at: '2026-09-24 11:09:46', session: 'regular', extended: null },
+      'BRK.B': { price: 480.1, change_pct: 0.4, session: 'regular' },
+    } } });
+    const quotes = await systemConfigApi.getWatchlistQuotes();
+    expect(Object.keys(quotes)).toEqual(['AAPL', 'BRK.B']);
+    expect(quotes.AAPL).toMatchObject({ price: 336.2, changePct: -0.2, updatedAt: '2026-09-24 11:09:46' });
+    get.mockResolvedValue({ data: { available: false, quotes: {}, message: 'OpenD offline' } });
+    expect(await systemConfigApi.getWatchlistQuotes()).toEqual({});
+  });
 });
+

@@ -1,0 +1,21 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+name: us_decliners
+display_name: US session decliners
+description: Fresh session movers in the configured US universe; research candidates, not trade signals.
+version: "1"
+category: trend
+tags: [us, session, movers]
+screening:
+  enabled: true
+  market_scope: [us]
+  hard_filters:
+    exclude_st: false
+    price_min: 5.0
+    amount_min: 1000000
+    change_pct_max: -2.0
+  factor_weights:
+    reversal: 0.7
+    liquidity: 0.3
+  max_output: 10
+  ranking_hints: Rank observed session moves only. Do not infer a catalyst or predict continuation.

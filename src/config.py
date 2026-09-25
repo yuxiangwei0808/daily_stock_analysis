@@ -906,6 +906,15 @@ class Config:
     generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
     local_cli_backend_max_concurrency: int = DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY
     opencode_cli_model: str = ""
+    claude_code_cli_model: str = ""
+    claude_code_cli_effort: str = ""
+    targeted_claude_code_cli_model: str = ""
+    targeted_claude_code_cli_effort: str = ""
+    # Model tiers: routine runs (scheduled reports, market review, automatic
+    # scans) use GENERATION_BACKEND; user-requested analyses use
+    # TARGETED_GENERATION_BACKEND plus independent second opinions.
+    targeted_generation_backend: str = ""
+    second_opinion_backends: List[str] = field(default_factory=list)
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
@@ -983,6 +992,7 @@ class Config:
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
     searxng_base_urls: List[str] = field(default_factory=list)  # SearXNG instance URLs (self-hosted, no quota)
     searxng_public_instances_enabled: bool = False  # Opt in to public discovery when base URLs are absent
+    free_news_sources: List[str] = field(default_factory=list)  # google_news / yahoo_finance / finnhub
     searxng_timeout_seconds: int = 10  # 自建 SearXNG 单次搜索超时（秒）
 
     # === Social Sentiment (US stocks only, api.adanos.org) ===
@@ -1660,6 +1670,12 @@ class Config:
             maximum=MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
         )
         opencode_cli_model = (os.getenv('OPENCODE_CLI_MODEL', '') or '').strip()
+        claude_code_cli_model = (os.getenv('CLAUDE_CODE_CLI_MODEL', '') or '').strip()
+        targeted_generation_backend = (os.getenv('TARGETED_GENERATION_BACKEND', '') or '').strip().lower()
+        second_opinion_backends = list(dict.fromkeys(
+            item.strip().lower() for item in (os.getenv('SECOND_OPINION_BACKENDS', '') or '').split(',')
+            if item.strip()
+        ))
 
         agent_litellm_model = normalize_agent_litellm_model(
             os.getenv('AGENT_LITELLM_MODEL', ''),
@@ -1720,6 +1736,8 @@ class Config:
             os.getenv('SEARXNG_PUBLIC_INSTANCES_ENABLED'),
             default=False,
         )
+        from src.services.free_news import parse_sources as parse_free_news_sources
+        free_news_sources = parse_free_news_sources(os.getenv('FREE_NEWS_SOURCES', ''))
 
         # 企微消息类型与最大字节数逻辑
         wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
@@ -1818,6 +1836,12 @@ class Config:
             generation_backend_max_concurrency=generation_backend_max_concurrency,
             local_cli_backend_max_concurrency=local_cli_backend_max_concurrency,
             opencode_cli_model=opencode_cli_model,
+            claude_code_cli_model=claude_code_cli_model,
+            claude_code_cli_effort=os.getenv('CLAUDE_CODE_CLI_EFFORT', '').strip().lower(),
+            targeted_claude_code_cli_model=os.getenv('TARGETED_CLAUDE_CODE_CLI_MODEL', '').strip(),
+            targeted_claude_code_cli_effort=os.getenv('TARGETED_CLAUDE_CODE_CLI_EFFORT', '').strip().lower(),
+            targeted_generation_backend=targeted_generation_backend,
+            second_opinion_backends=second_opinion_backends,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -1881,6 +1905,7 @@ class Config:
             serpapi_keys=serpapi_keys,
             searxng_base_urls=searxng_base_urls,
             searxng_public_instances_enabled=searxng_public_instances_enabled,
+            free_news_sources=free_news_sources,
             searxng_timeout_seconds=parse_env_int(
                 os.getenv('SEARXNG_TIMEOUT_SECONDS'), 10, field_name='SEARXNG_TIMEOUT_SECONDS', minimum=1
             ),
@@ -2998,6 +3023,7 @@ class Config:
             or self.brave_api_keys
             or self.serpapi_keys
             or self.has_searxng_enabled()
+            or "google_news" in (self.free_news_sources or [])
         )
 
     def is_agent_available(self) -> bool:

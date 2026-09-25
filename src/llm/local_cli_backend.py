@@ -2569,6 +2569,13 @@ class LocalCliGenerationBackend(GenerationBackend):
         argv: list[str],
         prompt_path: Optional[Path],
     ) -> list[str]:
+        if self._preset.preset_id == CLAUDE_CODE_CLI_BACKEND_ID:
+            # CLAUDE_CODE_CLI_MODEL/_EFFORT (or TARGETED_* inside user-requested analyses)
+            # select the Claude model and effort; contract args keep their order.
+            claude_model = self._get_claude_code_cli_model()
+            claude_effort = self._get_claude_code_cli_effort()
+            extra = (["--model", claude_model] if claude_model else []) + (["--effort", claude_effort] if claude_effort else [])
+            return [*argv, *extra]
         if self._preset.preset_id != OPENCODE_CLI_BACKEND_ID:
             return argv
         model = self._get_opencode_cli_model()
@@ -2597,6 +2604,48 @@ class LocalCliGenerationBackend(GenerationBackend):
                 *runtime_argv[insert_at:],
             ]
         return runtime_argv
+
+    def _claude_setting(self, name: str) -> str:
+        """Routine value, or the TARGETED_* value inside a user-requested analysis."""
+        from src.llm.second_opinion import is_targeted
+
+        if is_targeted():
+            targeted = str(getattr(self._config, f"targeted_{name}", "") or "").strip()
+            if targeted:
+                return targeted
+        return str(getattr(self._config, name, "") or "").strip()
+
+    def _get_claude_code_cli_effort(self) -> str:
+        effort = self._claude_setting("claude_code_cli_effort").lower()
+        if effort and effort not in {"low", "medium", "high", "xhigh", "max"}:
+            raise self._error(
+                GenerationErrorCode.UNSAFE_CONFIG,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={"reason": "invalid_claude_code_cli_effort", "field": "CLAUDE_CODE_CLI_EFFORT",
+                         "token_preview": redact_diagnostic_text(effort, limit=40)},
+            )
+        return effort
+
+    def _get_claude_code_cli_model(self) -> str:
+        model = self._claude_setting("claude_code_cli_model")
+        if not model:
+            return ""
+        unsafe = _first_unsafe_token([model])
+        if unsafe or any(ch.isspace() for ch in model) or "$" in model or model.startswith("-"):
+            raise self._error(
+                GenerationErrorCode.UNSAFE_CONFIG,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={
+                    "reason": "unsafe_claude_code_cli_model",
+                    "field": "CLAUDE_CODE_CLI_MODEL",
+                    "token_preview": unsafe or redact_diagnostic_text(model, limit=120),
+                },
+            )
+        return model
 
     def _get_opencode_cli_model(self) -> str:
         model = str(getattr(self._config, "opencode_cli_model", "") or "").strip()

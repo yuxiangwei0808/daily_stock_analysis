@@ -377,3 +377,25 @@ describe('ReportOverview', () => {
     expect(screen.getByText('自选')).toBeInTheDocument();
   });
 });
+
+it.each([
+  { isStale: true, providerTimestamp: '2026-09-18T20:00:00Z', expected: 'Stale/unverified; reference only' },
+  { isStale: false, providerTimestamp: '2026-09-21T13:00:00Z', expected: 'Timestamped at analysis; may be delayed' },
+  { isStale: null, providerTimestamp: null, expected: 'Stale/unverified; reference only' },
+])('displays saved quote provenance beside the price: $expected', ({ isStale, providerTimestamp, expected }) => {
+  render(<ReportOverview meta={{ ...baseMeta, stockCode: 'AAPL', reportLanguage: 'en', currentPrice: 105 }}
+    summary={baseSummary} details={{ rawResult: { marketSnapshot: {
+      price: '105.00', quoteSession: 'premarket', providerTimestamp, isStale,
+    } } }} />);
+  expect(screen.getByText('105.00')).toBeVisible();
+  expect(screen.getByText(/Quote session: premarket/)).toHaveTextContent(expected);
+  if (providerTimestamp) expect(screen.getByText(/Quote session: premarket/)).toHaveTextContent(/EDT/);
+});
+
+it('reads quote provenance from the context of older saved reports', () => {
+  render(<ReportOverview meta={{ ...baseMeta, stockCode: 'AAPL', reportLanguage: 'en', currentPrice: 105 }}
+    summary={baseSummary} details={{ contextSnapshot: { enhancedContext: { realtime: {
+      quoteSession: 'regular', providerTimestamp: '2026-09-18T20:00:00Z', isStale: true,
+    } } } }} />);
+  expect(screen.getByText(/Quote session: regular/)).toHaveTextContent('Stale/unverified; reference only');
+});

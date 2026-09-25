@@ -380,6 +380,28 @@ def _is_hk_code(stock_code: str) -> bool:
     return False
 
 
+def _longbridge_us_session_info(q: Any) -> Dict[str, Any]:
+    """Map a Longbridge SecurityQuote to the Yahoo-style keys used by us_session.
+
+    ``timestamp`` is the time of the latest regular-session price; the optional
+    pre/post quotes carry their own price and time. A missing time stays missing.
+    """
+    from .us_session import sdk_epoch
+
+    info: Dict[str, Any] = {
+        "regularMarketPrice": safe_float(getattr(q, "last_done", None)),
+        "regularMarketTime": sdk_epoch(getattr(q, "timestamp", None)),
+        "regularMarketPreviousClose": safe_float(getattr(q, "prev_close", None)),
+    }
+    for prefix, attr in (("preMarket", "pre_market_quote"), ("postMarket", "post_market_quote")):
+        extended = getattr(q, attr, None)
+        if extended is None:
+            continue
+        info[prefix + "Price"] = safe_float(getattr(extended, "last_done", None))
+        info[prefix + "Time"] = sdk_epoch(getattr(extended, "timestamp", None))
+    return info
+
+
 def _to_longbridge_symbol(stock_code: str) -> Optional[str]:
     """Convert internal stock code to Longbridge symbol format.
 
@@ -855,9 +877,21 @@ class LongbridgeFetcher(BaseFetcher):
             circ_mv=circ_mv,
         )
 
+        if symbol.endswith(".US"):
+            # US quotes follow the same session/freshness contract as Yahoo quotes.
+            from .us_session import apply_us_quote_metadata
+
+            quote.market = "us"
+            quote.currency = "USD"
+            quote = apply_us_quote_metadata(quote, _longbridge_us_session_info(q))
+            if quote.change_amount is not None:
+                quote.change_amount = round(quote.change_amount, 4)
+            if quote.change_pct is not None:
+                quote.change_pct = round(quote.change_pct, 2)
+
         logger.info(
             f"[Longbridge] {symbol} 行情获取成功: "
-            f"价格={price}, 量比={volume_ratio}, 换手率={turnover_rate}"
+            f"价格={quote.price}, 量比={quote.volume_ratio}, 换手率={quote.turnover_rate}"
         )
         return quote
 

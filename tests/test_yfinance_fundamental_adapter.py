@@ -61,6 +61,19 @@ class TestYfinanceSymbolConversion(unittest.TestCase):
 
 
 class TestYfinanceFundamentalAdapter(unittest.TestCase):
+    def test_bundle_uses_provider_symbols_without_confusing_us_and_hk(self) -> None:
+        for code, expected in [
+            ("BRK.B", "BRK-B"), (" bf.b ", "BF-B"), ("HKD", "HKD"),
+            ("AAPL", "AAPL"), ("HK00700", "0700.HK"), ("0700.HK", "0700.HK"),
+            ("7203.T", "7203.T"),
+        ]:
+            with self.subTest(code=code):
+                ticker = _build_mock_ticker({"revenueGrowth": 0.1, "currency": "USD"})
+                with patch("yfinance.Ticker", return_value=ticker) as factory:
+                    bundle = YfinanceFundamentalAdapter().get_fundamental_bundle(code)
+                factory.assert_called_once_with(expected)
+                self.assertEqual(bundle["growth"]["revenue_yoy"], 10)
+
     @staticmethod
     def _freeze_dividend_as_of():
         class _FrozenDateTime(datetime):

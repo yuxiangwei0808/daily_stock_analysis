@@ -151,14 +151,17 @@ class AnalysisService:
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)
             rt = ReportType.from_str(report_type)
             
-            # 执行分析
-            result = pipeline.process_single_stock(
-                code=stock_code,
-                skip_analysis=False,
-                single_stock_notify=send_notification,
-                report_type=rt,
-                analysis_target=analysis_target,
-            )
+            # 执行分析：用户主动发起（Web/API/机器人）的分析使用 targeted 模型档位
+            from src.llm.second_opinion import targeted_analysis
+
+            with targeted_analysis():
+                result = pipeline.process_single_stock(
+                    code=stock_code,
+                    skip_analysis=False,
+                    single_stock_notify=send_notification,
+                    report_type=rt,
+                    analysis_target=analysis_target,
+                )
             
             if result is None:
                 logger.warning(f"分析股票 {stock_code} 返回空结果")

@@ -6,10 +6,12 @@ import type {
 } from '../../types/analysis';
 import { Badge, Button, Card, ScoreGauge } from '../common';
 import { formatDateTime } from '../../utils/format';
+import { formatReportTime, getReportQuote } from '../../utils/reportSessions';
 import { getMarketPhaseSummaryLabel, getPartialBarLabel } from '../../utils/marketPhase';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { ShareImageButton } from './ShareImageButton';
+import { tradeDeskTicker } from '../../api/tradeDesk';
 
 interface ReportOverviewProps {
   meta: ReportMeta;
@@ -170,7 +172,14 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
 }) => {
   const { t } = useUiLanguage();
   const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
+  // Trade Desk covers US stock/ETF options only.
+  const tradeDeskCode = meta.reportType !== 'market_review' && meta.assetType !== 'index'
+    ? tradeDeskTicker(meta.stockCode)
+    : null;
   const text = getReportText(reportLanguage);
+  const quote = getReportQuote(details);
+  const quoteTime = typeof quote?.providerTimestamp === 'string' ? quote.providerTimestamp : null;
+  const quoteUnverified = quote?.isStale !== false || !quoteTime;
   const marketPhaseLabel = getMarketPhaseSummaryLabel(meta.marketPhaseSummary, reportLanguage);
   const partialBarLabel = meta.marketPhaseSummary?.isPartialBar === true
     ? getPartialBarLabel(reportLanguage)
@@ -269,6 +278,12 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                     </div>
                   )}
                 </div>
+                {quote && (
+                  <p className={`mt-1 text-xs ${quoteUnverified ? 'text-warning' : 'text-secondary-text'}`}>
+                    {text.quoteSession}: {String(quote.quoteSession)} · {text.quoteTime}: {formatReportTime(quoteTime, reportLanguage)}
+                    {' · '}{quoteUnverified ? text.quoteStale : text.quoteDelayed}
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center gap-2 mt-1.5">
                   <span className="home-accent-chip px-2 py-0.5 font-mono text-xs">
                     {meta.stockCode}
@@ -296,6 +311,11 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                 reportTitle={`${meta.stockName || meta.stockCode}-${meta.stockCode}`}
                 reportLanguage={reportLanguage}
               />
+              {tradeDeskCode ? (
+                <a href={"/trade-desk?ticker=" + encodeURIComponent(tradeDeskCode) + (meta.id != null ? "&sourceReportId=" + meta.id : "")} className="ml-2 inline-flex h-9 items-center rounded-lg border border-purple/40 px-3 text-xs font-semibold text-purple hover:bg-purple/10">
+                  Trade Desk
+                </a>
+              ) : null}
             </div>
 
             {/* 关键结论 */}

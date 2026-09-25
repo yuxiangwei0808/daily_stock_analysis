@@ -2369,10 +2369,24 @@ class DataFetcherManager:
         provider_dt = self._parse_realtime_timestamp(
             getattr(quote, "provider_timestamp", None)
         )
+        from .us_session import has_us_session_contract, is_us_quote as _is_us_quote
+
+        is_us_quote = _is_us_quote(quote)
+        # US quotes carrying apply_us_quote_metadata's session decision keep its
+        # freshness verdict; realtime_cache_ttl must not apply a second threshold.
+        us_session_verdict = is_us_quote and provider_dt is not None and has_us_session_contract(quote)
+        if is_us_quote and not us_session_verdict:
+            # Providers without session evidence are reference prices only.
+            quote.is_stale = True
+            quote.data_quality = "partial"
+            quote.quote_session = getattr(quote, "quote_session", None) or "unknown"
+            quote.missing_fields = list(dict.fromkeys([
+                *(getattr(quote, "missing_fields", None) or []), "fresh_session_quote",
+            ]))
         if provider_dt is None:
             setattr(quote, "provider_timestamp", None)
             setattr(quote, "stale_seconds", None)
-            setattr(quote, "is_stale", None)
+            setattr(quote, "is_stale", True if is_us_quote else None)
             return quote
 
         setattr(quote, "provider_timestamp", provider_dt.isoformat())
@@ -2380,7 +2394,14 @@ class DataFetcherManager:
         stale_seconds = max(0, int((fetched_dt - provider_dt).total_seconds()))
         ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
         setattr(quote, "stale_seconds", stale_seconds)
-        setattr(quote, "is_stale", stale_seconds > int(ttl))
+        if not is_us_quote:
+            setattr(quote, "is_stale", stale_seconds > int(ttl))
+        else:
+            from .us_session import MAX_QUOTE_AGE_SECONDS
+            # A quote object served from a fetcher cache keeps aging against the
+            # single US threshold used by the session contract.
+            if stale_seconds > MAX_QUOTE_AGE_SECONDS:
+                setattr(quote, "is_stale", True)
         return quote
     
     def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True):
@@ -2757,6 +2778,10 @@ class DataFetcherManager:
         """
         filled = []
         for f in cls._SUPPLEMENT_FIELDS:
+            if (getattr(primary, "quote_session", None) in {"premarket", "postmarket"}
+                    and f in {"volume_ratio", "turnover_rate", "amplitude"}):
+                # These regular-session metrics cannot describe an extended-hours quote.
+                continue
             if getattr(primary, f, None) is None:
                 val = getattr(secondary, f, None)
                 if val is not None:

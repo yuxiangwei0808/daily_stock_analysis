@@ -124,6 +124,10 @@ class Pick:
     risk_summary: str = ""
     price: float = 0.0
     change_pct: float = 0.0
+    quote_session: str | None = None
+    provider_timestamp: str | None = None
+    reference_price: float | None = None
+    is_stale: bool | None = None
     amount: float = 0.0
     total_mv: float | None = None
     turnover_rate: float | None = None

@@ -55,6 +55,8 @@ vi.mock('../../api/systemConfig', () => ({
     getConfig: vi.fn(),
     getSetupStatus: vi.fn(),
     getWatchlist: vi.fn().mockResolvedValue([]),
+    getWatchlistGroups: vi.fn().mockResolvedValue([]),
+    getWatchlistQuotes: vi.fn().mockResolvedValue({}),
     addToWatchlist: vi.fn().mockResolvedValue([]),
     removeFromWatchlist: vi.fn().mockResolvedValue([]),
   },

@@ -1,12 +1,12 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart3, Check, SlidersHorizontal, X } from 'lucide-react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import { historyApi } from '../api/history';
 import { agentApi, type SkillInfo } from '../api/agent';
-import { systemConfigApi } from '../api/systemConfig';
+import { systemConfigApi, type HomeWatchlistQuote, type WatchlistGroup } from '../api/systemConfig';
 import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
@@ -708,6 +708,36 @@ const HomePage: React.FC = () => {
   }, [isLoadingStockBar, stockBarItems.length]);
 
   const watchlistState = useWatchlist();
+  const [watchlistGroups, setWatchlistGroups] = useState<WatchlistGroup[]>([]);
+  useEffect(() => {
+    let active = true;
+    // Broker groups are optional; the flat watchlist is shown without them.
+    systemConfigApi.getWatchlistGroups().then((groups) => {
+      if (active) setWatchlistGroups(groups);
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+  const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, HomeWatchlistQuote>>({});
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      if (document.visibilityState !== 'visible') return;
+      systemConfigApi.getWatchlistQuotes().then((quotes) => {
+        if (active) setWatchlistQuotes(quotes);
+      }).catch(() => undefined);
+    };
+    load();
+    // The server caches for 10 s; quotes pause while the tab is hidden.
+    const timer = window.setInterval(load, 15000);
+    document.addEventListener('visibilitychange', load);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', load);
+    };
+  }, [watchlistState.watchlistCodes]);
   const refreshWatchlist = watchlistState.refresh;
   const watchlistCodesByNormalized = useMemo(() => {
     const codesByNormalized = new Map<string, string>();
@@ -1456,6 +1486,8 @@ const HomePage: React.FC = () => {
           activeTab={sidebarWorkspaceTab}
           onTabChange={setSidebarWorkspaceTab}
           watchlistRows={watchlistRows}
+          watchlistGroups={watchlistGroups}
+          watchlistQuotes={watchlistQuotes}
           watchlistLoading={watchlistState.isLoading || !isStockIndexReady}
           watchlistActioning={watchlistState.isActioning}
           watchlistMessage={watchlistState.actionMessage}
@@ -1484,6 +1516,8 @@ const HomePage: React.FC = () => {
     [
       activeTasks,
       batchAnalyzeStatus,
+      watchlistGroups,
+      watchlistQuotes,
       handleAnalyzeWatchlist,
       handleDeleteStock,
       handleHistoryItemClick,
@@ -1518,7 +1552,10 @@ const HomePage: React.FC = () => {
       data-testid="home-dashboard"
       className="flex h-[calc(100vh-5rem)] w-full flex-col overflow-hidden md:flex-row sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
     >
-      <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0 w-full">
+        <Link to="/reports" className="mx-3 mt-3 flex shrink-0 items-center justify-between gap-3 rounded-xl border border-cyan/20 bg-cyan/5 px-4 py-3 text-sm text-cyan md:mx-4">
+          <span>{t('reports.homeLink')}</span><span aria-hidden="true">→</span>
+        </Link>
         <header className="relative z-30 flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4">
           <div className="flex min-w-0 flex-1 flex-col gap-2.5 md:flex-row md:items-center">
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -1703,7 +1740,7 @@ const HomePage: React.FC = () => {
         ) : null}
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
-          <div className="hidden min-h-0 w-64 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-72">
+          <div className="hidden min-h-0 w-72 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-80 xl:w-96">
             {sidebarContent}
           </div>
 

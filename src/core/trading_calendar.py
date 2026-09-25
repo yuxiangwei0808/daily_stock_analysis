@@ -454,6 +454,15 @@ def _session_open_close_for_today(
     )
 
 
+def get_market_session_bounds(market: str, current_time: datetime):
+    """Return timezone-aware regular open/close, or (None, None) if unavailable."""
+    try:
+        return _session_open_close_for_today(market, get_market_now(market, current_time))
+    except Exception as exc:
+        logger.warning("Market session boundaries unavailable for %s: %s", market, exc)
+        return None, None
+
+
 def _phase_minutes(
     market: Optional[str],
     market_now: datetime,

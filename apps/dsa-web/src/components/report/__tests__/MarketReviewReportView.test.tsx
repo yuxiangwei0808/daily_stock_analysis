@@ -106,6 +106,19 @@ const noBreadthMarketReviewPayload: MarketReviewPayload = {
 };
 
 describe('MarketReviewReportView', () => {
+  it('shows the provider index session date even when the report is newer', () => {
+    render(<MarketReviewReportView
+      report={englishMarketReviewReport}
+      payload={{ ...noBreadthMarketReviewPayload, date: '2026-03-18', indices: [{
+        ...noBreadthMarketReviewPayload.indices![0], dailyBarDate: '2026-03-17',
+      }] }}
+      content="# Market Review"
+      reportLanguage="en"
+    />);
+    expect(screen.getByText('Regular-session daily bar: 2026-03-17')).toBeInTheDocument();
+    expect(screen.queryByText('Regular-session daily bar: 2026-03-18')).not.toBeInTheDocument();
+  });
+
   it('uses localized summary card labels and fallbacks for English reports', () => {
     render(
       <MarketReviewReportView

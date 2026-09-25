@@ -56,7 +56,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
         </div>
       </div>
 
-      <div className="mx-auto flex min-h-screen w-full max-w-[1680px] px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1920px] px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
         <aside
           className={cn(
             'sticky top-3 z-40 hidden shrink-0 overflow-visible rounded-[1.5rem] border border-[var(--shell-sidebar-border)] bg-card/72 p-2.5 shadow-soft-card backdrop-blur-sm transition-[width] duration-200 lg:flex',

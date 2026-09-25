@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, CircleDollarSign, Gauge, FileText, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { SCREENING_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, screeningApi } from '../../api/screening';
+import { tradeDeskApi } from '../../api/tradeDesk';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -29,8 +30,10 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { key: 'home', labelKey: 'layout.nav.home', to: '/', icon: Home, exact: true },
+  { key: 'reports', labelKey: 'layout.nav.reports', to: '/reports', icon: FileText },
   { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
+  { key: 'trade-desk', labelKey: 'layout.nav.tradeDesk', to: '/trade-desk', icon: CircleDollarSign },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
@@ -45,6 +48,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showScreeningNav, setShowScreeningNav] = useState(false);
+  const [showTradeDeskNav, setShowTradeDeskNav] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -73,7 +77,21 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
     };
   }, []);
 
-  const navItems = showScreeningNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
+  useEffect(() => {
+    let active = true;
+    const refreshTradeDeskStatus = async () => {
+      try {
+        const status = await tradeDeskApi.getHealth();
+        if (active) setShowTradeDeskNav(status.enabled);
+      } catch {
+        if (active) setShowTradeDeskNav(false);
+      }
+    };
+    void refreshTradeDeskStatus();
+    return () => { active = false; };
+  }, []);
+
+  const navItems = NAV_ITEMS.filter((item) => (item.key !== 'screening' || showScreeningNav) && (item.key !== 'trade-desk' || showTradeDeskNav));
   const isRail = variant === 'rail';
   const itemBaseClass = cn(
     'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',

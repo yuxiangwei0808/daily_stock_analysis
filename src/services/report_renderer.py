@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from src.analyzer import AnalysisResult
 from src.config import get_config
+from src.formatters import format_session_market_snapshot
 from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
 from src.report_language import (
     get_localized_stock_name,
@@ -215,6 +216,7 @@ def render(
     context: Dict[str, Any] = {
         "report_date": report_date,
         "report_timestamp": report_timestamp,
+        "format_session_market_snapshot": format_session_market_snapshot,
         "results": sorted_results,
         "enriched": sorted_enriched,  # Sorted by sentiment_score desc
         "summary_only": summary_only,

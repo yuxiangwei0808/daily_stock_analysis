@@ -2190,6 +2190,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 cursor.execute(f"PRAGMA busy_timeout={int(self._sqlite_busy_timeout_ms)}")
                 if self._sqlite_file_db and self._sqlite_wal_enabled:
                     cursor.execute("PRAGMA journal_mode=WAL")
+                elif self._sqlite_file_db:
+                    # WAL is persistent in the file header; leave it explicitly so
+                    # SQLITE_WAL_ENABLED=false (e.g. on NFS) takes effect.
+                    cursor.execute("PRAGMA journal_mode=DELETE")
             except Exception as exc:
                 logger.warning("初始化 SQLite PRAGMA 失败: %s", exc)
             finally:

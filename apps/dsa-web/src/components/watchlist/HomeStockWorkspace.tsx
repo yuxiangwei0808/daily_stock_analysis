@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownWideNarrow,
   CalendarDays,
@@ -51,8 +51,39 @@ interface BatchStatus {
   message: string;
 }
 
+export interface HomeWatchlistQuote {
+  price: number;
+  prevClose?: number | null;
+  changePct?: number | null;
+  updatedAt?: string;
+  session?: string;
+  extended?: { price: number; changePct?: number | null } | null;
+}
+
+export interface HomeWatchlistGroup {
+  name: string;
+  codes: string[];
+}
+
+const GROUP_STORAGE_KEY = 'dsa.home.watchlistGroup';
+const ALL_GROUP = '__all__';
+const OTHER_GROUP = '__other__';
+const bareCode = (code: string) => code.trim().toUpperCase().replace(/^US\./, '').replace(/\.US$/, '');
+
+function readStoredGroup(): string {
+  try {
+    return window.localStorage.getItem(GROUP_STORAGE_KEY) || ALL_GROUP;
+  } catch {
+    return ALL_GROUP;
+  }
+}
+
 interface HomeStockWorkspaceProps {
   activeTab: HomeWorkspaceTab;
+  /** Broker watchlist groups (moomoo custom groups), in app order. */
+  watchlistGroups?: HomeWatchlistGroup[];
+  /** Live quotes keyed by bare ticker; rows without one show no price. */
+  watchlistQuotes?: Record<string, HomeWatchlistQuote>;
   onTabChange: (tab: HomeWorkspaceTab) => void;
   watchlistRows: HomeWatchlistRow[];
   watchlistLoading: boolean;
@@ -135,13 +166,68 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
   );
 };
 
+const formatQuotePrice = (price: number) => price.toFixed(price >= 1 ? 2 : 4);
+const formatChange = (pct: number) => `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
+const changeTone = (pct?: number | null) =>
+  pct == null || Math.abs(pct) < 0.005 ? 'neutral' : pct > 0 ? 'up' : 'down';
+const CHANGE_PILL: Record<string, string> = {
+  up: 'bg-success/15 text-success',
+  down: 'bg-danger/15 text-danger',
+  neutral: 'bg-base/60 text-secondary-text',
+};
+
+const QuoteCell: React.FC<{ quote: HomeWatchlistQuote }> = ({ quote }) => {
+  const { t } = useUiLanguage();
+  const [previousPrice, setPreviousPrice] = useState(quote.price);
+  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
+  if (quote.price !== previousPrice) {
+    // Adjusting state while rendering is React's pattern for reacting to a prop change.
+    setFlash(quote.price > previousPrice ? 'up' : 'down');
+    setPreviousPrice(quote.price);
+  }
+  useEffect(() => {
+    if (!flash) return undefined;
+    const timer = window.setTimeout(() => setFlash(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [flash, quote.price]);
+  const tone = changeTone(quote.changePct);
+  const extendedLabel = quote.session === 'premarket' ? t('watchlist.preMarket') : t('watchlist.afterHours');
+  return (
+    <div className="flex flex-col items-end gap-1 text-right" data-testid="watchlist-quote">
+      <span
+        className={`rounded px-1 font-mono text-sm font-semibold tabular-nums transition-colors duration-700 ${
+          flash === 'up' ? 'bg-success/20' : flash === 'down' ? 'bg-danger/20' : 'bg-transparent'
+        } ${tone === 'up' ? 'text-success' : tone === 'down' ? 'text-danger' : 'text-foreground'}`}
+      >
+        {formatQuotePrice(quote.price)}
+      </span>
+      {quote.changePct != null ? (
+        <span className={`min-w-[4.25rem] rounded-md px-1.5 py-0.5 text-center font-mono text-[11px] font-medium tabular-nums ${CHANGE_PILL[tone]}`}>
+          {formatChange(quote.changePct)}
+        </span>
+      ) : null}
+      {quote.extended ? (
+        <span className="whitespace-nowrap font-mono text-[10px] tabular-nums text-muted-text">
+          {extendedLabel} {formatQuotePrice(quote.extended.price)}
+          {quote.extended.changePct != null ? (
+            <span className={changeTone(quote.extended.changePct) === 'up' ? 'text-success' : changeTone(quote.extended.changePct) === 'down' ? 'text-danger' : ''}>
+              {' '}{formatChange(quote.extended.changePct)}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
+  );
+};
+
 const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
   onRemove: (code: string) => Promise<void>;
   onOpenDetail: (row: HomeWatchlistRow) => void;
   disabled: boolean;
   selected: boolean;
-}> = ({ row, onRemove, onOpenDetail, disabled, selected }) => {
+  quote?: HomeWatchlistQuote;
+}> = ({ row, onRemove, onOpenDetail, disabled, selected, quote }) => {
   const { t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const isLatestDetailLoading = Boolean(row.isTodayStatusLoading);
@@ -156,7 +242,7 @@ const WatchlistRowItem: React.FC<{
 
   return (
     <div
-      className={`home-subpanel group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 px-3 py-2.5 text-left transition-colors ${
+      className={`home-subpanel group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left transition-colors ${
         selected
           ? 'border-primary/35 bg-primary/10'
           : 'hover:border-subtle-hover hover:bg-base/65'
@@ -173,10 +259,10 @@ const WatchlistRowItem: React.FC<{
             : isLatestDetailUnavailable
               ? t('watchlist.latestDetailUnavailableAria', { code: row.code })
             : t('watchlist.noLatestDetailAria', { code: row.code })}
-        className="grid min-w-0 cursor-pointer gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/30"
+        className="grid min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/30"
         onClick={handleOpenDetail}
       >
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-0.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold text-foreground">
               {truncateStockName(stockName)}
@@ -200,17 +286,17 @@ const WatchlistRowItem: React.FC<{
               </>
             ) : null}
           </div>
-          <div className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
-            <span className={`truncate ${canOpenDetail ? 'text-primary' : isLatestDetailLoading ? 'text-muted-text' : 'text-warning'}`}>
-              {canOpenDetail
-                ? t('common.details')
-                : isLatestDetailLoading
+          {canOpenDetail ? null : (
+            <div className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
+              <span className={`truncate ${isLatestDetailLoading ? 'text-muted-text' : 'text-warning'}`}>
+                {isLatestDetailLoading
                   ? t('watchlist.latestDetailLoadingCta')
                   : isLatestDetailUnavailable
                     ? t('watchlist.latestDetailUnavailableCta')
                     : t('watchlist.noLatestDetailCta')}
-            </span>
-          </div>
+              </span>
+            </div>
+          )}
           {row.activeTask ? (
             <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
               <StatusDot
@@ -222,14 +308,15 @@ const WatchlistRowItem: React.FC<{
             </div>
           ) : null}
         </div>
+        {quote ? <QuoteCell quote={quote} /> : null}
       </button>
-      <div className="flex shrink-0 items-start gap-1.5">
+      <div className="flex shrink-0 items-center gap-1">
         <ScoreBadge item={item} />
         <Button
           type="button"
           variant="ghost"
           size="xsm"
-          className="h-7 w-7 px-0"
+          className="h-7 w-7 px-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
           disabled={disabled}
           aria-label={t('watchlist.removeAria', { code: row.code })}
           onClick={() => void onRemove(row.code)}
@@ -267,6 +354,8 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   activeTab,
   onTabChange,
   watchlistRows,
+  watchlistGroups = [],
+  watchlistQuotes = {},
   watchlistLoading,
   watchlistActioning,
   watchlistMessage,
@@ -292,6 +381,45 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 }) => {
   const { t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState<string>(readStoredGroup);
+  // Only groups that contain watchlist stocks are shown, like moomoo's tabs.
+  const groupTabs = useMemo(() => {
+    const rowCodes = new Set(watchlistRows.map((row) => bareCode(row.code)));
+    const grouped = new Set<string>();
+    const tabs = watchlistGroups
+      .map((group) => {
+        const codes = new Set(group.codes.map(bareCode).filter((code) => rowCodes.has(code)));
+        codes.forEach((code) => grouped.add(code));
+        return { key: group.name, label: group.name, codes };
+      })
+      .filter((tab) => tab.codes.size > 0);
+    if (!tabs.length) return [];
+    const other = new Set([...rowCodes].filter((code) => !grouped.has(code)));
+    return [
+      { key: ALL_GROUP, label: t('watchlist.groupAll'), codes: rowCodes },
+      ...tabs,
+      ...(other.size ? [{ key: OTHER_GROUP, label: t('watchlist.groupOther'), codes: other }] : []),
+    ];
+  }, [t, watchlistGroups, watchlistRows]);
+  const quoteStatus = useMemo(() => {
+    const quotes = Object.values(watchlistQuotes);
+    if (!quotes.length) return null;
+    const session = ['premarket', 'regular', 'postmarket'].includes(quotes[0].session ?? '') ? quotes[0].session! : 'closed';
+    const updatedAt = quotes.map((quote) => quote.updatedAt ?? '').sort().pop() ?? '';
+    return { session, updatedAt };
+  }, [watchlistQuotes]);
+  const activeGroup = groupTabs.find((tab) => tab.key === selectedGroup) ?? groupTabs[0];
+  const visibleWatchlistRows = activeGroup && activeGroup.key !== ALL_GROUP
+    ? watchlistRows.filter((row) => activeGroup.codes.has(bareCode(row.code)))
+    : watchlistRows;
+  const selectGroup = (key: string) => {
+    setSelectedGroup(key);
+    try {
+      window.localStorage.setItem(GROUP_STORAGE_KEY, key);
+    } catch {
+      // Remembering the tab is a convenience only.
+    }
+  };
   // PR #2312: the notice carries the *triggering row's own* identity
   // (code + assetType). Reusing the candidate row's assetType for the notice
   // code would let an index row and a same-code stock row cross-match (e.g.
@@ -544,14 +672,49 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
             />
           ) : (
             <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-[11px] text-muted-text">
-                <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
-                {t('watchlist.listHint')}
-              </div>
-              {watchlistRows.map((row) => (
+              {quoteStatus ? (
+                <div className="flex items-center gap-2 text-[11px] text-muted-text" data-testid="watchlist-quote-status">
+                  <StatusDot
+                    tone={quoteStatus.session === 'regular' ? 'success' : quoteStatus.session === 'closed' ? 'neutral' : 'info'}
+                    pulse={quoteStatus.session !== 'closed'}
+                    className="h-1.5 w-1.5"
+                  />
+                  <span className="font-medium text-secondary-text">{t('watchlist.liveQuotes')}</span>
+                  <span>·</span>
+                  <span>{t(`watchlist.session.${quoteStatus.session}` as UiTextKey)}</span>
+                  {quoteStatus.updatedAt ? <span className="ml-auto font-mono tabular-nums">{quoteStatus.updatedAt.slice(11, 19)} ET</span> : null}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-[11px] text-muted-text">
+                  <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t('watchlist.listHint')}
+                </div>
+              )}
+              {groupTabs.length ? (
+                <div className="flex gap-1.5 overflow-x-auto pb-1" role="tablist" aria-label={t('watchlist.groups')}>
+                  {groupTabs.map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={tab.key === activeGroup?.key}
+                      onClick={() => selectGroup(tab.key)}
+                      className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                        tab.key === activeGroup?.key
+                          ? 'border-primary/60 bg-primary/15 text-foreground'
+                          : 'border-subtle text-secondary-text hover:text-foreground'
+                      }`}
+                    >
+                      {tab.label} <span className="text-muted-text">{tab.codes.size}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {visibleWatchlistRows.map((row) => (
                 <WatchlistRowItem
                   key={row.code}
                   row={row}
+                  quote={watchlistQuotes[bareCode(row.code)]}
                   onRemove={async (code) => {
                     setWorkspaceNotice(null);
                     await onRemoveFromWatchlist(code);

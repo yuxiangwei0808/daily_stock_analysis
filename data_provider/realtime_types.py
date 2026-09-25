@@ -123,6 +123,7 @@ class UnifiedRealtimeQuote:
 
     # === 数据质量元数据（由 DataFetcherManager 统一补齐）===
     fetched_at: Optional[str] = None             # 本系统获取时间（ISO 8601 datetime）
+    quote_session: Optional[str] = None        # premarket/regular/postmarket/unknown
     provider_timestamp: Optional[str] = None     # Provider 真实行情时间（ISO 8601 datetime）
     is_stale: Optional[bool] = None              # provider_timestamp 超过最小 TTL 阈值时为 True
     stale_seconds: Optional[int] = None          # provider_timestamp 距 fetched_at 的秒数
@@ -149,6 +150,8 @@ class UnifiedRealtimeQuote:
     high: Optional[float] = None            # 最高价
     low: Optional[float] = None             # 最低价
     pre_close: Optional[float] = None       # 昨收价
+    regular_close: Optional[float] = None       # 盘后时段：当日常规时段收盘价
+    regular_change_pct: Optional[float] = None  # 盘后时段：当日常规时段涨跌幅(%)
     
     # === 估值指标（仅东财等全量接口有）===
     pe_ratio: Optional[float] = None        # 市盈率(动态)
@@ -170,11 +173,11 @@ class UnifiedRealtimeQuote:
         }
         # 只添加非 None 的字段
         optional_fields = [
-            'fetched_at', 'provider_timestamp', 'is_stale', 'stale_seconds',
+            'fetched_at', 'provider_timestamp', 'quote_session', 'is_stale', 'stale_seconds',
             'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',
-            'open_price', 'high', 'low', 'pre_close',
+            'open_price', 'high', 'low', 'pre_close', 'regular_close', 'regular_change_pct',
             'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
             'change_60d', 'high_52w', 'low_52w'
         ]

@@ -418,6 +418,49 @@ class WatchlistResponse(BaseModel):
     message: str = Field(..., description="操作结果描述")
 
 
+class WatchlistGroup(BaseModel):
+    """券商自选分组（当前来源：moomoo OpenD 自定义分组）"""
+
+    name: str = Field(..., description="分组名称")
+    codes: List[str] = Field(default_factory=list, description="分组内股票代码（美股不带 US. 前缀）")
+
+
+class WatchlistGroupsResponse(BaseModel):
+    """自选分组响应；不可用时 groups 为空，前端按未分组显示"""
+
+    available: bool = Field(..., description="分组是否可用")
+    source: str = Field("moomoo", description="分组来源")
+    groups: List[WatchlistGroup] = Field(default_factory=list, description="按券商 App 顺序排列的分组")
+    message: str = Field("", description="不可用原因")
+
+
+class WatchlistExtendedQuote(BaseModel):
+    """盘前/盘后价格（仅在对应时段提供）"""
+
+    price: float
+    change_pct: Optional[float] = None
+
+
+class WatchlistQuote(BaseModel):
+    """自选实时行情（美股，来源 moomoo OpenD 快照）"""
+
+    price: float = Field(..., description="最新常规时段成交价")
+    name: str = Field("", description="证券名称")
+    prev_close: Optional[float] = Field(None, description="昨收")
+    change_pct: Optional[float] = Field(None, description="相对昨收涨跌幅(%)")
+    updated_at: str = Field("", description="行情时间（美东）")
+    session: str = Field("closed", description="当前时段：premarket/regular/postmarket/closed")
+    extended: Optional[WatchlistExtendedQuote] = Field(None, description="盘前/盘后价格")
+
+
+class WatchlistQuotesResponse(BaseModel):
+    """自选实时行情；不可用时 quotes 为空"""
+
+    available: bool
+    quotes: Dict[str, WatchlistQuote] = Field(default_factory=dict, description="按代码索引的行情")
+    message: str = ""
+
+
 class RunDiagnosticComponent(BaseModel):
     """单个运行诊断组件摘要。"""
 

@@ -141,7 +141,7 @@ def _fetch_us_snapshot_with_fallback(
     """Fetch US equity snapshot via yfinance adapter."""
     from src.services.screening.snapshot_us import fetch_us_snapshot
 
-    df = fetch_us_snapshot()
+    df = _call_snapshot_wrapper(fetch_us_snapshot, source="yfinance_us")
     missing = _missing_required_columns(df, required_columns or [])
     if missing:
         logger.warning("US snapshot missing columns: %s", ",".join(missing))

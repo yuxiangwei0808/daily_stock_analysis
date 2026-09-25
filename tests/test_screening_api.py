@@ -3927,3 +3927,21 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_screening_env_loading_honors_an_explicit_env_file(tmp_path, monkeypatch):
+    from src.services.screening import config as screening_config
+    active = tmp_path / "active.env"
+    active.write_text("SCREENING_TEST_ONLY_KEY=from-active\n", encoding="utf-8")
+    other = tmp_path / "project"
+    other.mkdir()
+    (other / ".env").write_text("SCREENING_TEST_OTHER_KEY=from-project\n", encoding="utf-8")
+    monkeypatch.setenv("ENV_FILE", str(active))
+    monkeypatch.setattr(screening_config, "_PROJECT_ROOT", other)
+    monkeypatch.chdir(other)
+    monkeypatch.delenv("SCREENING_TEST_ONLY_KEY", raising=False)
+    monkeypatch.delenv("SCREENING_TEST_OTHER_KEY", raising=False)
+    screening_config._load_env_file()
+    import os
+    assert os.environ.get("SCREENING_TEST_ONLY_KEY") == "from-active"
+    assert "SCREENING_TEST_OTHER_KEY" not in os.environ

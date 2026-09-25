@@ -55,6 +55,10 @@ DEFAULT_QUIET_LOGGERS = [
     'sqlalchemy',
     'google',
     'httpx',
+    # yfinance disables threaded multi-symbol downloads whenever its logger is
+    # DEBUG-enabled; the root DEBUG file handler would otherwise make every
+    # screening/market-scan download sequential and time out.
+    'yfinance',
 ]
 
 LITELLM_LOGGERS = [

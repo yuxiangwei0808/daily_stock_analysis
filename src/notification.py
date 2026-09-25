@@ -17,6 +17,7 @@ A股自选股智能分析系统 - 通知层
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -62,7 +63,7 @@ from src.schemas.decision_action import (
 )
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
-from src.formatters import strip_hidden_markdown_metadata
+from src.formatters import strip_hidden_markdown_metadata, format_session_market_snapshot
 from src.utils.data_processing import (
     signal_attribution_has_content,
     signal_attribution_weight_items,
@@ -426,6 +427,7 @@ class NotificationService(
         lines: List[str],
         result: AnalysisResult,
         labels: Dict[str, str],
+        limit: Optional[int] = None,
     ) -> bool:
         data_sources = getattr(result, "data_sources", None)
         if not isinstance(data_sources, str):
@@ -433,6 +435,9 @@ class NotificationService(
         data_sources = data_sources.strip()
         if not data_sources:
             return False
+        if limit is not None:
+            # Push briefs keep provenance to one short line; full reports keep it all.
+            data_sources = NotificationService._clip(data_sources, limit)
         lines.append(f"*📋 {labels['data_sources_label']}：{data_sources}*")
         return True
 
@@ -1092,7 +1097,7 @@ class NotificationService(
                 if not result.success and result.error_message:
                     report_lines.extend([
                         "",
-                        f"❌ **分析异常**：{result.error_message[:100]}",
+                        f"❌ **分析异常**：{self._clip(result.error_message, 100)}",
                     ])
 
                 report_lines.extend([
@@ -1113,6 +1118,124 @@ class NotificationService(
     def _escape_md(name: str) -> str:
         """Escape markdown special characters in stock names (e.g. *ST → \\*ST)."""
         return name.replace('*', r'\*') if name else name
+
+    _PANEL_TEXT = {
+        "en": {"heading": "Model panel", "primary": "primary", "agree": "All models agree",
+               "split": "⚠️ Split decision — the models disagree", "unavailable": "unavailable",
+               "risk": "Risk", "panel": "Panel",
+               "actions": {"buy": "Buy", "hold": "Hold", "sell": "Sell", "watch": "Watch"}},
+        "zh": {"heading": "多模型意见", "primary": "主分析", "agree": "各模型结论一致",
+               "split": "⚠️ 意见分歧 — 各模型结论不一致", "unavailable": "不可用",
+               "risk": "风险", "panel": "多模型",
+               "actions": {"buy": "买入", "hold": "持有", "sell": "卖出", "watch": "观望"}},
+    }
+
+    @classmethod
+    def _model_panel_lines(cls, result: AnalysisResult, report_language: str, *, compact: bool = False) -> List[str]:
+        """Render independent model verdicts stored by user-requested analyses."""
+        dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+        panel = dashboard.get("model_panel") or {}
+        opinions = [item for item in (panel.get("opinions") or []) if isinstance(item, dict)]
+        if len(opinions) < 2:
+            return []
+        text = cls._PANEL_TEXT["zh" if report_language == "zh" else "en"]
+        verdict = text["split"] if panel.get("agreement") == "split" else text["agree"]
+
+        def name(item):
+            return str(item.get("model") or item.get("backend") or "model")
+
+        def call(item):
+            if item.get("status") != "ok":
+                return text["unavailable"]
+            score = item.get("score")
+            action = text["actions"].get(str(item.get("action")), str(item.get("action")))
+            return f"{action} · {score}" if score is not None else action
+
+        if compact:
+            parts = " · ".join(f"{name(item)} {call(item)}" for item in opinions)
+            suffix = f" — {text['split']}" if panel.get("agreement") == "split" else ""
+            return [f"↳ {text['panel']}: {parts}{suffix}"]
+        lines = [f"### 🤝 {text['heading']}", ""]
+        for item in opinions:
+            role = f" ({text['primary']})" if item.get("role") == "primary" else ""
+            line = f"- **{name(item)}**{role}: {call(item)}"
+            if item.get("status") == "ok" and item.get("reason"):
+                line += f" — {cls._clip(item['reason'], 80)}"
+            if item.get("status") == "ok" and item.get("risk"):
+                line += f" {text['risk']}: {cls._clip(item['risk'], 50)}"
+            lines.append(line)
+        lines += ["", f"**{verdict}**", ""]
+        return lines
+
+    @classmethod
+    def _brief_price(cls, result: AnalysisResult) -> str:
+        price = getattr(result, "current_price", None)
+        if not isinstance(price, (int, float)) or isinstance(price, bool) or not math.isfinite(price) or price <= 0:
+            return ""
+        change = getattr(result, "change_pct", None)
+
+        def finite(value):
+            return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+        snapshot = getattr(result, "market_snapshot", None) or {}
+        close = snapshot.get("regular_close") if isinstance(snapshot, dict) else None
+        if isinstance(snapshot, dict) and snapshot.get("quote_session") == "postmarket" and finite(close) and close > 0:
+            # After the close: the day's close and move first, then the after-hours print.
+            day = snapshot.get("regular_change_pct")
+            text = f" | {cls._display_price(close)}" + (f" ({day:+.2f}%)" if finite(day) else "")
+            label = "盘后" if getattr(result, "report_language", "zh") == "zh" else "AH"
+            text += f" · {label} {cls._display_price(price)}" + (f" ({change:+.2f}%)" if finite(change) else "")
+            return text
+        text = f" | {cls._display_price(price)}"
+        if finite(change):
+            text += f" ({change:+.2f}%)"
+        return text
+
+    @classmethod
+    def _brief_levels(cls, result: AnalysisResult, labels: Dict[str, str]) -> str:
+        """Entry/stop/target from the battle plan, only when they are plausible prices.
+
+        Levels are parsed from free text; values far from the current price are
+        usually percentages or other numbers and are omitted rather than shown.
+        """
+        from src.utils.sniper_points import extract_sniper_points
+        price = getattr(result, "current_price", None)
+        if not isinstance(price, (int, float)) or isinstance(price, bool) or not price or price <= 0:
+            return ""
+        points = extract_sniper_points(result)
+        parts = []
+        for key, label in (("ideal_buy", "ideal_buy_label"), ("stop_loss", "stop_loss_label"),
+                           ("take_profit", "take_profit_label")):
+            value = points.get(key)
+            if isinstance(value, (int, float)) and value > 0 and 0.5 * price <= value <= 1.5 * price:
+                parts.append(f"{labels[label]} {cls._display_price(value)}")
+        return "↳ " + " · ".join(parts) if parts else ""
+
+    @staticmethod
+    def _clip(value: Any, limit: int) -> str:
+        """Shorten push-report text without cutting words; mark cuts with an ellipsis.
+
+        Limits were sized for Chinese text; mostly-Latin text needs about 2.5x
+        the characters to carry the same content.
+        """
+        text = " ".join(str(value).split())
+        latin = sum(ch.isascii() for ch in text) >= 0.8 * max(1, len(text))
+        budget = int(limit * 2.5) if latin else limit
+        if len(text) <= budget:
+            return text
+        cut = text[:budget]
+        if latin and " " in cut[int(budget * 0.6):]:
+            cut = cut[:cut.rfind(" ")]
+        return cut.rstrip(" ,;:，；：") + "…"
+
+    @staticmethod
+    def _display_price(value: Any) -> Any:
+        """Round numeric prices for display; sub-dollar prices keep 4 significant digits."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return value
+        if not math.isfinite(value):
+            return "N/A"
+        return f"{value:.4g}" if value != 0 and abs(value) < 1 else f"{value:.2f}"
 
     @staticmethod
     def _clean_sniper_value(value: Any) -> str:
@@ -1405,6 +1528,7 @@ class NotificationService(
                     f"⏰ **{labels['time_sensitivity_label']}**: {time_sense}",
                     "",
                 ])
+                report_lines.extend(self._model_panel_lines(result, report_language))
                 # 持仓分类建议
                 if pos_advice:
                     report_lines.extend([
@@ -1448,13 +1572,13 @@ class NotificationService(
                         report_lines.extend([
                             f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
                             "|---------|------|",
-                            f"| {labels['current_price_label']} | {price_data.get('current_price', 'N/A')} |",
-                            f"| {labels['ma5_label']} | {price_data.get('ma5', 'N/A')} |",
-                            f"| {labels['ma10_label']} | {price_data.get('ma10', 'N/A')} |",
-                            f"| {labels['ma20_label']} | {price_data.get('ma20', 'N/A')} |",
+                            f"| {labels['current_price_label']} | {self._display_price(price_data.get('current_price', 'N/A'))} |",
+                            f"| {labels['ma5_label']} | {self._display_price(price_data.get('ma5', 'N/A'))} |",
+                            f"| {labels['ma10_label']} | {self._display_price(price_data.get('ma10', 'N/A'))} |",
+                            f"| {labels['ma20_label']} | {self._display_price(price_data.get('ma20', 'N/A'))} |",
                             f"| {labels['bias_ma5_label']} | {price_data.get('bias_ma5', 'N/A')}% {bias_status} |",
-                            f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
-                            f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
+                            f"| {labels['support_level_label']} | {self._display_price(price_data.get('support_level', 'N/A'))} |",
+                            f"| {labels['resistance_level_label']} | {self._display_price(price_data.get('resistance_level', 'N/A'))} |",
                             "",
                         ])
                     # 量能分析
@@ -1697,7 +1821,7 @@ class NotificationService(
                 # 核心决策（一句话）
                 one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
                 if one_sentence:
-                    lines.append(f"📌 **{one_sentence[:80]}**")
+                    lines.append(f"📌 **{self._clip(one_sentence, 80)}**")
                     lines.append("")
                 # 重要信息区（舆情+基本面）
                 info_lines = []
@@ -1709,10 +1833,10 @@ class NotificationService(
 
                 # 业绩预期
                 if intel.get('earnings_outlook'):
-                    outlook = str(intel['earnings_outlook'])[:60]
+                    outlook = self._clip(intel['earnings_outlook'], 60)
                     info_lines.append(f"📊 {labels['earnings_outlook_label']}: {outlook}")
                 if intel.get('sentiment_summary'):
-                    sentiment = str(intel['sentiment_summary'])[:50]
+                    sentiment = self._clip(intel['sentiment_summary'], 50)
                     info_lines.append(f"💭 {labels['sentiment_summary_label']}: {sentiment}")
                 if info_lines:
                     lines.extend(info_lines)
@@ -1761,9 +1885,9 @@ class NotificationService(
                     no_pos = str(pos_advice.get('no_position', ''))
                     has_pos = str(pos_advice.get('has_position', ''))
                     if no_pos:
-                        lines.append(f"🆕 {labels['no_position_label']}: {no_pos[:50]}")
+                        lines.append(f"🆕 {labels['no_position_label']}: {self._clip(no_pos, 50)}")
                     if has_pos:
-                        lines.append(f"💼 {labels['has_position_label']}: {has_pos[:50]}")
+                        lines.append(f"💼 {labels['has_position_label']}: {self._clip(has_pos, 50)}")
                     lines.append("")
 
                 # 多策略综合
@@ -1800,7 +1924,7 @@ class NotificationService(
                     if failed_checks:
                         lines.append(f"**{labels['failed_checks_heading']}**:")
                         for check in failed_checks[:3]:
-                            lines.append(f"   {check[:40]}")
+                            lines.append(f"   {self._clip(check, 40)}")
                         lines.append("")
 
                 lines.append("---")
@@ -1938,16 +2062,20 @@ class NotificationService(
             name = self._get_display_name(r, report_language)
             dash = r.dashboard or {}
             core = dash.get('core_conclusion', {}) or {}
-            one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
+            one = self._clip(core.get('one_sentence') or r.analysis_summary or '', 60)
             lines.append(
                 f"**{name}({r.code})** {emoji} "
                 f"{signal_text} | "
-                f"{labels['score_label']} {r.sentiment_score} | {one}"
+                f"{labels['score_label']} {r.sentiment_score}{self._brief_price(r)} | {one}"
             )
+            levels = self._brief_levels(r, labels)
+            if levels:
+                lines.append(levels)
+            lines.extend(self._model_panel_lines(r, report_language, compact=True))
             news_disclosure = self._empty_news_disclosure(r, report_language)
             if news_disclosure:
                 lines.append(news_disclosure)
-            if self._append_data_sources_line(lines, r, labels):
+            if self._append_data_sources_line(lines, r, labels, limit=40):
                 lines.append("")
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
@@ -2002,6 +2130,7 @@ class NotificationService(
                 f"**{signal_text}**: {one_sentence}",
                 "",
             ])
+        lines.extend(self._model_panel_lines(result, report_language))
 
         # 重要信息（舆情+基本面）
         info_added = False
@@ -2017,14 +2146,14 @@ class NotificationService(
                     lines.append(f"### 📰 {labels['info_heading']}")
                     lines.append("")
                     info_added = True
-                lines.append(f"📊 **{labels['earnings_outlook_label']}**: {str(intel['earnings_outlook'])[:100]}")
+                lines.append(f"📊 **{labels['earnings_outlook_label']}**: {self._clip(intel['earnings_outlook'], 100)}")
 
             if intel.get('sentiment_summary'):
                 if not info_added:
                     lines.append(f"### 📰 {labels['info_heading']}")
                     lines.append("")
                     info_added = True
-                lines.append(f"💭 **{labels['sentiment_summary_label']}**: {str(intel['sentiment_summary'])[:80]}")
+                lines.append(f"💭 **{labels['sentiment_summary_label']}**: {self._clip(intel['sentiment_summary'], 80)}")
 
             # 风险警报
             risks = intel.get('risk_alerts', [])
@@ -2036,7 +2165,7 @@ class NotificationService(
                 lines.append("")
                 lines.append(f"🚨 **{labels['risk_alerts_label']}**:")
                 for risk in risks[:3]:
-                    lines.append(f"- {str(risk)[:60]}")
+                    lines.append(f"- {self._clip(risk, 60)}")
 
             # 利好催化
             catalysts = intel.get('positive_catalysts', [])
@@ -2044,7 +2173,7 @@ class NotificationService(
                 lines.append("")
                 lines.append(f"✨ **{labels['positive_catalysts_label']}**:")
                 for cat in catalysts[:3]:
-                    lines.append(f"- {str(cat)[:60]}")
+                    lines.append(f"- {self._clip(cat, 60)}")
 
         if info_added:
             lines.append("")
@@ -2146,6 +2275,10 @@ class NotificationService(
 
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
+        session_snapshot = format_session_market_snapshot(snapshot, report_language)
+        if session_snapshot:
+            lines.extend([session_snapshot, ""])
+            return
 
         lines.extend([
             f"### 📈 {labels['market_snapshot_heading']}",

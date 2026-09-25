@@ -3108,3 +3108,63 @@ print(json.dumps({{"sentiment_score": 60}}))
     assert len(intervals) == 2
     intervals.sort(key=lambda item: item["start"])
     assert intervals[1]["start"] >= intervals[0]["end"]
+
+
+def test_claude_code_cli_model_is_passed_and_validated(tmp_path: Path) -> None:
+    argv_path = tmp_path / "argv.json"
+    script = _script(
+        tmp_path,
+        f"""
+import json, pathlib, sys
+pathlib.Path({str(argv_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+print(json.dumps({{"type": "result", "subtype": "success", "result": "{{\\"sentiment_score\\": 60}}"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli", executable=sys.executable, argv=(script, *CLAUDE_CODE_CLI_PRESET.argv),
+        display_name="Mock Claude Code CLI", extractor=CLAUDE_CODE_CLI_PRESET.extractor,
+        contract_args=CLAUDE_CODE_CLI_PRESET.contract_args,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli", claude_code_cli_model="claude-opus-5-5"), preset=preset)
+    backend.generate("prompt", {}, response_validator=lambda text: json.loads(text))
+    runtime_argv = json.loads(argv_path.read_text(encoding="utf-8"))
+    assert runtime_argv[-2:] == ["--model", "claude-opus-5-5"]
+
+    unsafe = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli", claude_code_cli_model="opus; rm -rf ~"), preset=preset)
+    with pytest.raises(GenerationError) as exc_info:
+        unsafe.generate("prompt", {})
+    assert exc_info.value.error_code == GenerationErrorCode.UNSAFE_CONFIG
+
+
+def test_claude_code_cli_uses_targeted_model_and_effort_for_user_requested_analyses(tmp_path: Path) -> None:
+    from src.llm.second_opinion import targeted_analysis
+    argv_path = tmp_path / "argv.json"
+    script = _script(
+        tmp_path,
+        f"""
+import json, pathlib, sys
+pathlib.Path({str(argv_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+print(json.dumps({{"type": "result", "subtype": "success", "result": "{{\\"sentiment_score\\": 60}}"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli", executable=sys.executable, argv=(script, *CLAUDE_CODE_CLI_PRESET.argv),
+        display_name="Mock Claude Code CLI", extractor=CLAUDE_CODE_CLI_PRESET.extractor,
+        contract_args=CLAUDE_CODE_CLI_PRESET.contract_args,
+    )
+    backend = LocalCliGenerationBackend(_config(
+        generation_backend="claude_code_cli", claude_code_cli_model="claude-sonnet-5",
+        targeted_claude_code_cli_model="claude-opus-5-5", targeted_claude_code_cli_effort="high"), preset=preset)
+    backend.generate("prompt", {}, response_validator=lambda text: json.loads(text))
+    assert json.loads(argv_path.read_text(encoding="utf-8"))[-2:] == ["--model", "claude-sonnet-5"]
+    with targeted_analysis():
+        backend.generate("prompt", {}, response_validator=lambda text: json.loads(text))
+    assert json.loads(argv_path.read_text(encoding="utf-8"))[-4:] == ["--model", "claude-opus-5-5", "--effort", "high"]
+
+    invalid = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli", claude_code_cli_effort="turbo"), preset=preset)
+    with pytest.raises(GenerationError) as exc_info:
+        invalid.generate("prompt", {})
+    assert exc_info.value.error_code == GenerationErrorCode.UNSAFE_CONFIG

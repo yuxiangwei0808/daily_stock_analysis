@@ -12,8 +12,13 @@ rather than silently screening the US pool.
 """
 
 import logging
+import math
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from io import StringIO
+from urllib.request import Request, urlopen
+
+from data_provider.us_session import NEW_YORK, MAX_QUOTE_AGE_SECONDS, session_window, us_daily_history_end
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -37,11 +42,11 @@ def fetch_us_universe(source: str = "auto") -> list[str]:
         sp500   — scrape S&P 500 from Wikipedia
         env     — read SCREENING_US_TICKERS (comma-separated)
         default — hardcoded top-50 US large-caps
-        auto    — try sp500 → env → default
+        auto    — try explicit env → sp500 → default
     """
     src = source.lower()
     if src == "auto":
-        for s in ("sp500", "env", "default"):
+        for s in ("env", "sp500", "default"):
             try:
                 tickers = fetch_us_universe(s)
                 if tickers:
@@ -57,7 +62,7 @@ def fetch_us_universe(source: str = "auto") -> list[str]:
         raw = os.getenv("SCREENING_US_TICKERS", "").strip()
         if not raw:
             raise ValueError("SCREENING_US_TICKERS not set")
-        return [t.strip() for t in raw.split(",") if t.strip()]
+        return list(dict.fromkeys(t.strip().upper().replace(".", "-") for t in raw.split(",") if t.strip()))
     elif src == "default":
         return list(_DEFAULT_US_UNIVERSE)
     else:
@@ -65,149 +70,135 @@ def fetch_us_universe(source: str = "auto") -> list[str]:
 
 
 def _fetch_sp500_tickers() -> list[str]:
-    tables = pd.read_html(_SP500_WIKI_URL)
+    request = Request(_SP500_WIKI_URL, headers={"User-Agent": "daily-stock-analysis/1.0"})
+    with urlopen(request, timeout=10) as response:
+        tables = pd.read_html(StringIO(response.read().decode("utf-8")))
     for tbl in tables:
         if "Symbol" in tbl.columns:
             return sorted(tbl["Symbol"].dropna().str.strip().str.replace(".", "-", regex=False).tolist())
     raise RuntimeError("Could not find Symbol column in S&P 500 Wikipedia table")
 
 
-def fetch_us_snapshot(
-    tickers: list[str] | None = None,
-    *,
-    universe_source: str = "auto",
-    max_workers: int = 8,
-) -> pd.DataFrame:
-    """Fetch a US equity snapshot in the screening schema.
+def _ticker_frame(data, ticker):
+    if data is None or data.empty:
+        return pd.DataFrame()
+    if isinstance(data.columns, pd.MultiIndex):
+        if ticker not in data.columns.get_level_values("Ticker"):
+            return pd.DataFrame()
+        data = data.xs(ticker, axis=1, level="Ticker")
+    return data.dropna(subset=["Close"]).copy()
 
-    Uses yfinance to fetch current data for each ticker. Returns a
-    DataFrame matching the standard snapshot columns: code, name, price,
-    change_pct, amount, total_mv, pe_ratio, pb_ratio, volume_ratio,
-    turnover_rate, industry.
+
+def _session_row(ticker, intraday, daily, now, session, start, end):
+    """Build one row only from a fresh bar in the requested session."""
+    if intraday.empty or intraday.index.tz is None:
+        return None
+    intraday.index = intraday.index.tz_convert(NEW_YORK)
+    bars = intraday[(intraday.index >= start) & (intraday.index < end) & (intraday.index <= now)]
+    if bars.empty:
+        return None
+    stamp = bars.index[-1]
+    age = (now - stamp).total_seconds()
+    if age < 0 or age > MAX_QUOTE_AGE_SECONDS:
+        return None
+    price = float(bars.iloc[-1]["Close"])
+    if not math.isfinite(price) or price <= 0:
+        return None
+    # Pre/open moves use the prior regular close; after-hours moves use today's close.
+    reference = None
+    if session == "postmarket":
+        from src.core.trading_calendar import get_market_session_bounds
+        opening, closing = get_market_session_bounds("us", now)
+        regular = intraday[(intraday.index >= opening) & (intraday.index < closing)]
+        if not regular.empty and (closing - regular.index[-1]).total_seconds() <= 10 * 60:
+            reference = float(regular.iloc[-1]["Close"])
+    else:
+        from datetime import datetime as _datetime, time as _time
+        from src.core.trading_calendar import get_effective_trading_date, get_market_session_bounds
+        reference_date = get_effective_trading_date("us", current_time=now)
+        previous = daily[[d.date() == reference_date for d in daily.index]] if not daily.empty else daily
+        if not previous.empty:
+            reference = float(previous.iloc[-1]["Close"])
+        else:
+            # Yahoo's daily series occasionally omits a session its 5-minute bars
+            # contain. Use that session's last regular bar, under the same
+            # 10-minute-to-close rule as the after-hours reference above.
+            opening, closing = get_market_session_bounds(
+                "us", _datetime.combine(reference_date, _time(12), NEW_YORK))
+            if opening is not None and closing is not None:
+                regular = intraday[(intraday.index >= opening) & (intraday.index < closing)]
+                if not regular.empty and (closing - regular.index[-1]).total_seconds() <= 10 * 60:
+                    reference = float(regular.iloc[-1]["Close"])
+    if reference is None or not math.isfinite(reference) or reference <= 0:
+        return None
+    volume = bars["Volume"].fillna(0).clip(lower=0)
+    return {
+        "code": ticker.replace("-", "."), "name": ticker.replace("-", "."), "price": price,
+        "change_pct": round((price / reference - 1) * 100, 4),
+        "amount": float((volume * bars["Close"]).sum()),  # estimated session dollar volume
+        "volume": int(volume.sum()), "total_mv": None, "circ_mv": None,
+        "pe_ratio": None, "pb_ratio": None, "volume_ratio": None,
+        "turnover_rate": None, "industry": "", "quote_session": session,
+        "provider_timestamp": stamp.isoformat(), "is_stale": False,
+        "reference_price": reference,
+    }
+
+
+def fetch_us_snapshot(tickers=None, *, universe_source=None, max_workers=8, now=None):
+    """Fresh five-minute session bars, never an old daily close presented as live.
+
+    Amount is estimated USD traded within this session. Relative volume is left
+    unavailable: partial-session volume is not comparable to full-day averages.
     """
     import yfinance as yf
 
-    if tickers is None:
-        tickers = fetch_us_universe(universe_source)
-
-    logger.info("Fetching US snapshot for %d tickers", len(tickers))
-
-    hist_end = pd.Timestamp.now().normalize()
-    hist_start = hist_end - pd.Timedelta(days=30)
-    data = yf.download(
-        tickers,
-        start=hist_start.strftime("%Y-%m-%d"),
-        end=hist_end.strftime("%Y-%m-%d"),
-        group_by="ticker",
-        auto_adjust=True,
-        progress=False,
-        threads=True,
-    )
-
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("US snapshot time must include a timezone")
+    now = now.astimezone(NEW_YORK)
+    session, start, end = session_window(now)
+    source = universe_source or os.getenv("SCREENING_US_UNIVERSE", "auto")
+    symbols = list(dict.fromkeys(str(t).strip().upper().replace(".", "-") for t in
+                               (tickers if tickers is not None else fetch_us_universe(source)) if str(t).strip()))
+    columns = ["code", "name", "price", "change_pct", "amount", "volume", "total_mv", "circ_mv",
+               "pe_ratio", "pb_ratio", "volume_ratio", "turnover_rate", "industry", "quote_session",
+               "provider_timestamp", "is_stale", "reference_price"]
+    attrs = {"snapshot_source": "yfinance_5m", "session": session, "as_of": now.isoformat(),
+             "universe_source": source, "requested_count": len(symbols), "source_errors": [],
+             "coverage_note": "Configured US universe only; not whole-exchange breadth. "
+                              "Five-minute bars may be delayed. Amount is estimated session USD volume."}
+    if session == "closed" or not symbols:
+        frame = pd.DataFrame(columns=columns)
+        frame.attrs.update(attrs, available_count=0, excluded_count=len(symbols))
+        frame.attrs["source_errors"] = ["No active supported US session or empty universe"]
+        return frame
+    kwargs = dict(group_by="ticker", auto_adjust=False, progress=False,
+                  threads=max(1, min(max_workers, 8)), timeout=10)
+    intraday = yf.download(symbols, period="5d", interval="5m", prepost=True, **kwargs)
+    daily = yf.download(symbols, period="1mo", interval="1d", **kwargs)
     rows = []
-
-    def _process_ticker(ticker: str) -> dict | None:
+    for ticker in symbols:
         try:
-            if len(tickers) == 1:
-                hist = data.copy()
-                if isinstance(hist.columns, pd.MultiIndex):
-                    hist.columns = hist.columns.droplevel("Ticker")
-            else:
-                if ticker not in data.columns.get_level_values(0):
-                    return None
-                hist = data[ticker].copy()
-            if hist.empty:
-                return None
-
-            hist = hist[hist["Close"].notna()]
-            if len(hist) < 2:
-                return None
-
-            latest = hist.iloc[-1]
-            prev = hist.iloc[-2]
-            price = float(latest["Close"])
-            prev_close = float(prev["Close"])
-            volume = float(latest["Volume"])
-            change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
-
-            vol_20d = float(hist["Volume"].tail(20).mean())
-            volume_ratio = (volume / vol_20d) if vol_20d > 0 else 1.0
-
-            info = yf.Ticker(ticker).fast_info
-            market_cap = getattr(info, "market_cap", None) or 0
-            shares = getattr(info, "shares", None) or 0
-            turnover_rate = (volume / shares * 100) if shares > 0 else 0.0
-
-            return {
-                "code": ticker,
-                "name": ticker,
-                "price": price,
-                "change_pct": round(change_pct, 2),
-                "amount": round(volume * price, 0),
-                "total_mv": market_cap,
-                "circ_mv": market_cap,
-                "pe_ratio": None,
-                "pb_ratio": None,
-                "volume_ratio": round(volume_ratio, 2),
-                "turnover_rate": round(turnover_rate, 4),
-                "industry": "",
-            }
-        except Exception as e:
-            logger.debug("Failed to process %s: %s", ticker, e)
-            return None
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_process_ticker, t): t for t in tickers}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                rows.append(result)
-
-    if not rows:
-        raise RuntimeError("yfinance returned no valid data for any ticker")
-
-    df = pd.DataFrame(rows)
-
-    numeric_cols = [
-        "price", "change_pct", "amount", "total_mv", "circ_mv",
-        "pe_ratio", "pb_ratio", "volume_ratio", "turnover_rate",
+            row = _session_row(ticker, _ticker_frame(intraday, ticker), _ticker_frame(daily, ticker),
+                               now, session, start, end)
+            if row:
+                rows.append(row)
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("US session data unavailable for %s: %s", ticker, exc)
+    frame = pd.DataFrame(rows, columns=columns)
+    frame.attrs.update(attrs, available_count=len(rows), excluded_count=len(symbols) - len(rows))
+    frame.attrs["source_errors"] = [
+        f"US {session}: {len(rows)}/{len(symbols)} fresh symbols; "
+        f"{len(symbols) - len(rows)} missing/stale/baseline-unavailable. {attrs['coverage_note']}"
     ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=["price"])
-    df = df[df["price"] > 0]
-
-    _enrich_info_fields(df)
-
-    df.attrs["snapshot_source"] = "yfinance"
-    logger.info("US snapshot: %d rows from yfinance", len(df))
-    return df
-
-
-def _enrich_info_fields(df: pd.DataFrame) -> None:
-    """Best-effort enrichment of pe_ratio, pb_ratio, industry from yfinance info."""
-    import yfinance as yf
-
-    needs_pe = df["pe_ratio"].isna().sum() > len(df) * 0.5
-    if not needs_pe:
-        return
-
-    for idx in df.index:
-        ticker = df.at[idx, "code"]
-        try:
-            info = yf.Ticker(ticker).info
-            if pd.isna(df.at[idx, "pe_ratio"]) or df.at[idx, "pe_ratio"] == 0:
-                df.at[idx, "pe_ratio"] = info.get("trailingPE")
-            if pd.isna(df.at[idx, "pb_ratio"]) or df.at[idx, "pb_ratio"] == 0:
-                df.at[idx, "pb_ratio"] = info.get("priceToBook")
-            if not df.at[idx, "industry"]:
-                df.at[idx, "industry"] = info.get("industry", "")
-            if not df.at[idx, "name"] or df.at[idx, "name"] == ticker:
-                df.at[idx, "name"] = info.get("shortName", ticker)
-        except Exception:
-            pass
+    if session in {"premarket", "postmarket"}:
+        missing_volume = int(frame["amount"].fillna(0).le(0).sum())
+        if missing_volume:
+            frame.attrs["source_errors"].append(
+                f"US {session}: volume unavailable/unverified for {missing_volume}/{len(frame)} fresh symbols. "
+                "Liquidity-qualified screening excludes these prices; zero reported volume does not verify liquidity."
+            )
+    return frame
 
 
 def fetch_daily_history_yfinance(
@@ -222,10 +213,10 @@ def fetch_daily_history_yfinance(
     """
     import yfinance as yf
 
-    end = pd.Timestamp.now().normalize()
+    end = pd.Timestamp(us_daily_history_end())
     start = end - pd.Timedelta(days=max(lookback_days * 2, 180))
     hist = yf.download(
-        ticker,
+        ticker.replace(".", "-"),
         start=start.strftime("%Y-%m-%d"),
         end=end.strftime("%Y-%m-%d"),
         auto_adjust=True,

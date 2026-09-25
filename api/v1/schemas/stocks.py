@@ -34,7 +34,13 @@ class StockQuote(BaseModel):
     prev_close: Optional[float] = Field(None, description="昨收价")
     volume: Optional[float] = Field(None, description="成交量（股）")
     amount: Optional[float] = Field(None, description="成交额（元）")
-    update_time: Optional[str] = Field(None, description="更新时间")
+    update_time: Optional[str] = Field(None, description="Provider quote time, unknown when unavailable")
+    provider_timestamp: Optional[str] = None
+    fetched_at: Optional[str] = None
+    quote_session: Optional[str] = None
+    is_stale: Optional[bool] = None
+    data_quality: Optional[str] = None
+    currency: Optional[str] = None
     
     model_config = ConfigDict(json_schema_extra={
         "example": {

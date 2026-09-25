@@ -26,6 +26,10 @@ from src.logging_config import setup_logging
 # 初始化环境变量与日志
 setup_env()
 
+from src.utils.yfinance_cache import use_memory_tz_cache  # noqa: E402
+
+use_memory_tz_cache()
+
 config = get_config()
 level_name = (config.log_level or "INFO").upper()
 level = getattr(logging, level_name, logging.INFO)

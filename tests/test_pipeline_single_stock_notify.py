@@ -173,6 +173,26 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
             cooldown_key="report:single:600519:brief",
         )
 
+    def test_configured_brief_pushes_brief_even_for_detailed_web_requests(self):
+        # The Web UI requests the detailed format; REPORT_TYPE=brief keeps the push compact.
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))
+        pipeline.analyze_stock = MagicMock(return_value=_make_result("AAPL"))
+        pipeline.notifier = _TrackingNotifier()
+        pipeline.config = SimpleNamespace(report_type="brief")
+
+        with patch("src.core.pipeline.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._FROZEN_REPORT_TIME
+            result = pipeline.process_single_stock(
+                code="AAPL", skip_analysis=False, single_stock_notify=True,
+                report_type=ReportType.FULL, analysis_query_id="query-2",
+            )
+
+        pipeline.analyze_stock.assert_called_once()
+        self.assertEqual(pipeline.analyze_stock.call_args.args[1], ReportType.FULL)  # analysis unchanged
+        pipeline.notifier.generate_brief_report.assert_called_once_with([result])
+        pipeline.notifier.generate_dashboard_report.assert_not_called()
+
     def test_process_single_stock_saves_report_even_when_notifier_is_unavailable(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))

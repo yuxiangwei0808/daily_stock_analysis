@@ -314,6 +314,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(log_level="INFO")
 
         class BusySocket:
+            def setsockopt(self, *args):
+                pass
+
             def bind(self, address):
                 raise OSError("address already in use")
 
@@ -350,6 +353,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
             Server = _FakeUvicornServer
 
         class _UnusedSocket:
+            def setsockopt(self, *args):
+                pass
+
             def bind(self, address):
                 pass
 
@@ -391,6 +397,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     raise TypeError("install_signal_handlers is unsupported")
 
         class _UnusedSocket:
+            def setsockopt(self, *args):
+                pass
+
             def bind(self, address):
                 pass
 
@@ -2793,3 +2802,16 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_stop_api_server_asks_uvicorn_to_exit_and_waits(monkeypatch):
+    import main
+    from types import SimpleNamespace
+    joined = []
+    server = SimpleNamespace(should_exit=False)
+    thread = SimpleNamespace(join=lambda timeout: joined.append(timeout))
+    monkeypatch.setattr(main, "_API_SERVER", (server, thread))
+    main.stop_api_server(timeout=7)
+    assert server.should_exit is True and joined == [7]
+    monkeypatch.setattr(main, "_API_SERVER", None)
+    main.stop_api_server()  # no server started: nothing to do

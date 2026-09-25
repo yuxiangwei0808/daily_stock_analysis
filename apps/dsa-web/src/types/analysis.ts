@@ -253,6 +253,7 @@ export interface MarketReviewPayloadSection {
 export interface MarketReviewIndex {
   code: string;
   name: string;
+  dailyBarDate?: string;
   current?: number;
   change?: number;
   changePct?: number;

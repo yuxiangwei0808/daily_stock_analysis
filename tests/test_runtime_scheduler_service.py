@@ -1105,3 +1105,27 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_spawned_analysis_process_gets_its_own_log_file(tmp_path, monkeypatch):
+    import logging
+    from types import SimpleNamespace
+    import src.config
+    from src.services import runtime_scheduler
+
+    root = logging.getLogger()
+    saved = (list(root.handlers), root.level)
+    monkeypatch.setattr(src.config, "get_config", lambda: SimpleNamespace(log_dir=str(tmp_path), debug=False))
+    try:
+        runtime_scheduler._setup_child_logging()
+        logging.getLogger("src.core.pipeline").info("scheduled run progress")
+        for handler in root.handlers:
+            handler.flush()
+        written = "".join(path.read_text(encoding="utf-8") for path in tmp_path.glob("stock_analysis_scheduled_*.log"))
+        assert "scheduled run progress" in written
+    finally:
+        for handler in root.handlers:
+            if handler not in saved[0]:
+                handler.close()
+        root.handlers[:] = saved[0]
+        root.setLevel(saved[1])

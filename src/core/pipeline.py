@@ -312,6 +312,7 @@ class StockAnalysisPipeline:
                 searxng_timeout_seconds=getattr(self.config, "searxng_timeout_seconds", None),
                 news_max_age_days=self.config.news_max_age_days,
                 news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
+                free_news_sources=getattr(self.config, "free_news_sources", None),
             )
         except Exception as exc:
             logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
@@ -892,8 +893,7 @@ class StockAnalysisPipeline:
                 self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
                 result.query_id = query_id
                 realtime_data = enhanced_context.get('realtime', {})
-                result.current_price = realtime_data.get('price')
-                result.change_pct = realtime_data.get('change_pct')
+                AnalysisResult.set_realtime_quote(result, realtime_data)
 
             # Step 7.6: chip_structure fallback (Issue #589) and unavailable collapse
             if result:
@@ -1051,6 +1051,10 @@ class StockAnalysisPipeline:
                 'name': getattr(realtime_quote, 'name', ''),
                 'price': getattr(realtime_quote, 'price', None),
                 'change_pct': getattr(realtime_quote, 'change_pct', None),
+                'pre_close': getattr(realtime_quote, 'pre_close', None),
+                'quote_session': getattr(realtime_quote, 'quote_session', None),
+                'data_quality': getattr(realtime_quote, 'data_quality', None),
+                'missing_fields': getattr(realtime_quote, 'missing_fields', None),
                 'volume_ratio': volume_ratio,
                 'volume_ratio_desc': self._describe_volume_ratio(volume_ratio) if volume_ratio else '无数据',
                 'turnover_rate': getattr(realtime_quote, 'turnover_rate', None),
@@ -1096,18 +1100,43 @@ class StockAnalysisPipeline:
                 'risk_factors': trend_result.risk_factors,
             }
 
-        # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
-        # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。
-        if realtime_quote and trend_result and trend_result.ma5 > 0:
+        # Apply the same freshness/session contract as technical daily-bar augmentation.
+        # Extended-hours prices remain in the separately labelled realtime block.
+        # Non-US markets keep their previous overlay behavior; only US quotes are
+        # gated on the session/freshness contract.
+        can_overlay = bool(realtime_quote)
+        market = get_market_for_stock(normalize_stock_code(enhanced.get("code", "")))
+        market_now = get_market_now(market)
+        if can_overlay and market == "us":
+            from data_provider.us_session import is_fresh_regular_quote
+            can_overlay = is_fresh_regular_quote(realtime_quote, market_now)
+        if can_overlay and trend_result and trend_result.ma5 > 0:
             price = getattr(realtime_quote, 'price', None)
             if price is not None and price > 0:
-                yesterday_close = None
-                if enhanced.get('yesterday') and isinstance(enhanced['yesterday'], dict):
-                    yesterday_close = enhanced['yesterday'].get('close')
                 orig_today = enhanced.get('today') or {}
-                market_today = get_market_now(
-                    get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
-                ).date().isoformat()
+                market_today = market_now.date().isoformat()
+                if market == "us":
+                    # Daily history excludes the unfinished session. Advance both
+                    # sides of the comparison before replacing its latest bar.
+                    previous_date = get_effective_trading_date("us", current_time=market_now)
+                    previous = enhanced.get("yesterday") or {}
+                    daily_date = self._coerce_daily_market_context_date(
+                        orig_today.get("date") or enhanced.get("date")
+                    )
+                    if daily_date == previous_date:
+                        previous = {**orig_today, "date": previous_date.isoformat()}
+                    elif self._coerce_daily_market_context_date(previous.get("date")) != previous_date:
+                        previous = {}
+                    enhanced["yesterday"] = previous
+                    # Do not retain comparison values from an older daily pair.
+                    enhanced["price_change_ratio"] = None
+                    enhanced["volume_change_ratio"] = None
+                yesterday_close = (enhanced.get("yesterday") or {}).get("close")
+                if market == "us":
+                    from data_provider.us_session import number
+                    reference = number(getattr(realtime_quote, "pre_close", None))
+                    if reference is not None and reference > 0:
+                        yesterday_close = reference
                 source = getattr(realtime_quote, 'source', None)
                 source_name = getattr(source, 'value', source)
                 source_name = str(source_name) if source_name is not None else 'unknown'
@@ -1135,6 +1164,8 @@ class StockAnalysisPipeline:
                     'realtime_source': source_name,
                     'is_estimated': True,
                 }
+                if market == "us":
+                    realtime_today["prev_close"] = yesterday_close
                 estimated_fields = [
                     'close', 'open', 'high', 'low', 'ma5', 'ma10', 'ma20',
                 ]
@@ -1148,7 +1179,11 @@ class StockAnalysisPipeline:
                     realtime_today['pct_chg'] = pct
                     estimated_fields.append('pct_chg')
                 realtime_today['estimated_fields'] = estimated_fields
-                if isinstance(market_phase_context, dict) and "is_partial_bar" in market_phase_context:
+                if market == "us":
+                    # A verified regular-session quote always describes an unfinished
+                    # bar, even if this batch began before the opening bell.
+                    realtime_today["is_partial_bar"] = True
+                elif isinstance(market_phase_context, dict) and "is_partial_bar" in market_phase_context:
                     realtime_today['is_partial_bar'] = market_phase_context.get("is_partial_bar")
                 if fetched_at is not None:
                     realtime_today['fetched_at'] = fetched_at
@@ -1166,6 +1201,9 @@ class StockAnalysisPipeline:
                     'fetched_at', 'fetchedAt', 'provider_timestamp',
                     'providerTimestamp', 'fallback_from', 'fallbackFrom',
                 }
+                if market == "us":
+                    # These describe the old daily bar, not this partial session.
+                    realtime_owned_fields.update({"prev_close", "volume_ratio", "turnover_rate", "amplitude"})
                 for k, v in orig_today.items():
                     if k not in realtime_today and k not in realtime_owned_fields and v is not None:
                         realtime_today[k] = v
@@ -1711,8 +1749,7 @@ class StockAnalysisPipeline:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 realtime_data = initial_context.get("realtime_quote", {})
                 if isinstance(realtime_data, dict):
-                    result.current_price = realtime_data.get("price")
-                    result.change_pct = realtime_data.get("change_pct")
+                    AnalysisResult.set_realtime_quote(result, realtime_data)
                 action_before_guardrail = getattr(result, "action", None)
                 advice_before_guardrail = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
@@ -2757,7 +2794,12 @@ class StockAnalysisPipeline:
             return df
         if market is None:
             market = get_market_for_stock(code)
-        market_today = get_market_now(market).date()
+        market_now = get_market_now(market)
+        market_today = market_now.date()
+        if market == "us":
+            from data_provider.us_session import is_fresh_regular_quote
+            if not is_fresh_regular_quote(realtime_quote, market_now):
+                return df
         if market and not is_market_open(market, market_today):
             return df
 
@@ -3375,9 +3417,15 @@ class StockAnalysisPipeline:
                 
                 # 单股推送模式（#55）：每分析完一只股票立即推送
                 if single_stock_notify:
+                    # REPORT_TYPE=brief keeps every push compact, including analyses
+                    # started from the Web UI (which request the detailed format for
+                    # display); the stored analysis is unaffected.
+                    notify_type = (ReportType.BRIEF
+                                   if str(getattr(getattr(self, 'config', None), 'report_type', '')).lower() == 'brief'
+                                   else report_type)
                     self._send_single_stock_notification(
                         result,
-                        report_type=report_type,
+                        report_type=notify_type,
                         fallback_code=code,
                     )
             elif result:

@@ -704,6 +704,17 @@ class AlertWorkerTestCase(unittest.TestCase):
         self.assertIn("No realtime quote", triggers[0]["diagnostics"])
         notifier.send_with_results.assert_not_called()
 
+    def test_stale_quote_never_triggers_notification(self) -> None:
+        self._create_rule(target="AAPL")
+        notifier = self._notifier()
+        worker = AlertWorker(config_provider=lambda: self._config(), service=self.service, notifier=notifier)
+        quote = SimpleNamespace(price=10000, is_stale=True, provider_timestamp="2026-09-18T20:00:00Z")
+        with patch("src.agent.events.EventMonitor._get_realtime_quote", new=AsyncMock(return_value=quote)):
+            stats = worker.run_once()
+        self.assertEqual(stats["skipped"], 1)
+        self.assertEqual(stats["triggered"], 0)
+        notifier.send_with_results.assert_not_called()
+
     def test_price_cross_numeric_yyyymmdd_quote_date_writes_correct_timestamp(self) -> None:
         rule = self._create_rule(target="600519")
         notifier = self._notifier()

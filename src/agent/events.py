@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
+from data_provider.us_session import is_stale_us_quote
+
 logger = logging.getLogger(__name__)
 
 
@@ -272,7 +274,7 @@ class EventMonitor:
         """Check price alert against realtime quote."""
         try:
             quote = await self._get_realtime_quote(rule.stock_code)
-            if quote is None:
+            if quote is None or is_stale_us_quote(quote, rule.stock_code):
                 return None
 
             current_price = float(getattr(quote, "price", 0) or 0)
@@ -300,7 +302,7 @@ class EventMonitor:
         """Check price-change percentage alert against realtime quote."""
         try:
             quote = await self._get_realtime_quote(rule.stock_code)
-            if quote is None:
+            if quote is None or is_stale_us_quote(quote, rule.stock_code):
                 return None
 
             current_change_pct = _read_quote_float(

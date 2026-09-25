@@ -986,7 +986,7 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
 
     const marketSelect = screen.getByLabelText('市场') as HTMLSelectElement;
-    expect(Array.from(marketSelect.options).map((option) => option.value)).toEqual(['cn']);
+    expect(Array.from(marketSelect.options).map((option) => option.value)).toEqual(['cn', 'us']);
 
     const strategySelect = screen.getByLabelText('策略') as HTMLSelectElement;
     expect(Array.from(strategySelect.options).map((option) => option.textContent)).toEqual([
@@ -1010,6 +1010,65 @@ describe('StockScreeningPage', () => {
       strategy: 'shrink_pullback',
       maxResults: 3,
     });
+  });
+
+  it('waits for strategies before choosing and submitting a US screening request', async () => {
+    const pendingStrategies = createDeferred<unknown>();
+    getStrategies.mockReturnValueOnce(pendingStrategies.promise);
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    screenStocks.mockResolvedValueOnce({ enabled: true, candidates: [], candidateCount: 0 });
+    render(<StockScreeningPage />);
+    await screen.findByText('选股已开启');
+    expect(screen.getByLabelText('市场')).toBeDisabled();
+    expect(screen.getByRole('button', { name: /运行选股/ })).toBeDisabled();
+    pendingStrategies.resolve({ enabled: true, strategies: [
+      ...mockStrategiesResponse.strategies,
+      { id: 'us_gainers', name: 'US gainers', marketScope: ['us'] },
+    ], strategyCount: 2 });
+    await waitFor(() => expect(screen.getByLabelText('市场')).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('市场'), { target: { value: 'us' } });
+    expect(screen.getByLabelText('策略')).toHaveValue('us_gainers');
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    await waitFor(() => expect(startScreenTask).toHaveBeenCalledWith({
+      market: 'us', strategy: 'us_gainers', maxResults: 3,
+    }));
+  });
+
+  it('selects a compatible US strategy when switching markets', async () => {
+    getStrategies.mockResolvedValueOnce({ enabled: true, strategies: [
+      ...mockStrategiesResponse.strategies,
+      { id: 'us_gainers', name: 'US gainers', marketScope: ['us'] },
+    ], strategyCount: 2 });
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    render(<StockScreeningPage />);
+    await screen.findByText('选股已开启');
+    fireEvent.change(screen.getByLabelText('市场'), { target: { value: 'us' } });
+    await waitFor(() => expect(screen.getByLabelText('策略')).toHaveValue('us_gainers'));
+    expect(screen.queryByRole('option', { name: 'Dual Low' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['premarket', 'Pre-market · vs previous close'],
+    ['regular', 'Regular session · vs previous close'],
+    ['postmarket', 'After-hours · vs regular close'],
+  ])('shows the quote time and reference for a %s US result', async (quoteSession, label) => {
+    getStrategies.mockResolvedValueOnce({ enabled: true, strategies: [
+      ...mockStrategiesResponse.strategies,
+      { id: 'us_gainers', name: 'US gainers', marketScope: ['us'] },
+    ], strategyCount: 2 });
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    screenStocks.mockResolvedValueOnce({ enabled: true, market: 'us', strategy: 'us_gainers',
+      candidates: [{ rank: 1, code: 'AMD', name: 'AMD', price: 104, changePct: 4, raw: {},
+        quoteSession, providerTimestamp: '2026-09-21T21:55:00Z', referencePrice: 100 }],
+      candidateCount: 1,
+    });
+    render(<StockScreeningPage />);
+    await screen.findByText('选股已开启');
+    fireEvent.change(screen.getByLabelText('市场'), { target: { value: 'us' } });
+    await waitFor(() => expect(screen.getByLabelText('策略')).toHaveValue('us_gainers'));
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    expect(await screen.findByText(`${label} ($100.00)`)).toBeInTheDocument();
+    expect(screen.getByText(/Sep 21, 2026.*05:55.*EDT/)).toBeInTheDocument();
   });
 
   it('clears previous screening candidates when strategy changes', async () => {

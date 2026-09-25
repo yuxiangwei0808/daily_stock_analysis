@@ -5,6 +5,10 @@ export const normalizeReportLanguage = (value?: string | null): ReportLanguage =
 
 const REPORT_TEXT = {
   zh: {
+    quoteSession: '报价时段',
+    quoteTime: '行情时间',
+    quoteStale: '过期/未验证，仅供参考',
+    quoteDelayed: '分析时已验证时间，行情可能延迟',
     keyInsights: '核心洞察',
     noAnalysisSummary: '暂无分析结论',
     actionAdvice: '操作建议',
@@ -56,6 +60,10 @@ const REPORT_TEXT = {
     reanalyze: '重新分析',
   },
   en: {
+    quoteSession: 'Quote session',
+    quoteTime: 'Provider time',
+    quoteStale: 'Stale/unverified; reference only',
+    quoteDelayed: 'Timestamped at analysis; may be delayed',
     keyInsights: 'KEY INSIGHTS',
     noAnalysisSummary: 'No analysis summary yet',
     actionAdvice: 'Action Advice',
@@ -107,6 +115,10 @@ const REPORT_TEXT = {
     reanalyze: 'Reanalyze',
   },
   ko: {
+    quoteSession: '시세 세션',
+    quoteTime: '제공 시각',
+    quoteStale: '오래되거나 미확인된 시세; 참고용',
+    quoteDelayed: '분석 시각 기준 확인; 지연 가능',
     keyInsights: '핵심 인사이트',
     noAnalysisSummary: '분석 결론 없음',
     actionAdvice: '대응 전략',

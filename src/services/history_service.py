@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
-from src.formatters import markdown_to_plain_text
+from src.formatters import markdown_to_plain_text, format_session_market_snapshot
 from src.data.stock_index_loader import resolve_index_stock_code
 from src.services.stock_code_utils import resolve_daily_stock_identity
 from src.report_language import (
@@ -1580,16 +1580,20 @@ class HistoryService:
         if not snapshot:
             return
 
+        session_snapshot = format_session_market_snapshot(snapshot, getattr(result, "report_language", "zh"))
+        if session_snapshot:
+            lines.extend([session_snapshot, "", "---", ""])
+            return
+        lines.extend([f"### 📈 {labels['market_snapshot_heading']}", ""])
         lines.extend([
-            f"### 📈 {labels['market_snapshot_heading']}",
-            "",
             f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
             "|------|------|",
         ])
 
         # Price info
         current_price = snapshot.get('price') or snapshot.get('current_price') or result.current_price
-        change_pct = snapshot.get('change_pct') or snapshot.get('pct_chg') or result.change_pct
+        change_pct = (snapshot.get('change_pct') if snapshot.get('quote_session') else
+                      HistoryService._first_present(snapshot.get('change_pct'), snapshot.get('pct_chg'), result.change_pct))
         if current_price is not None:
             current_str = HistoryService._safe_format_number(current_price, ".2f")
             if change_pct is not None:

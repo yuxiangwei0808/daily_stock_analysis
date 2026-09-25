@@ -29,11 +29,11 @@ _APPLIED_ENV_FILE_VALUES: dict[str, str] = {}
 
 def _load_env_file() -> None:
     """Load .env from cwd or project root if present."""
-    candidates = [
-        *_env_file_candidates_from_env(),
-        Path.cwd() / ".env",
-        _PROJECT_ROOT / ".env",
-    ]
+    # An explicit ENV_FILE is the active configuration (as in src.config);
+    # the default locations apply only when it is not set.
+    active = os.getenv("ENV_FILE", "").strip()
+    defaults = [Path(active)] if active else [Path.cwd() / ".env", _PROJECT_ROOT / ".env"]
+    candidates = [*_env_file_candidates_from_env(), *defaults]
     seen: set[Path] = set()
     file_values: dict[str, str] = {}
     for path in candidates:

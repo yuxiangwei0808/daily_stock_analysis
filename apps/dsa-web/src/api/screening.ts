@@ -44,6 +44,10 @@ export type ScreeningCandidate = {
   llmStyleFit?: string;
   price?: number | null;
   changePct?: number | null;
+  quoteSession?: string | null;
+  providerTimestamp?: string | null;
+  referencePrice?: number | null;
+  isStale?: boolean | null;
   amount?: number | null;
   industry?: string;
   factorScores?: Record<string, number>;

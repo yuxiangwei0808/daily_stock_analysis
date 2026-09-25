@@ -1103,3 +1103,73 @@ def chunk_content_by_max_words(
         for i, chunk in enumerate(chunks):
             chunks[i] = chunk + _page_marker(i, total_chunks)
     return chunks
+
+
+def format_quote_provenance(snapshot: dict, language: str = "en") -> str:
+    """Describe the saved session quote, independently of LLM-generated prose."""
+    if not snapshot.get("quote_session"):
+        return ""
+    labels = {
+        "en": ("Quote session", "Provider time", "Stale/unverified; reference only",
+               "Timestamped at analysis; may be delayed", "Unavailable", "Session move", "Reference close"),
+        "zh": ("报价时段", "行情时间", "过期/未验证，仅供参考",
+               "分析时已验证时间，行情可能延迟", "不可用", "时段涨跌幅", "基准收盘价"),
+        "ko": ("시세 세션", "제공 시각", "오래되거나 미확인된 시세; 참고용",
+               "분석 시각 기준 확인; 지연 가능", "확인 불가", "세션 등락률", "기준 종가"),
+    }
+    session_label, time_label, stale, verified, missing, move_label, reference_label = labels.get(language, labels["en"])
+    stamp = snapshot.get("provider_timestamp")
+    status = verified if snapshot.get("is_stale") is False and stamp else stale
+    change = snapshot.get("change_pct")
+    move = f"{float(change):+.2f}%" if change is not None else missing
+    reference = snapshot.get("pre_close")
+    return (f"{session_label}: {snapshot['quote_session']} | {time_label}: {stamp or missing} | {status} | "
+            f"{move_label}: {move} | {reference_label}: {reference if reference is not None else missing}")
+
+
+def format_session_market_snapshot(snapshot: dict, language: str = "en") -> str:
+    """Render session quotes separately from dated regular-session daily data.
+
+    Shared by saved reports, notification fallbacks and Jinja templates so an
+    extended-hours price never labels historical OHLC or volume as session data.
+    """
+    if not snapshot.get("quote_session"):
+        return ""
+    from src.report_language import get_report_labels, normalize_report_language
+
+    language = normalize_report_language(language)
+    labels = get_report_labels(language)
+    session_title, daily_title, partial, unknown_date = {
+        "en": ("Session quote", "Regular-session daily bar", "in progress at analysis", "date unavailable"),
+        "zh": ("时段报价", "常规时段日线", "分析时尚未收盘", "日期不可用"),
+        "ko": ("세션 시세", "정규장 일봉", "분석 시점 미완성", "날짜 확인 불가"),
+    }[language]
+    price = snapshot.get("price", snapshot.get("current_price"))
+    change = snapshot.get("change_pct")
+    change_text = f"{float(change):+.2f}%" if change is not None else "--"
+    lines = [
+        f"### 📈 {labels['market_snapshot_heading']}", "",
+        f"#### {session_title}", "", format_quote_provenance(snapshot, language), "",
+        f"| {labels['current_price_label']} | {labels['source_label']} |",
+        "|------|------|",
+        f"| **{price if price is not None else 'N/A'}** ({change_text}) | {snapshot.get('source') or 'N/A'} |",
+    ]
+    daily_fields = (
+        ("close_label", "close"), ("prev_close_label", "prev_close"),
+        ("open_label", "open"), ("high_label", "high"), ("low_label", "low"),
+        ("change_pct_label", "pct_chg"), ("change_amount_label", "change_amount"),
+        ("amplitude_label", "amplitude"), ("volume_label", "volume"), ("amount_label", "amount"),
+    )
+    if any(snapshot.get(key) is not None for _, key in daily_fields):
+        bar_date = snapshot.get("date")
+        if not bar_date or str(bar_date) in {"未知", "N/A"}:
+            bar_date = unknown_date
+        status = f" ({partial})" if snapshot.get("is_partial_bar") is True else ""
+        lines.extend([
+            "", f"#### {daily_title} — {bar_date}{status}", "",
+            f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
+            "|------|------|",
+        ])
+        lines.extend(f"| {labels[label]} | {snapshot[key]} |" for label, key in daily_fields
+                     if snapshot.get(key) is not None)
+    return "\n".join(lines)

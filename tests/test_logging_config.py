@@ -101,3 +101,16 @@ def test_invalid_litellm_log_level_falls_back_to_warning(tmp_path, monkeypatch):
     assert "invalid level warning should remain" in debug_log_text
     assert "LITELLM_LOG_LEVEL" in debug_log_text
     assert "已回退为 WARNING" in debug_log_text
+
+
+def test_yfinance_logger_is_not_debug_enabled_so_downloads_stay_threaded(tmp_path):
+    # yfinance falls back to sequential multi-symbol downloads when its logger
+    # is DEBUG-enabled; with the root DEBUG handler this made the US scan time out.
+    yf_logger = logging.getLogger("yfinance")
+    original = yf_logger.level
+    try:
+        setup_logging(log_prefix="stock_analysis", log_dir=str(tmp_path), debug=False)
+        assert logging.getLogger().isEnabledFor(logging.DEBUG)
+        assert not yf_logger.isEnabledFor(logging.DEBUG)
+    finally:
+        yf_logger.setLevel(original)

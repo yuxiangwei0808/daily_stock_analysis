@@ -18,6 +18,7 @@ from src.agent.events import (
     _read_quote_float,
     validate_event_alert_rule,
 )
+from data_provider.us_session import is_stale_us_quote
 from src.repositories.alert_repo import AlertRepository
 from src.services.alert_indicators import (
     TECHNICAL_ALERT_TYPES,
@@ -319,11 +320,11 @@ class AlertService:
                 threshold=threshold,
                 data_source="realtime_quote",
             )
-        if quote is None:
+        if quote is None or is_stale_us_quote(quote, rule.stock_code):
             return self._not_triggered(
                 rule,
                 None,
-                "No realtime quote available",
+                "No realtime quote available" if quote is None else "Stale realtime quote skipped",
                 record_status="skipped",
                 threshold=threshold,
                 data_source="realtime_quote",
@@ -383,11 +384,11 @@ class AlertService:
                 threshold=threshold,
                 data_source="realtime_quote",
             )
-        if quote is None:
+        if quote is None or is_stale_us_quote(quote, rule.stock_code):
             return self._not_triggered(
                 rule,
                 None,
-                "No realtime quote available",
+                "No realtime quote available" if quote is None else "Stale realtime quote skipped",
                 record_status="skipped",
                 threshold=threshold,
                 data_source="realtime_quote",
@@ -720,6 +721,7 @@ class AlertService:
     @classmethod
     def _extract_quote_datetime(cls, quote: Any) -> Optional[datetime]:
         for field_name in (
+            "provider_timestamp",
             "data_timestamp",
             "timestamp",
             "quote_time",
@@ -730,10 +732,34 @@ class AlertService:
             "date",
         ):
             raw_value = cls._read_quote_field(quote, field_name)
-            parsed = cls._coerce_datetime(raw_value)
+            if field_name == "provider_timestamp":
+                parsed = cls._coerce_provider_datetime(raw_value)
+            else:
+                parsed = cls._coerce_datetime(raw_value)
             if parsed is not None:
                 return parsed
         return None
+
+    @classmethod
+    def _coerce_provider_datetime(cls, value: Any) -> Optional[datetime]:
+        """Provider quote time as naive server-local time, like ``triggered_at``.
+
+        Provider timestamps are offset-aware (often UTC); dropping the offset
+        without converting would store UTC wall time beside local trigger times.
+        """
+        parsed: Optional[datetime] = None
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str) and value.strip():
+            try:
+                parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            except ValueError:
+                parsed = None
+        if parsed is None:
+            return cls._coerce_datetime(value)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().replace(tzinfo=None)
+        return parsed
 
     @staticmethod
     def _read_quote_field(quote: Any, field_name: str) -> Any:

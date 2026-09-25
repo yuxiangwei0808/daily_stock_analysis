@@ -340,3 +340,39 @@ def test_refines_hold_pullback_near_support_as_shakeout_watch() -> None:
     assert result.decision_type == "hold"
     assert result.operation_advice == "洗盘观察"
     assert "更适合按洗盘观察处理" in result.risk_warning
+
+
+def test_us_buy_is_judged_on_price_structure_when_the_market_has_no_capital_flow_source() -> None:
+    near_support = _result(decision_type="buy", operation_advice="Buy", score=70, current_price=30.3)
+    near_support.code = "AAPL"
+    stabilize_decision_with_structure(
+        near_support,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _unsupported_fund_flow(),
+    )
+    assert near_support.decision_type == "buy"
+    assert "买入结论缺少资金面确认" not in str(near_support.dashboard.get("decision_stability", {}).get("reason", ""))
+
+    # A-share codes keep the existing downgrade when flow is unsupported.
+    a_share = _result(decision_type="buy", operation_advice="买入", score=66, current_price=32.0)
+    a_share.code = "600519"
+    stabilize_decision_with_structure(
+        a_share,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _unsupported_fund_flow(),
+    )
+    assert a_share.decision_type == "hold"
+
+
+def test_us_structure_guard_wording_does_not_cite_capital_flow() -> None:
+    near_resistance = _result(decision_type="buy", operation_advice="Buy", score=70, current_price=33.8)
+    near_resistance.code = "AAPL"
+    near_resistance.report_language = "en"
+    stabilize_decision_with_structure(
+        near_resistance,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _unsupported_fund_flow(),
+    )
+    reason = near_resistance.dashboard["decision_stability"]["reason"]
+    assert near_resistance.decision_type == "hold"  # buying right at resistance is still held back
+    assert "breakout" in reason and "inflow" not in reason and "flow" not in reason

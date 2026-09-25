@@ -33,6 +33,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from .us_index_mapping import is_us_stock_code
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,6 +128,8 @@ def _convert_to_yf_symbol(stock_code: str) -> str:
     code = (stock_code or "").strip().upper()
     if not code:
         return code
+    if is_us_stock_code(code):
+        return code.replace(".", "-")
     if code.startswith("HK"):
         digits = code[2:].lstrip("0") or "0"
         return f"{digits.zfill(4)}.HK"

@@ -16,6 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
+import math
 from datetime import datetime
 from io import StringIO
 from typing import Optional, List, Dict, Any
@@ -33,7 +34,7 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, _is_hk_market, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
-from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from .us_index_mapping import get_us_index_yf_symbol, is_us_index_code, is_us_stock_code
 from .yfinance_fundamental_adapter import _safe_float
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
@@ -126,10 +127,10 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
 
-        # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
+        # 美股：类别股后缀转换为 Yahoo 格式（BRK.B -> BRK-B）
         if is_us_stock_code(code):
             logger.debug(f"识别为美股代码: {code}")
-            return code
+            return code.replace(".", "-")
 
         # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
         if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
@@ -202,6 +203,10 @@ class YfinanceFetcher(BaseFetcher):
 
         # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
+
+        if is_us_stock_code(stock_code) or is_us_index_code(stock_code):
+            from .us_session import us_daily_history_end
+            end_date = us_daily_history_end(end_date)
 
         logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
 
@@ -319,14 +324,27 @@ class YfinanceFetcher(BaseFetcher):
             行情字典，失败时返回 None
         """
         ticker = yf.Ticker(yf_code)
-        # 取近两日数据以计算涨跌幅
-        hist = ticker.history(period='2d')
+        # 取近 5 个交易日：Yahoo 日线偶尔缺失某个交易日或最新一根收盘为空，
+        # 仅取 2 日会把当日当作“昨收”，涨跌幅恒为 0。
+        hist = ticker.history(period='5d')
+        if not hist.empty and 'Close' in hist:
+            hist = hist.dropna(subset=['Close'])
         if hist.empty:
             return None
         today_row = hist.iloc[-1]
         prev_row = hist.iloc[-2] if len(hist) > 1 else today_row
         price = float(today_row['Close'])
         prev_close = float(prev_row['Close'])
+        latest = hist.index[-1] if isinstance(hist.index, pd.DatetimeIndex) else None
+        if latest is not None and latest.tzinfo is not None and latest.date() == datetime.now(latest.tzinfo).date():
+            # The latest bar is today's session: Yahoo's own previous close is the
+            # prior session even when that session's daily bar is missing.
+            try:
+                reported = float(ticker.fast_info.previous_close)
+            except Exception:
+                reported = float('nan')
+            if math.isfinite(reported) and reported > 0:
+                prev_close = reported
         change = price - prev_close
         change_pct = (change / prev_close) * 100 if prev_close else 0
         high = float(today_row['High'])
@@ -336,6 +354,7 @@ class YfinanceFetcher(BaseFetcher):
         return {
             'code': return_code,
             'name': name,
+            'daily_bar_date': hist.index[-1].date().isoformat() if isinstance(hist.index, pd.DatetimeIndex) else None,
             'current': price,
             'change': change,
             'change_pct': change_pct,
@@ -662,6 +681,11 @@ class YfinanceFetcher(BaseFetcher):
                 code=symbol,
                 name=STOCK_NAME_MAP.get(symbol, ''),
                 source=RealtimeSource.STOOQ,
+                market="us",
+                quote_session="unknown",
+                is_stale=True,
+                data_quality="partial",
+                missing_fields=["fresh_session_quote", "provider_timestamp"],
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
                 change_amount=round(change_amount, 4) if change_amount is not None else None,
@@ -785,7 +809,12 @@ class YfinanceFetcher(BaseFetcher):
                 total_mv=None,
                 circ_mv=None,
             )
-            logger.info(f"[Yfinance] 获取美股指数 {user_code} 实时行情成功: 价格={price}")
+            # Index quotes follow the stock session contract: Yahoo's regular-market
+            # time makes a regular-session index quote fresh; without it the quote
+            # remains an explicitly stale reference (indices have no extended session).
+            from .us_session import apply_us_quote_metadata
+            quote = apply_us_quote_metadata(quote, ticker_info)
+            logger.info(f"[Yfinance] 获取美股指数 {user_code} 实时行情成功: 价格={quote.price}")
             return quote
         except Exception as e:
             logger.warning(f"[Yfinance] 获取美股指数 {user_code} 实时行情失败: {e}")
@@ -827,7 +856,8 @@ class YfinanceFetcher(BaseFetcher):
 
         try:
             symbol = self._convert_stock_code(stock_code)
-            is_us_symbol = self._is_us_stock(symbol)
+            # Classify the application symbol before Yahoo share-class conversion.
+            is_us_symbol = self._is_us_stock(stock_code)
             suffix_market = get_suffix_market(symbol)
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
@@ -854,7 +884,7 @@ class YfinanceFetcher(BaseFetcher):
                 if hist.empty:
                     if is_us_symbol:
                         logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
-                        return self._get_us_stock_quote_from_stooq(symbol)
+                        return self._get_us_stock_quote_from_stooq(stock_code)
                     logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
                     return None
 
@@ -909,7 +939,7 @@ class YfinanceFetcher(BaseFetcher):
                 if value is None
             ]
             quote = UnifiedRealtimeQuote(
-                code=symbol,
+                code=stock_code.strip().upper() if is_us_symbol else symbol,
                 name=name,
                 source=RealtimeSource.FALLBACK,
                 market=suffix_market or ("hk" if _is_hk_market(stock_code) else "us" if is_us_symbol else None),
@@ -933,6 +963,10 @@ class YfinanceFetcher(BaseFetcher):
                 total_mv=market_cap,
                 circ_mv=None,
             )
+
+            if is_us_symbol:
+                from .us_session import apply_us_quote_metadata
+                quote = apply_us_quote_metadata(quote, ticker_info)
 
             logger.info(f"[Yfinance] 获取 {symbol} 实时行情成功: 价格={price}")
             return quote

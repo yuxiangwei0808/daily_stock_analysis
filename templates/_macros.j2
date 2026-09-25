@@ -2,6 +2,9 @@
 {% macro market_snapshot(result) %}
 {% set snapshot = result.market_snapshot if result.market_snapshot else {} %}
 {% if snapshot %}
+{% if snapshot.get('quote_session') %}
+{{ format_session_market_snapshot(snapshot, report_language) }}
+{% else %}
 ### 📈 {{ labels.market_snapshot_heading }}
 
 | {{ labels.close_label }} | {{ labels.prev_close_label }} | {{ labels.open_label }} | {{ labels.high_label }} | {{ labels.low_label }} | {{ labels.change_pct_label }} | {{ labels.change_amount_label }} | {{ labels.amplitude_label }} | {{ labels.volume_label }} | {{ labels.amount_label }} |
@@ -14,5 +17,6 @@
 | {{ snapshot.get('price', 'N/A') }} | {{ snapshot.get('volume_ratio', 'N/A') }} | {{ snapshot.get('turnover_rate', 'N/A') }} | {{ snapshot.get('source', 'N/A') }} |
 {% endif %}
 
+{% endif %}
 {% endif %}
 {% endmacro %}

@@ -843,6 +843,32 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
+    def test_disabling_wal_leaves_persistent_wal_mode(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "was_wal.db")
+        import sqlite3
+        legacy = sqlite3.connect(db_path)
+        legacy.execute("PRAGMA journal_mode=WAL")
+        legacy.close()
+        original = {key: os.environ.get(key) for key in ("DATABASE_PATH", "SQLITE_WAL_ENABLED")}
+        try:
+            os.environ["DATABASE_PATH"] = db_path
+            os.environ["SQLITE_WAL_ENABLED"] = "false"
+            Config.reset_instance()
+            DatabaseManager.reset_instance()
+            with DatabaseManager.get_instance().get_session() as session:
+                journal_mode = session.connection().exec_driver_sql("PRAGMA journal_mode").scalar()
+            self.assertEqual(str(journal_mode).lower(), "delete")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            temp_dir.cleanup()
+
     def test_file_sqlite_enables_wal_and_busy_timeout(self):
         temp_dir = tempfile.TemporaryDirectory()
         db_path = os.path.join(temp_dir.name, "sqlite_pragmas.db")

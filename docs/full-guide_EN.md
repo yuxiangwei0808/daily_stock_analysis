@@ -114,7 +114,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | Secret Name | Description | Required |
 |------------|------|:----:|
 | `SINGLE_STOCK_NOTIFY` | Single stock push mode: set to `true` to push immediately after each stock analysis | Optional |
-| `REPORT_TYPE` | Report type: `simple` (concise), `full` (complete), `brief` (3-5 sentences), Docker recommended: `full` | Optional |
+| `REPORT_TYPE` | Report type: `simple` (concise), `full` (complete), `brief` (one line per stock with price, change and key levels; recommended for Discord/chat). With `brief`, every push uses it, including analyses started from the Web UI; Web display and history are unchanged. Docker recommended: `full` | Optional |
 | `REPORT_LANGUAGE` | Default output language for reports and Agent Chat: `zh` (default Chinese) / `en` (English) / `ko` (Korean); also updates prompt instructions, templates, notification fallbacks, fixed copy in the Web report view, and Ask Stock replies that omit `context.report_language`. `ko` reuses the English structural scaffolding and constrains the model to Korean output via an output-language directive; notifications render localized labels by report language. The bundled `00-daily-analysis.yml` already maps this variable, so setting it in Actions Secrets/Variables works out of the box | Optional |
 | `REPORT_SHOW_LLM_MODEL` | Whether notification report footers show the LLM model used for analysis. Defaults to `true`; set to `false` to hide runtime model metadata. This switch only affects presentation and does not change provider/model/Base URL, LiteLLM routing, or runtime model save/migration/cleanup behavior. | Optional |
 | `REPORT_TEMPLATES_DIR` | Jinja2 template directory (relative to project root, default `templates`) | Optional |
@@ -158,6 +158,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search (structured search results) | Optional |
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty, `searx.space` discovery is used only if public instances are explicitly enabled | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `false`). Public instances are commonly rate-limited or do not return JSON, so enabling this can add 30-60s per run and still yield no news | Optional |
+| `FREE_NEWS_SOURCES` | Free news sources, comma-separated: `google_news` (Google News RSS, no key, used as the last search fallback), `yahoo_finance` (no key), `finnhub` (free `FINNHUB_API_KEY`). Stock analysis uses `google_news`; Trade Desk fetches every enabled source when a user requests a comparison. Off by default | Optional |
 | `SEARXNG_TIMEOUT_SECONDS` | Per-search timeout in seconds for self-hosted SearXNG instances (default `10`, minimum `1`). Increase for slow instances (e.g. NAS deployments aggregating many engines); public-instance timeout is unaffected. GitHub Actions requires explicit variable mapping | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; when unset/empty defaults to the official `http://api.tushare.pro`. Set to a `http://` or `https://` URL only when routing through a corporate proxy, cross-border network, or a self-hosted mirror | Optional |
@@ -339,6 +340,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API endpoint (default `https://api.adanos.org`) | Optional |
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty, `searx.space` discovery is used only if public instances are explicitly enabled | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `false`). Public instances are commonly rate-limited or do not return JSON, so enabling this can add 30-60s per run and still yield no news | Optional |
+| `FREE_NEWS_SOURCES` | Free news sources, comma-separated: `google_news` (Google News RSS, no key, used as the last search fallback), `yahoo_finance` (no key), `finnhub` (free `FINNHUB_API_KEY`). Stock analysis uses `google_news`; Trade Desk fetches every enabled source when a user requests a comparison. Off by default | Optional |
 
 > Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
 
@@ -1742,6 +1744,53 @@ The worker writes `triggered`, `skipped`, `degraded`, and `failed` rows to `aler
 
 Technical indicator rules use daily-close edge triggers only. Partial-bar handling is a server-local-time + 16:00 heuristic and does not implement market-calendar precision. `watchlist` rules refresh and expand `STOCK_LIST` each worker run, `portfolio_holdings` expands non-zero snapshot positions with symbol de-duplication, and `portfolio_account` reuses the portfolio risk service for account-level aggregate evaluation. `market` rules accept only `cn|hk|us|jp|kr` targets and use structured `MarketLightSnapshot` data; `trade_date` comes from the current market overview, `data_quality=unavailable` skips triggering, non-trading days are skipped by the trading-day gate, and `market_light_score_drop` compares score across trading days only. The WebUI "Alerts" page can manage persisted rules, run one-shot dry-run tests, and view trigger history, notification attempts, and read-only cooldown state; cooldown on batch rules is a parent-rule summary, while child-target cooldown details are visible through trigger history. See [Real-Time Alert Center](alerts.md) for detailed boundaries.
 
+### Saved reports workspace
+
+Open **Reports** in the sidebar, or the report link on Home, to visit `/reports`.
+Morning, intraday, closing and market-overview cards filter existing saved reports.
+Classification uses the saved market-phase metadata, never the report-generation
+clock time. Non-trading, unknown and legacy unlabelled reports remain in Other.
+
+The page loads 50 records at a time; counts cover loaded history, not an entire
+market or a live scan. Use **Load older reports** for earlier entries and **Refresh**
+to reload recent history. Select a record to read its full Markdown directly.
+Generation time, analysis-context time, the calendar-derived last completed session,
+in-progress session status and saved phase warnings make the analysis context visible. Offset-aware
+timestamps are displayed in America/New_York (including DST); legacy timestamps
+without an offset are preserved as supplied. Analysis-context time is not a quote
+timestamp; neither it nor the calendar-derived session date establishes quote freshness.
+
+This is a read-only view of saved research. It does not enable scheduling, fetch
+live prices, run a scanner or generate reports. Existing Home analysis, Alerts and
+Settings remain the places to configure and produce those results.
+
 ---
 
 For more questions, please [submit an Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
+
+### US session monitoring
+
+For scheduled watchlist updates, fresh-session US gainers/decliners, scoped breadth
+and sector ETF proxies, see [US market monitoring](us-market-monitoring.md).
+The Reports workspace remains a saved-history view; enable the documented scheduler
+and scan configuration to generate its morning, intraday and after-hours content.
+Daily report data uses the same freshness/session guard as daily-bar calculations;
+extended-hours quotes are shown separately. Yahoo daily history includes today's
+regular candle only after the verified exchange close, including early closes.
+Extended-hours price movers with missing/zero volume appear separately as
+**liquidity unverified**, retaining the watchlist exclusion, $5 price and 2% move
+thresholds; manual screening keeps its existing liquidity requirement.
+Unverified reference closes leave the
+session percentage unavailable. US screening rows retain and display quote time in
+New York, the session and the reference close, including when saved results are reopened.
+
+Index regular-session daily bars retain their provider dates in reports and saved
+structured data. Missing provider prices cannot acquire freshness from timestamps
+alone. After a usable scan, generation timeouts, non-zero exits or empty output
+retain a clearly labelled deterministic report; configuration, login and approval
+errors still surface.
+
+
+## Trade Desk
+
+See [Trade Desk](trade-desk.md) for US options comparisons, local Codex follow-ups, live-data setup, paper/manual-live tracking and Discord alerts. Replay data is synthetic; the feature never submits broker orders.

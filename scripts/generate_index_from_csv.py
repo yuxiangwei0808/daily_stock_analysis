@@ -5,7 +5,7 @@ Generate Stock Index from CSV File
 
 Input:
   - Tushare format: data/stock_list_{a,hk,us}.csv
-  - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr}.csv
+  - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr,us_etf}.csv
   - AkShare format: logs/stock_basic_*.csv
 
 Output: apps/dsa-web/public/stocks.index.json
@@ -15,6 +15,7 @@ Usage:
     python scripts/generate_index_from_csv.py --source akshare
     python scripts/generate_index_from_csv.py --test       # 测试模式
     python scripts/generate_index_from_csv.py --index-only --test  # 仅合并指数 seed
+    python scripts/generate_index_from_csv.py --us-etf-only        # 仅合并美股 ETF seed
 """
 
 import argparse
@@ -113,11 +114,20 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
         'CN': data_dir / 'stock_list_a.csv',
         'HK': data_dir / 'stock_list_hk.csv',
         'US': data_dir / 'stock_list_us.csv',
+        'US_ETF': _csv_path('stock_list_us_etf.csv'),
         'JP': _csv_path('stock_list_jp.csv'),
         'KR': _csv_path('stock_list_kr.csv'),
     }
 
     for market_name, csv_file in market_files.items():
+        if market_name == 'US_ETF':
+            # Tushare us_basic lists stocks only; widely traded US ETFs come from a
+            # seed and never replace a symbol the stock list already provides.
+            if not csv_file.exists():
+                continue
+            known = {item['ts_code'] for item in all_stocks}
+            all_stocks.extend(item for item in load_us_etf_seed(csv_file) if item['ts_code'] not in known)
+            continue
         if not csv_file.exists():
             print(f"[Warning] 未找到文件：{csv_file}")
             continue
@@ -159,6 +169,40 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
             print(f"    [Error] 读取 {csv_file.name} 失败：{e}")
 
     return all_stocks
+
+
+_US_ETF_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "stock_list_us_etf.csv"
+
+
+def load_us_etf_seed(seed_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load the US ETF seed as parsed rows marked ``asset_type='etf'``."""
+    path = seed_path or _US_ETF_SEED_PATH
+    rows = []
+    with open(path, 'r', encoding='utf-8-sig') as f:
+        for row in csv.DictReader(f):
+            parsed = parse_stock_row(row, 'US')
+            if parsed:
+                rows.append({**parsed, 'asset_type': 'etf'})
+    return rows
+
+
+def run_us_etf_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
+    """Merge the US ETF seed into the existing compressed JSON.
+
+    Like ``--index-only``, this does not need the market CSVs: existing rows are
+    kept in order, previous seed ETF rows are replaced, and a symbol already
+    present as a stock is left untouched.
+    """
+    existing = _load_existing_payload(output_path)
+    validate_stock_index_payload(existing, min_items=0)
+    kept = [item for item in existing if not (len(item) > 7 and item[6] == "US" and item[7] == "etf")]
+    present = {str(item[0]).upper() for item in kept}
+    etf_rows = [item for item in load_us_etf_seed() if item['ts_code'].upper() not in present]
+    merged = kept + compress_index(build_stock_index(etf_rows))
+    validate_stock_index_payload(merged, min_items=len(kept))
+    if not test:
+        _atomic_write_json(output_path, merged)
+    return merged
 
 
 def get_us_delist_priority(row: Dict[str, str]) -> int:
@@ -586,7 +630,7 @@ def build_stock_index(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "pinyinAbbr": pinyin_abbr,
             "aliases": aliases,
             "market": market,
-            "assetType": "stock",
+            "assetType": stock.get('asset_type', 'stock'),
             "active": True,
             "popularity": 100,
         })
@@ -985,6 +1029,11 @@ def main():
         help='仅合并指数注册表 seed 到现有压缩 JSON，不重建股票索引'
     )
     parser.add_argument(
+        '--us-etf-only',
+        action='store_true',
+        help='仅合并美股 ETF seed 到现有压缩 JSON，不重建股票索引'
+    )
+    parser.add_argument(
         '--test', '-t',
         action='store_true',
         help='测试模式：只验证不写入文件'
@@ -1003,6 +1052,13 @@ def main():
         Path(__file__).parent.parent / "apps" / "dsa-web" / "public" / "stocks.index.json"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.us_etf_only:
+        merged = run_us_etf_only(output_path, test=args.test)
+        etf_rows = [item for item in merged if len(item) > 7 and item[6] == "US" and item[7] == "etf"]
+        print(f"合并美股 ETF seed：共 {len(merged)} 条记录，其中美股 ETF {len(etf_rows)} 条"
+              + ("（测试模式，未写入）" if args.test else f"，已写入 {output_path}"))
+        return 0
 
     # --index-only: 只合并指数 seed，不重建股票索引。
     if args.index_only:

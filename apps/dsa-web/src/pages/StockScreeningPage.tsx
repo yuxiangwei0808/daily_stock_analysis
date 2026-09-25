@@ -40,8 +40,15 @@ import {
 } from '../api/screening';
 import { formatParsedApiError, getParsedApiError, toApiErrorMessage, type ParsedApiError } from '../api/error';
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
+import { formatReportTime } from '../utils/reportSessions';
+import { tradeDeskTicker } from '../api/tradeDesk';
 
-const MARKETS = [{ id: 'cn', label: 'A 股' }];
+const MARKETS = [{ id: 'cn', label: 'A 股' }, { id: 'us', label: 'US stocks / 美股' }];
+const US_SESSION_LABELS: Record<string, string> = {
+  premarket: 'Pre-market · vs previous close',
+  regular: 'Regular session · vs previous close',
+  postmarket: 'After-hours · vs regular close',
+};
 const SCREEN_TASK_STORAGE_KEY = 'dsa.screening.activeScreenTask.v1';
 const SCREEN_TASK_POLL_INTERVAL_MS = 2000;
 const CUSTOM_STRATEGY_OPTION_VALUE = '__custom_strategy__';
@@ -1400,6 +1407,10 @@ const StockScreeningPage: React.FC = () => {
       clearScreeningResults();
     }
     setMarket(nextMarket);
+    const compatible = strategies.filter((item) => !item.marketScope?.length || item.marketScope.includes(nextMarket));
+    if (!compatible.some((item) => item.id === strategy)) {
+      setStrategy(compatible[0]?.id || '');
+    }
   };
 
   const handleMaxResultsChange = (nextMaxResults: number) => {
@@ -1439,7 +1450,7 @@ const StockScreeningPage: React.FC = () => {
   };
 
   return (
-    <AppPage className="max-w-6xl space-y-6 pb-12 pt-6">
+    <AppPage className="space-y-6 pb-12 pt-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center gap-3">
           <span className="grid h-7 w-7 place-items-center rounded-full border-2 border-cyan text-cyan shadow-[0_0_24px_hsl(var(--primary)/0.18)]">
@@ -1742,7 +1753,7 @@ const StockScreeningPage: React.FC = () => {
             <select
               className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
               value={market}
-              disabled={loading}
+              disabled={loading || loadingStrategies}
               onChange={(event) => handleMarketChange(event.target.value)}
             >
               {MARKETS.map((item) => (
@@ -1761,7 +1772,7 @@ const StockScreeningPage: React.FC = () => {
               disabled={loading || loadingStrategies}
               placeholder=""
               options={[
-                ...strategies.map((item) => ({
+                ...strategies.filter((item) => !item.marketScope?.length || item.marketScope.includes(market)).map((item) => ({
                   value: item.id,
                   label: item.name || item.title || item.id,
                 })),
@@ -1806,7 +1817,7 @@ const StockScreeningPage: React.FC = () => {
             className="h-11 min-w-40"
             isLoading={loading}
             loadingText="筛选中..."
-            disabled={!isScreeningEnabled || loading || !strategy.trim()}
+            disabled={!isScreeningEnabled || loading || loadingStrategies || !strategy.trim()}
             onClick={() => void handleSubmit()}
           >
             <Play className="h-4 w-4" />
@@ -1922,8 +1933,20 @@ const StockScreeningPage: React.FC = () => {
                         <td className="px-4 py-3 font-mono font-semibold text-foreground">{item.code}</td>
                         <td className="px-4 py-3 font-semibold text-foreground">{item.name || '-'}</td>
                         <td className="px-4 py-3 text-secondary-text">{item.industry || '-'}</td>
-                        <td className="px-4 py-3 text-secondary-text">{formatNumber(item.price)}</td>
-                        <td className="px-4 py-3 text-secondary-text">{formatNumber(item.changePct)}%</td>
+                        <td className="px-4 py-3 text-secondary-text">
+                          {formatNumber(item.price)}
+                          {market === 'us' && <span className="mt-1 block text-xs text-muted-text">
+                            {item.providerTimestamp ? formatReportTime(item.providerTimestamp, 'en') : 'Quote time unavailable'}
+                            {item.isStale === true && ' · Stale'}
+                          </span>}
+                        </td>
+                        <td className="px-4 py-3 text-secondary-text">
+                          {formatNumber(item.changePct)}%
+                          {market === 'us' && <span className="mt-1 block text-xs text-muted-text">
+                            {US_SESSION_LABELS[item.quoteSession || ''] || 'Session unavailable'}
+                            {item.referencePrice != null && ` ($${formatNumber(item.referencePrice)})`}
+                          </span>}
+                        </td>
                         <td className="px-4 py-3 font-bold text-cyan">{formatScore(item.score)}</td>
                         <td className="px-4 py-3 text-secondary-text">{factorRanking ? '因子排序' : formatScore(item.llmScore)}</td>
                         <td className="px-4 py-3">
@@ -1960,6 +1983,14 @@ const StockScreeningPage: React.FC = () => {
                                   >
                                     进一步深度分析
                                   </button>
+                                  {market === 'us' && tradeDeskTicker(item.code) ? (
+                                    <a
+                                      className="ml-2 inline-flex rounded-lg border border-purple/40 px-3 py-1.5 text-xs font-semibold text-purple transition-colors hover:bg-purple/10"
+                                      href={"/trade-desk?ticker=" + encodeURIComponent(tradeDeskTicker(item.code) || "")}
+                                    >
+                                      Trade Desk
+                                    </a>
+                                  ) : null}
                                 </div>
                                 {item.dsaAnalysisSummary ? (
                                   <div>

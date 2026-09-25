@@ -2,6 +2,7 @@ import apiClient from './index';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
 import type {
+
   AgentBackendStatusPreviewRequest,
   AgentBackendStatusResponse,
   DiscoverLLMChannelModelsRequest,
@@ -28,6 +29,20 @@ import type {
   ValidateSystemConfigRequest,
   ValidateSystemConfigResponse,
 } from '../types/systemConfig';
+
+export interface WatchlistGroup {
+  name: string;
+  codes: string[];
+}
+
+export interface HomeWatchlistQuote {
+  price: number;
+  prevClose?: number | null;
+  changePct?: number | null;
+  updatedAt?: string;
+  session?: string;
+  extended?: { price: number; changePct?: number | null } | null;
+}
 
 export class SystemConfigValidationError extends Error {
   issues: SystemConfigValidationErrorResponse['issues'];
@@ -345,6 +360,28 @@ export const systemConfigApi = {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/stocks/watchlist');
     const data = toCamelCase<{ stockCodes: string[] }>(response.data);
     return data.stockCodes || [];
+  },
+
+  /**
+   * 获取券商自选分组（moomoo 自定义分组）；不可用时返回空数组
+   */
+  getWatchlistGroups: async (): Promise<WatchlistGroup[]> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/stocks/watchlist/groups');
+    const data = toCamelCase<{ available: boolean; groups: WatchlistGroup[] }>(response.data);
+    return data.available ? data.groups || [] : [];
+  },
+
+  /**
+   * 获取自选实时行情（moomoo 快照，按代码索引）；不可用时返回空对象
+   */
+  getWatchlistQuotes: async (): Promise<Record<string, HomeWatchlistQuote>> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/stocks/watchlist/quotes');
+    const data = response.data as { available?: boolean; quotes?: Record<string, unknown> };
+    if (!data.available) return {};
+    // Keys are tickers: camelcase-keys would lowercase them ("AAPL" -> "aapl").
+    return Object.fromEntries(Object.entries(data.quotes || {}).map(
+      ([code, quote]) => [code.toUpperCase(), toCamelCase<HomeWatchlistQuote>(quote)],
+    ));
   },
 
   /**

@@ -294,9 +294,18 @@ async def app_lifespan(app: FastAPI):
     from src.services.name_to_code_resolver import warmup_akshare_cache
 
     warmup_akshare_cache()
+    from src.services.trade_desk.service import TradeDeskService
+    from src.services.trade_desk.worker import TradeDeskWorker
+
+    trade_desk_service = TradeDeskService()
+    app.state.trade_desk_service = trade_desk_service
+    trade_desk_service.worker = TradeDeskWorker(trade_desk_service)
+    trade_desk_service.worker.start()
     try:
         yield
     finally:
+        await asyncio.to_thread(trade_desk_service.stop)
+        delattr(app.state, "trade_desk_service")
         refresh_task = getattr(app.state, "stock_index_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()

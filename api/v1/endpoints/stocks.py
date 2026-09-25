@@ -12,6 +12,8 @@
 """
 
 import logging
+import threading
+import time
 from typing import Optional
 import re
 
@@ -27,7 +29,12 @@ from api.v1.schemas.stocks import (
     StockProfileResponse,
     StockQuote,
 )
-from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
+from api.v1.schemas.history import (
+    WatchlistGroupsResponse,
+    WatchlistQuotesResponse,
+    WatchlistRequest,
+    WatchlistResponse,
+)
 from api.v1.schemas.common import ErrorResponse
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
@@ -343,6 +350,68 @@ def get_watchlist(
         )
 
 
+_WATCHLIST_GROUPS_TTL_SECONDS = 300
+_watchlist_groups_cache: dict = {}
+_watchlist_groups_lock = threading.Lock()
+
+
+@router.get(
+    "/watchlist/groups",
+    response_model=WatchlistGroupsResponse,
+    summary="获取券商自选分组",
+    description="读取 moomoo OpenD 中的自定义自选分组（缓存 5 分钟）；OpenD 不可用时返回 available=false。",
+)
+def get_watchlist_groups(request: Request) -> WatchlistGroupsResponse:
+    with _watchlist_groups_lock:
+        cached = _watchlist_groups_cache.get("value")
+        if cached is not None and time.monotonic() - _watchlist_groups_cache["at"] < _WATCHLIST_GROUPS_TTL_SECONDS:
+            return cached
+        service = getattr(request.app.state, "trade_desk_service", None)
+        try:
+            if service is None or not service.enabled:
+                raise RuntimeError("Trade Desk (OpenD) is not enabled")
+            result = WatchlistGroupsResponse(available=True, groups=service.provider("live").watchlist_groups())
+        except Exception as exc:  # grouping is optional; Home falls back to a flat list
+            logger.info("Watchlist groups unavailable: %s", exc)
+            result = WatchlistGroupsResponse(available=False, message=str(exc)[:200])
+        _watchlist_groups_cache.update(value=result, at=time.monotonic())
+        return result
+
+
+_WATCHLIST_QUOTES_TTL_SECONDS = 10
+_watchlist_quotes_cache: dict = {}
+_watchlist_quotes_lock = threading.Lock()
+_US_TICKER = re.compile(r"^[A-Za-z][A-Za-z.\-]{0,9}$")
+
+
+@router.get(
+    "/watchlist/quotes",
+    response_model=WatchlistQuotesResponse,
+    summary="获取自选实时行情",
+    description="用 moomoo OpenD 批量快照返回自选中美股的最新价与涨跌幅（缓存 10 秒）；不可用时 available=false。",
+)
+def get_watchlist_quotes(
+    request: Request,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> WatchlistQuotesResponse:
+    with _watchlist_quotes_lock:
+        cached = _watchlist_quotes_cache.get("value")
+        if cached is not None and time.monotonic() - _watchlist_quotes_cache["at"] < _WATCHLIST_QUOTES_TTL_SECONDS:
+            return cached
+        trade_desk = getattr(request.app.state, "trade_desk_service", None)
+        try:
+            if trade_desk is None or not trade_desk.enabled:
+                raise RuntimeError("Trade Desk (OpenD) is not enabled")
+            tickers = [code for code in _read_watchlist_codes(service) if _US_TICKER.match(code)]
+            quotes = trade_desk.provider("live").watchlist_quotes(tickers)
+            result = WatchlistQuotesResponse(available=True, quotes=quotes)
+        except Exception as exc:  # quotes are optional; rows fall back to report data
+            logger.info("Watchlist quotes unavailable: %s", exc)
+            result = WatchlistQuotesResponse(available=False, message=str(exc)[:200])
+        _watchlist_quotes_cache.update(value=result, at=time.monotonic())
+        return result
+
+
 @router.post(
     "/watchlist/add",
     response_model=WatchlistResponse,
@@ -498,7 +567,13 @@ def get_stock_quote(stock_code: str) -> StockQuote:
             prev_close=result.get("prev_close"),
             volume=result.get("volume"),
             amount=result.get("amount"),
-            update_time=result.get("update_time")
+            update_time=result.get("update_time"),
+            provider_timestamp=result.get("provider_timestamp"),
+            fetched_at=result.get("fetched_at"),
+            quote_session=result.get("quote_session"),
+            is_stale=result.get("is_stale"),
+            data_quality=result.get("data_quality"),
+            currency=result.get("currency"),
         )
         
     except HTTPException:

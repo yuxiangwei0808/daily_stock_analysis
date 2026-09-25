@@ -35,6 +35,10 @@ from src.config import setup_env
 _INITIAL_PROCESS_ENV = dict(os.environ)
 setup_env()
 
+from src.utils.yfinance_cache import use_memory_tz_cache  # noqa: E402
+
+use_memory_tz_cache()
+
 # 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
 # GitHub Actions 环境自动跳过代理配置
 if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
@@ -1260,6 +1264,23 @@ def _run_analysis_with_runtime_scheduler_lock(
     return bool(lock_acquired and task_result["ok"])
 
 
+_API_SERVER: Optional[Tuple[Any, Any]] = None  # (uvicorn.Server, server thread)
+
+
+def stop_api_server(timeout: float = 20.0) -> None:
+    """Ask uvicorn to exit and wait, so the app's lifespan shutdown runs.
+
+    The server thread is a daemon; returning from main() without this skips
+    the shutdown hooks that stop the runtime scheduler (and its spawned
+    analysis process) and release the Trade Desk worker lease.
+    """
+    if _API_SERVER is None:
+        return
+    server, thread = _API_SERVER
+    server.should_exit = True
+    thread.join(timeout)
+
+
 def start_api_server(host: str, port: int, config: Config) -> None:
     """
     在后台线程启动 FastAPI 服务
@@ -1275,6 +1296,9 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # Match uvicorn's own bind: connections left in TIME_WAIT by a previous
+        # run must not block a restart, while an active listener still does.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((host, port))
     except OSError as exc:
         raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc
@@ -1314,6 +1338,9 @@ def start_api_server(host: str, port: int, config: Config) -> None:
             **uvicorn_kwargs,
         )
     uvicorn_server = uvicorn.Server(config=uvicorn_config)
+    # Open streams (e.g. the Trade Desk event stream) must not hold shutdown forever.
+    if hasattr(uvicorn_server.config, "timeout_graceful_shutdown"):
+        uvicorn_server.config.timeout_graceful_shutdown = 5
     if not use_config_signal_handlers:
         install_signal_handlers = getattr(uvicorn_server, "install_signal_handlers", None)
         if isinstance(install_signal_handlers, bool):
@@ -1329,6 +1356,8 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
+    global _API_SERVER
+    _API_SERVER = (uvicorn_server, thread)
 
     timeout_seconds = 3.0
     wait_deadline = time.time() + timeout_seconds
@@ -1697,6 +1726,7 @@ def main() -> int:
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("\n用户中断，程序退出")
+        stop_api_server()
         return 0
 
     try:
@@ -1767,6 +1797,7 @@ def main() -> int:
                         time.sleep(1)
                 except KeyboardInterrupt:
                     logger.info("\n用户中断，程序退出")
+                stop_api_server()
                 return 0
 
             logger.info("模式: 定时任务")
@@ -1865,6 +1896,7 @@ def main() -> int:
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
+            stop_api_server()
 
         return 0
 

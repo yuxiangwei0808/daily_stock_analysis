@@ -31,10 +31,10 @@ class AugmentRealtimeMarketDateTestCase(unittest.TestCase):
     @patch("src.core.pipeline.is_market_open", return_value=True)
     @patch("src.core.pipeline.get_market_now")
     @patch("src.core.pipeline.get_market_for_stock", return_value="us")
-    def test_appends_virtual_row_with_market_local_date(
+    def test_does_not_append_unverified_quote_after_hours(
         self, _mock_market, mock_now, _mock_open
     ):
-        """When server is UTC and US market date differs, virtual row uses market date."""
+        """A quote without provider time cannot create a new US daily candle."""
         # Server UTC: 2026-03-28 01:00 => US ET: 2026-03-27 21:00
         us_market_now = datetime(2026, 3, 27, 21, 0)
         mock_now.return_value = us_market_now
@@ -45,11 +45,8 @@ class AugmentRealtimeMarketDateTestCase(unittest.TestCase):
         pipeline = _make_pipeline()
         result = pipeline._augment_historical_with_realtime(df, quote, "AAPL")
 
-        self.assertEqual(len(result), 2)
-        appended_date = result.iloc[-1]["date"]
-        if hasattr(appended_date, "date"):
-            appended_date = appended_date.date()
-        self.assertEqual(appended_date, date(2026, 3, 27))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result.iloc[-1]["date"], date(2026, 3, 26))
 
     @patch("src.core.pipeline.is_market_open", return_value=True)
     @patch("src.core.pipeline.get_market_now")
@@ -58,10 +55,12 @@ class AugmentRealtimeMarketDateTestCase(unittest.TestCase):
         self, _mock_market, mock_now, _mock_open
     ):
         """When latest bar date >= market_today, update in place instead of appending."""
-        mock_now.return_value = datetime(2026, 3, 27, 17, 0)
+        mock_now.return_value = datetime(2026, 3, 27, 15, 0)
 
         df = _make_df([(date(2026, 3, 26), 150.0), (date(2026, 3, 27), 152.0)])
         quote = SimpleNamespace(price=155.0, open_price=151.0, high=156.0, low=149.0, volume=200, amount=None, change_pct=3.0, pre_close=None)
+        quote.quote_session = "regular"
+        quote.provider_timestamp = "2026-03-27T14:59:00-04:00"
 
         pipeline = _make_pipeline()
         result = pipeline._augment_historical_with_realtime(df, quote, "AAPL")

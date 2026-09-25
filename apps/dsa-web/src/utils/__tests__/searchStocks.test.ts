@@ -540,3 +540,16 @@ describe('searchStocks', () => {
     });
   });
 });
+
+describe('US ETFs', () => {
+  const row = (code: string, name: string, assetType: 'stock' | 'etf'): StockIndexItem => ({
+    canonicalCode: code, displayCode: code, nameZh: name, pinyinFull: name, pinyinAbbr: name,
+    aliases: [], market: 'US', assetType, active: true, popularity: 100,
+  });
+
+  test('typing SPY finds the SPY ETF before the SPYR stock', () => {
+    const index = [row('SPYR', 'SPYR', 'stock'), row('SPY', 'SPDR S&P 500 ETF Trust', 'etf')];
+    const results = searchStocks('SPY', index);
+    expect(results[0].canonicalCode).toBe('SPY');
+  });
+});

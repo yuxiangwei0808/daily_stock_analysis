@@ -75,7 +75,13 @@ class StockService:
                 "prev_close": getattr(quote, "pre_close", None),
                 "volume": getattr(quote, "volume", None),
                 "amount": getattr(quote, "amount", None),
-                "update_time": datetime.now().isoformat(),
+                "update_time": getattr(quote, "provider_timestamp", None),
+                "provider_timestamp": getattr(quote, "provider_timestamp", None),
+                "fetched_at": getattr(quote, "fetched_at", None),
+                "quote_session": getattr(quote, "quote_session", None),
+                "is_stale": getattr(quote, "is_stale", None),
+                "data_quality": getattr(quote, "data_quality", None),
+                "currency": getattr(quote, "currency", None),
             }
             
         except ImportError:

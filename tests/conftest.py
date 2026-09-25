@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
+import tempfile
 import time
 import threading
 from collections.abc import Awaitable, Callable
@@ -14,12 +16,44 @@ from typing import Any, TypeVar
 from warnings import warn
 
 import anyio.to_thread
+import pytest
 import fastapi.testclient
 import httpx
 import starlette.testclient
 from anyio._backends import _asyncio
 
 T = TypeVar("T")
+
+# Tests must never open the developer's real database: it may be in use by a
+# running server (and on network storage). Tests that need a path set their own;
+# many pop DATABASE_PATH on teardown, so it is restored before every test.
+_TEST_DATABASE_PATH = os.path.join(tempfile.mkdtemp(prefix="dsa-test-db-"), "stock_analysis.db")
+os.environ["DATABASE_PATH"] = _TEST_DATABASE_PATH
+# Likewise the developer's real .env must not configure tests: tests that need
+# settings point ENV_FILE at their own file, and many pop it on teardown.
+_TEST_ENV_FILE = os.path.join(os.path.dirname(_TEST_DATABASE_PATH), "empty.env")
+open(_TEST_ENV_FILE, "w").close()
+os.environ["ENV_FILE"] = _TEST_ENV_FILE
+# LiteLLM calls load_dotenv() on import unless it runs in production mode,
+# which would copy the working directory's real .env into os.environ.
+os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
+_ENV_BEFORE_COLLECTION = dict(os.environ)
+
+
+def pytest_collection_finish(session):
+    """Undo .env values that test modules loaded at import (module-level load_dotenv)."""
+    for key in [key for key in os.environ if key not in _ENV_BEFORE_COLLECTION]:
+        del os.environ[key]
+    for key, value in _ENV_BEFORE_COLLECTION.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _isolated_database_path():
+    os.environ.setdefault("DATABASE_PATH", _TEST_DATABASE_PATH)
+    os.environ.setdefault("ENV_FILE", _TEST_ENV_FILE)
+    yield
 
 _original_call_soon_threadsafe = asyncio.BaseEventLoop.call_soon_threadsafe
 

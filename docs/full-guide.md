@@ -115,7 +115,7 @@ daily_stock_analysis/
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
 | `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
-| `REPORT_TYPE` | 报告类型：`simple`(精简)、`full`(完整)、`brief`(3-5句概括)，Docker环境推荐设为 `full` | 可选 |
+| `REPORT_TYPE` | 报告类型：`simple`(精简)、`full`(完整)、`brief`(每只股票一行：价格、涨跌、关键价位，推荐 Discord/聊天渠道使用)。设为 `brief` 时所有推送（含 Web 发起的分析）都用简报格式，Web 展示与历史记录不变。Docker环境推荐设为 `full` | 可选 |
 | `REPORT_LANGUAGE` | 报告与 Agent Chat 的默认输出语言：`zh`(默认中文) / `en`(英文) / `ko`(韩文)；会同步影响 Prompt、模板、通知 fallback、Web 报告页固定文案，以及未显式传入 `context.report_language` 的问股回复。`ko` 复用英文结构骨架并通过输出语言指令约束模型用韩文输出，通知按报告语言渲染本地化标签。仓库自带 `00-daily-analysis.yml` 已显式映射该变量，直接在 Actions Secrets/Variables 中配置即可生效 | 可选 |
 | `REPORT_SUMMARY_ONLY` | 仅分析结果摘要：设为 `true` 时只推送汇总，不含个股详情；多股时适合快速浏览（默认 false，Issue #262） | 可选 |
 | `REPORT_SHOW_LLM_MODEL` | 通知报告底部是否显示本次分析使用的 LLM 模型名称，默认 `true`；设为 `false` 可隐藏运行时模型信息。该变量仅调整展示，不影响 provider/model/Base URL、LiteLLM 路由或运行时模型保存/迁移/清理语义。 | 可选 |
@@ -165,6 +165,7 @@ daily_stock_analysis/
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search（结构化搜索结果） | 可选 |
 | `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`）。公共实例普遍限流或未开启 JSON 输出，开启后每次分析可能多耗 30~60 秒且新闻面为空 | 可选 |
+| `FREE_NEWS_SOURCES` | 免费新闻源，逗号分隔：`google_news`（Google News RSS，无需 key，作为搜索兜底）、`yahoo_finance`（无需 key）、`finnhub`（需免费 `FINNHUB_API_KEY`）。个股分析使用 `google_news`；Trade Desk 在用户发起对比时实时拉取已启用来源。默认关闭 | 可选 |
 | `SEARXNG_TIMEOUT_SECONDS` | 自建 SearXNG 单次搜索超时（秒，默认 `10`，最小 `1`）；实例较慢（如聚合引擎较多的 NAS 部署）时可调大，公共实例超时不受影响。GitHub Actions 需显式映射该变量 | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空（或未设置/空白）时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填写 `http://` 或 `https://` 开头的完整地址 | 可选 |
@@ -376,6 +377,7 @@ daily_stock_analysis/
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API 地址（默认 `https://api.adanos.org`） | 可选 |
 | `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`）。公共实例普遍限流或未开启 JSON 输出，开启后每次分析可能多耗 30~60 秒且新闻面为空 | 可选 |
+| `FREE_NEWS_SOURCES` | 免费新闻源，逗号分隔：`google_news`（Google News RSS，无需 key，作为搜索兜底）、`yahoo_finance`（无需 key）、`finnhub`（需免费 `FINNHUB_API_KEY`）。个股分析使用 `google_news`；Trade Desk 在用户发起对比时实时拉取已启用来源。默认关闭 | 可选 |
 | `SEARXNG_TIMEOUT_SECONDS` | 自建 SearXNG 单次搜索超时（秒，默认 `10`，最小 `1`）；实例较慢（如聚合引擎较多的 NAS 部署）时可调大，公共实例超时不受影响。GitHub Actions 需显式映射该变量 | 可选 |
 | `NEWS_STRATEGY_PROFILE` | 新闻策略窗口档位：`ultra_short`(1天)/`short`(3天)/`medium`(7天)/`long`(30天)；实际窗口取与 `NEWS_MAX_AGE_DAYS` 的最小值 | 默认 `short` |
 | `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
@@ -1952,3 +1954,42 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含精简风险块，适合控制 Token 开销。
 - 可选参数包括 `account_id`、`cost_method`、`as_of`、`include_positions`、`include_risk`。
 - 若风险块生成失败，快照仍会返回；若当前环境未启用持仓模块，工具会返回结构化 `not_supported`。
+
+### 已保存报告中心
+
+通过侧边栏“报告”或首页报告入口访问 `/reports`。盘前、盘中、盘后与大盘复盘
+卡片筛选已有报告，分类依据已保存的市场时段，不使用报告生成时间推断时段。
+非交易日、未知或历史未标注时段的报告保留在“其他”中。
+
+每次加载 50 条历史记录，计数仅覆盖已加载内容，不代表全市场扫描。可“加载更早
+报告”或“刷新”最近历史，选择报告后直接阅读完整 Markdown。页面显示生成时间、
+分析上下文时间、日历推算的最近完整交易日、交易时段未结束提示和已保存的时段警告。带时区
+的时间统一显示为纽约时间并自动处理夏令时；不带时区的旧时间戳保留原值。
+分析上下文时间不是行情时间戳；它与日历推算的日期都不能证明行情实时性。
+
+此页面只读已有报告，不开启调度、不获取实时行情、不运行选股或生成新报告。
+分析、告警与配置仍通过已有首页、告警页和设置页完成。
+
+### 美股分时段监控
+
+启用 `SCHEDULE_ENABLED=true`、`MARKET_REVIEW_ENABLED=true` 和 `SCREENING_ENABLED=true`，
+并在进程启动前设置 `TZ=America/New_York`。示例时点：
+`SCHEDULE_TIMES=08:45,10:00,12:00,14:00,15:30,16:30,19:30`。
+美股复盘会包含独立于自选股的涨跌异动、扫描股票池内的涨跌家数和 11 个行业 ETF 代理表现，
+同时标注缺失/过期数据与覆盖率。选股页面支持美股及 `us_gainers` / `us_decliners` 策略。
+盘前、盘中、盘后各使用匹配的价格和真实行情时间；过期报价不能触发价格告警。
+过期或盘前盘后价格不能改写常规日 K 或报告中的日线数据，盘外报价单独标注。
+Yahoo 日线在交易所确认收盘后纳入当日常规 K 线，包括提前收盘日；收盘前仍排除未完成日线。
+盘前盘后有价格但成交量缺失或为零的异动，单列为“流动性未验证”；自选股排除、5 美元价格与 2% 异动门槛仍适用，原有选股成交额门槛不放宽。
+盘外涨跌幅需要验证基准收盘价的时间，否则仅保留价格；选股结果显示纽约行情时间、时段与基准价。
+有时间戳但缺失有效价格的报价仍标记过期，不为保留的参考价格补造行情时间或涨跌幅。
+指数常规时段日线保留实际数据日期，避免将上一交易日涨跌当作今日盘前行情。
+已有可用扫描时，生成超时、非零退出或空输出会保留扫描及明确标注的确定性报告；配置、登录和审批错误仍会上报。
+`AGENT_EVENT_MONITOR_ENABLED=true` 每五分钟评估现有告警规则，
+不会自动创建阈值或通知渠道。该扫描使用可能延迟的五分钟行情，股票池广度并非全美交易所统计。
+配置、边界及回滚方法见 [US market monitoring](us-market-monitoring.md)。
+
+
+## Trade Desk 期权交易辅助
+
+详见 [Trade Desk 专题](trade-desk.md)：美股期权策略对比、本地 Codex 追问、行情连接诊断、模拟/手工实盘记录及 Discord 通知。回放为明确标识的合成数据；系统不会向券商发送交易指令。

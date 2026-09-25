@@ -45,7 +45,10 @@ def _quote(code: str = "AAPL") -> dict:
         "current_price": 200.0,
         "change": 1.0,
         "change_percent": 0.5,
-        "update_time": "2026-08-29T10:00:00+08:00",
+        "update_time": "2026-08-28T14:00:00Z",
+        "provider_timestamp": "2026-08-28T14:00:00Z",
+        "quote_session": "regular",
+        "is_stale": False,
     }
 
 
@@ -628,9 +631,14 @@ def _endpoint_payload() -> dict:
     return service.get_profile("AAPL")
 
 
-def test_profile_endpoint_validates_code_and_exposes_contract() -> None:
+def test_profile_endpoint_validates_code_and_exposes_contract(monkeypatch) -> None:
     _reset_auth_globals()
     with tempfile.TemporaryDirectory() as temp_dir:
+        # Auth reads the env file directly, not ADMIN_AUTH_ENABLED in os.environ.
+        # Keep this endpoint contract test independent of the live server's login.
+        env_file = Path(temp_dir) / ".env"
+        env_file.write_text("ADMIN_AUTH_ENABLED=false\n", encoding="utf-8")
+        monkeypatch.setenv("ENV_FILE", str(env_file))
         try:
             os.environ["DATABASE_PATH"] = str(Path(temp_dir) / "profile.db")
             os.environ["ADMIN_AUTH_ENABLED"] = "false"

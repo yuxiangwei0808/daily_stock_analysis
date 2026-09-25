@@ -2230,6 +2230,36 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class GoogleNewsSearchProvider(BaseSearchProvider):
+    """Google News RSS search: free, no API key; aggregates major financial outlets."""
+
+    def __init__(self):
+        # Keyless: a fixed token satisfies the key-rotation bookkeeping.
+        super().__init__(["google-news-rss"], "Google News")
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7, **_kwargs) -> SearchResponse:
+        from src.services.free_news import google_news
+
+        # Google News requires every word to match, so long keyword queries
+        # ("<name> risk insider selling lawsuit litigation") often find nothing;
+        # retry with the trailing keywords trimmed, keeping the subject.
+        words = query.split()
+        attempts = [query] + [" ".join(words[:size]) for size in (len(words) - 2, len(words) - 4) if size >= 3]
+        items = []
+        for attempt in attempts:
+            items = google_news(attempt, days=days, limit=max_results)
+            if items:
+                break
+        results = [
+            SearchResult(title=item["title"], snippet=item["summary"] or item["title"], url=item["url"],
+                         source=item["source"] or "Google News",
+                         published_date=item["published_at"][:10] or None)
+            for item in items
+        ]
+        return SearchResponse(query=query, results=results, provider=self.name, success=bool(results),
+                              error_message=None if results else "No recent Google News results")
+
+
 class SearchService:
     """
     搜索服务
@@ -2403,6 +2433,7 @@ class SearchService:
         searxng_timeout_seconds: Optional[int] = None,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
+        free_news_sources: Optional[List[str]] = None,
     ):
         """
         初始化搜索服务
@@ -2431,6 +2462,7 @@ class SearchService:
             "searxng_timeout_seconds": searxng_timeout_seconds,
             "news_max_age_days": int(news_max_age_days),
             "news_strategy_profile": news_strategy_profile,
+            "free_news_sources": list(free_news_sources or []),
         }
         self._providers: List[BaseSearchProvider] = []
         self.news_max_age_days = max(1, news_max_age_days)
@@ -2494,6 +2526,11 @@ class SearchService:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
             
+        # 8. Google News RSS（免费、无需 key；排在带 key 的渠道之后）
+        if "google_news" in (free_news_sources or []):
+            self._providers.append(GoogleNewsSearchProvider())
+            logger.info("已启用 Google News RSS 免费新闻搜索")
+
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 
@@ -4912,6 +4949,7 @@ def get_search_service() -> SearchService:
                     searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
                     news_max_age_days=config.news_max_age_days,
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
+                    free_news_sources=getattr(config, "free_news_sources", None),
                 )
     
     return _search_service

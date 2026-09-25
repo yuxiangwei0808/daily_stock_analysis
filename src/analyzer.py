@@ -1048,6 +1048,11 @@ def stabilize_decision_with_structure(
         )
 
         flow_bias, flow_reason = _capital_flow_bias_with_status(fundamental_context)
+        flow_absent = flow_bias == "unavailable" and _capital_flow_structurally_absent(result, flow_reason)
+        if flow_absent:
+            # US markets publish no capital-flow data; its absence is not evidence
+            # against a buy, so judge the call on price structure alone.
+            flow_bias = "neutral"
         if flow_bias == "unavailable":
             if isinstance(fundamental_context, dict) and "capital_flow" in fundamental_context:
                 if decision_type == "buy" or advice_decision_type == "buy":
@@ -1095,7 +1100,7 @@ def stabilize_decision_with_structure(
                     result,
                     language,
                     advice_key="range",
-                    reason_key="buy_near_resistance",
+                    reason_key="buy_near_resistance" + ("_price_only" if flow_absent else ""),
                     current_price=current_price,
                     support=support,
                     resistance=resistance,
@@ -1117,7 +1122,7 @@ def stabilize_decision_with_structure(
                     result,
                     language,
                     advice_key="range",
-                    reason_key="hold_mid_range",
+                    reason_key="hold_mid_range" + ("_price_only" if flow_absent else ""),
                     current_price=current_price,
                     support=support,
                     resistance=resistance,
@@ -1129,7 +1134,7 @@ def stabilize_decision_with_structure(
                     result,
                     language,
                     advice_key="shakeout",
-                    reason_key="sell_near_support",
+                    reason_key="sell_near_support" + ("_price_only" if flow_absent else ""),
                     current_price=current_price,
                     support=support,
                     resistance=resistance,
@@ -1153,7 +1158,7 @@ def stabilize_decision_with_structure(
                     result,
                     language,
                     advice_key="shakeout",
-                    reason_key="hold_shakeout",
+                    reason_key="hold_shakeout" + ("_price_only" if flow_absent else ""),
                     current_price=current_price,
                     support=support,
                     resistance=resistance,
@@ -1164,7 +1169,7 @@ def stabilize_decision_with_structure(
                     result,
                     language,
                     advice_key="range",
-                    reason_key="hold_mid_range",
+                    reason_key="hold_mid_range" + ("_price_only" if flow_absent else ""),
                     current_price=current_price,
                     support=support,
                     resistance=resistance,
@@ -1316,6 +1321,19 @@ def _capital_flow_bias_with_status(
         if signal is not None:
             return signal, "ok"
     return "neutral", "neutral"
+
+
+def _capital_flow_structurally_absent(result: "AnalysisResult", flow_reason: str) -> bool:
+    """Whether the stock's market has no capital-flow source at all (US stocks)."""
+    reason = str(flow_reason or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if "not_supported" not in reason and "unsupported" not in reason:
+        return False
+    try:
+        from data_provider.us_index_mapping import is_us_stock_code
+
+        return bool(is_us_stock_code(str(getattr(result, "code", "") or "").strip().upper()))
+    except Exception:
+        return False
 
 
 def _capital_flow_status_for_stability(reason: str, language: str) -> str:
@@ -1556,6 +1574,10 @@ def _set_structural_hold_wording(
             "sell_with_inflow": "主力资金流入与卖出结论冲突，先按持有观察处理并跟踪支撑失效。",
             "hold_shakeout": "价格回落至支撑附近但资金未确认流出，更适合按洗盘观察处理。",
             "hold_mid_range": "价格处于支撑与压力之间且资金流不明确，维持震荡观望更可操作。",
+            "buy_near_resistance_price_only": "价格接近压力位且尚未有效突破，不宜仅因短线反弹追买。",
+            "hold_mid_range_price_only": "价格处于支撑与压力之间，等待突破或回踩支撑确认更可操作。",
+            "sell_near_support_price_only": "价格贴近支撑且尚未跌破，不宜仅因单日下跌直接卖出。",
+            "hold_shakeout_price_only": "价格回落至支撑附近但未跌破，更适合按洗盘观察处理。",
         },
         "en": {
             "buy_near_resistance": "Price is near resistance without confirmed main-force inflow, so chasing the rebound is not actionable.",
@@ -1564,6 +1586,10 @@ def _set_structural_hold_wording(
             "sell_with_inflow": "Main-force inflow conflicts with a sell call; hold and watch for support failure.",
             "hold_shakeout": "Price pulled back near support without confirmed outflow, which is better treated as a shakeout watch.",
             "hold_mid_range": "Price is between support and resistance with neutral fund flow, so range-bound watch is more actionable.",
+            "buy_near_resistance_price_only": "Price is near resistance without a confirmed breakout, so chasing the rebound is not actionable.",
+            "hold_mid_range_price_only": "Price is between support and resistance; wait for a breakout or a held pullback to support.",
+            "sell_near_support_price_only": "Price is near support and has not broken it, so a one-day drop is not enough to sell.",
+            "hold_shakeout_price_only": "Price pulled back to support without breaking it, which is better treated as a shakeout watch.",
         },
         "ko": {
             "buy_near_resistance": "가격이 저항선에 근접했고 주력 자금 유입이 확인되지 않아 단기 반등만 보고 추격 매수하기 어렵습니다.",
@@ -1574,7 +1600,8 @@ def _set_structural_hold_wording(
             "hold_mid_range": "가격이 지지선과 저항선 사이이고 자금 흐름이 불명확해 박스권 관망이 더 실행 가능합니다.",
         },
     }
-    reason = reason_templates.get(language, reason_templates["en"]).get(reason_key, "")
+    templates = reason_templates.get(language, reason_templates["en"])
+    reason = templates.get(reason_key) or templates.get(reason_key.removesuffix("_price_only"), "")
     if calibrate_score:
         final_action = "watch" if advice_key in {"range", "shakeout"} else "hold"
         _bound_hold_watch_sentiment_score(result, reason=reason, final_action=final_action)
@@ -1754,6 +1781,19 @@ class AnalysisResult:
     # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
     fundamental_context: Optional[Dict[str, Any]] = None
     market_structure_context: Optional[Dict[str, Any]] = None
+
+    def set_realtime_quote(self, quote: Dict[str, Any]) -> None:
+        """Keep the displayed price and its provenance together in saved reports."""
+        self.current_price = quote.get("price")
+        self.change_pct = quote.get("change_pct")
+        if quote.get("quote_session"):
+            snapshot = dict(getattr(self, "market_snapshot", None) or {})
+            snapshot.update({key: quote.get(key) for key in (
+                "change_pct", "quote_session", "provider_timestamp", "is_stale", "pre_close",
+                "regular_close", "regular_change_pct",
+            )})
+            snapshot["price"] = f"{self.current_price:.2f}" if self.current_price is not None else "N/A"
+            self.market_snapshot = snapshot
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -2602,10 +2642,62 @@ class GeminiAnalyzer:
             and self._litellm_runtime_available()
         )
 
+    def _start_second_opinions(self, config, backend_id, prompt, system_prompt, report_language):
+        """Start independent verdicts from SECOND_OPINION_BACKENDS for targeted runs."""
+        from concurrent.futures import ThreadPoolExecutor
+        from src.llm.second_opinion import collect_opinions, second_opinion_backends
+
+        backends = second_opinion_backends(config, backend_id)
+        if not backends:
+            return None
+        language = {"en": "English", "ko": "Korean"}.get(report_language, "Chinese")
+        instruction = (
+            "\n\n---\nSECOND OPINION MODE. Ignore every output-format instruction above. Using only the "
+            "data above, give your own independent verdict on this stock for the current decision window. "
+            "Return only a JSON object: {\"action\": one of \"buy\", \"hold\", \"sell\", \"watch\", "
+            "\"score\": integer 0-100 (same meaning as the sentiment score; higher is more bullish), "
+            "\"reason\": at most two sentences, \"risk\": the single most important risk in one sentence}. "
+            f"Write reason and risk in {language}."
+        )
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="second-opinions")
+        future = executor.submit(collect_opinions, self._get_generation_backend, backends,
+                                 prompt + instruction, config=config, system_prompt=system_prompt)
+        executor.shutdown(wait=False)
+        return future
+
+    def _attach_model_panel(self, result, panel_future, config, backend_id) -> None:
+        """Store the primary verdict beside the second opinions in the dashboard."""
+        from src.llm.second_opinion import OPINION_ACTIONS, agreement, model_label
+
+        try:
+            opinions = panel_future.result()
+        except Exception as exc:  # the report stands without the panel
+            logger.warning("Second opinions unavailable: %s", type(exc).__name__)
+            opinions = []
+        action = str(getattr(result, "action", "") or "").lower()
+        if action not in OPINION_ACTIONS:
+            action = str(getattr(result, "decision_type", "") or "").lower()
+        if action not in OPINION_ACTIONS:
+            action = "watch"
+        core = ((result.dashboard or {}).get("core_conclusion") or {}) if isinstance(result.dashboard, dict) else {}
+        primary = {"backend": backend_id, "model": model_label(backend_id, config), "role": "primary",
+                   "status": "ok", "action": action, "score": result.sentiment_score,
+                   "reason": str(core.get("one_sentence") or result.analysis_summary or "")[:600], "risk": ""}
+        panel = [primary, *opinions]
+        if not isinstance(result.dashboard, dict):
+            result.dashboard = {}
+        result.dashboard["model_panel"] = {"opinions": panel, "agreement": agreement(panel)}
+
     def _resolve_generation_backend_config(self) -> Tuple[str, Optional[str]]:
         """Resolve and validate generation backend ids."""
+        from src.llm.second_opinion import targeted_backend
+
         config = self._get_runtime_config()
         backend_id = resolve_generation_backend_id(config)
+        override = targeted_backend(config)
+        if override:
+            # User-requested analyses use the targeted (stronger) backend.
+            backend_id = resolve_generation_backend_id({"generation_backend": override})
         fallback_backend_id = resolve_generation_fallback_backend_id(config)
         return backend_id, fallback_backend_id
 
@@ -3870,6 +3962,10 @@ class GeminiAnalyzer:
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
             _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")
 
+            # 用户主动请求的分析：并行收集其他模型的独立意见（不阻塞主分析）
+            panel_future = self._start_second_opinions(
+                config, backend_id, prompt, system_prompt, report_language)
+
             # 使用 litellm 调用（支持完整性校验重试）
             current_prompt = prompt
             retry_count = 0
@@ -3922,7 +4018,8 @@ class GeminiAnalyzer:
                 result = self._parse_response(response_text, code, name)
                 result.raw_response = response_text
                 result.search_performed = bool(news_context)
-                result.market_snapshot = self._build_market_snapshot(context)
+                result.market_snapshot = self._build_market_snapshot(
+                    context, code=code, report_language=report_language)
                 result.model_used = model_used
                 result.report_language = report_language
                 normalize_chip_structure_availability(result, context.get("chip"))
@@ -3968,6 +4065,8 @@ class GeminiAnalyzer:
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
 
+            if panel_future is not None:
+                self._attach_model_panel(result, panel_future, config, backend_id)
             return result
             
         except Exception as e:
@@ -4105,11 +4204,27 @@ class GeminiAnalyzer:
         # 添加实时行情数据（量比、换手率等）
         if 'realtime' in context:
             rt = context['realtime']
+            quote_price_label = "参考价格（过期/未验证）" if rt.get('is_stale') is True else "当前价格"
+            if rt.get('quote_session'):
+                status = "Stale/unverified; historical reference only" if rt.get('is_stale') is True else "Provider-timestamped; may be delayed"
+                prompt += f"""
+### US session quote — separate from regular daily OHLC
+| Field | Value |
+|---|---|
+| Session | {rt['quote_session']} |
+| Quote time | {rt.get('provider_timestamp', 'Unavailable')} |
+| Session move | {rt.get('change_pct', 'Unavailable')}% |
+| Reference close | {rt.get('pre_close', 'Unavailable')} |
+| Status | {status} |
+
+Premarket/regular moves use the prior regular close; after-hours moves use today's regular close.
+Unavailable changes must not be inferred. Extended-hours prices are not regular daily closes.
+"""
             prompt += f"""
 ### 实时行情增强数据
 | 指标 | 数值 | 解读 |
 |------|------|------|
-| 当前价格 | {rt.get('price', 'N/A')} 元 | |
+| {quote_price_label} | {rt.get('price', 'N/A')} 元 | |
 | **量比** | **{rt.get('volume_ratio', 'N/A')}** | {rt.get('volume_ratio_desc', '')} |
 | **换手率** | **{rt.get('turnover_rate', 'N/A')}%** | |
 | 市盈率(动态) | {rt.get('pe_ratio', 'N/A')} | |
@@ -4533,21 +4648,70 @@ class GeminiAnalyzer:
             return 'N/A'
 
     def _format_price(self, value: Optional[float]) -> str:
-        """格式化价格显示"""
+        """格式化价格显示（低于 1 的价格保留 4 位有效数字，避免显示为 0.00）"""
         if value is None:
             return 'N/A'
         try:
-            return f"{float(value):.2f}"
+            number = float(value)
         except (TypeError, ValueError):
             return 'N/A'
+        if number != 0 and abs(number) < 1:
+            return f"{number:.4g}"
+        return f"{number:.2f}"
 
-    def _build_market_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """构建当日行情快照（展示用）"""
+    @staticmethod
+    def _snapshot_market(code: Optional[str]) -> str:
+        from data_provider.us_index_mapping import is_us_index_code, is_us_stock_code
+        text = str(code or "").strip().upper()
+        if is_us_stock_code(text) or is_us_index_code(text):
+            return "us"
+        if text.startswith("HK") or text.endswith(".HK"):
+            return "hk"
+        return "cn"
+
+    @staticmethod
+    def _format_compact_en(value: float) -> str:
+        for divisor, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+            if abs(value) >= divisor:
+                return f"{value / divisor:.2f}{suffix}"
+        return f"{value:.0f}"
+
+    def _format_snapshot_volume(self, volume: Optional[float], language: str) -> str:
+        if volume is None or language != "en":
+            return self._format_volume(volume)
+        return f"{self._format_compact_en(float(volume))} shares"
+
+    def _format_snapshot_amount(self, amount: Optional[float], market: str, language: str) -> str:
+        """成交额按标的币种显示；英文报告使用 K/M/B。"""
+        if amount is None:
+            return 'N/A'
+        amount = float(amount)
+        if language == "en":
+            symbol = {"us": "$", "hk": "HK$"}.get(market, "¥")
+            return f"{symbol}{self._format_compact_en(amount)}"
+        if market == "cn":
+            return self._format_amount(amount)
+        unit = "美元" if market == "us" else "港元"
+        if amount >= 1e8:
+            return f"{amount / 1e8:.2f} 亿{unit}"
+        if amount >= 1e4:
+            return f"{amount / 1e4:.2f} 万{unit}"
+        return f"{amount:.0f} {unit}"
+
+    def _build_market_snapshot(
+        self,
+        context: Dict[str, Any],
+        code: Optional[str] = None,
+        report_language: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """构建当日行情快照（展示用）；成交量/额按市场币种与报告语言显示。"""
+        market = self._snapshot_market(code or context.get('code'))
+        language = normalize_report_language(report_language or "zh")
         today = context.get('today', {}) or {}
         realtime = context.get('realtime', {}) or {}
         yesterday = context.get('yesterday', {}) or {}
 
-        prev_close = yesterday.get('close')
+        prev_close = today.get('prev_close', yesterday.get('close'))
         close = today.get('close')
         high = today.get('high')
         low = today.get('low')
@@ -4566,7 +4730,8 @@ class GeminiAnalyzer:
                 change_amount = None
 
         snapshot = {
-            "date": context.get('date', '未知'),
+            "date": today.get('date') or context.get('date', '未知'),
+            "is_partial_bar": today.get('is_partial_bar', today.get('is_estimated', False)),
             "close": self._format_price(close),
             "open": self._format_price(today.get('open')),
             "high": self._format_price(high),
@@ -4575,8 +4740,8 @@ class GeminiAnalyzer:
             "pct_chg": self._format_percent(today.get('pct_chg')),
             "change_amount": self._format_price(change_amount),
             "amplitude": self._format_percent(amplitude),
-            "volume": self._format_volume(today.get('volume')),
-            "amount": self._format_amount(today.get('amount')),
+            "volume": self._format_snapshot_volume(today.get('volume'), language),
+            "amount": self._format_snapshot_amount(today.get('amount'), market, language),
         }
 
         if realtime:

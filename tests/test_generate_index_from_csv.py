@@ -1004,3 +1004,24 @@ class TestIndexRegistrySeed:
         index_rows = [item for item in compressed if len(item) > 7 and item[7] == "index"]
         canonicals = [x[0] for x in index_rows]
         assert canonicals == sorted(canonicals)
+
+
+def test_us_etf_seed_merges_into_existing_index_without_touching_other_rows(tmp_path):
+    import json
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import generate_index_from_csv as gen
+    existing = [
+        ["AAPL", "AAPL", "APPLE", "APPLE", "APPLE", [], "US", "stock", True, 100],
+        ["SPYR", "SPYR", "SPYR", "SPYR", "SPYR", [], "US", "stock", True, 100],
+        ["000001.SZ", "000001", "平安银行", "pinganyinhang", "payh", [], "CN", "stock", True, 100],
+    ]
+    path = tmp_path / "stocks.index.json"
+    path.write_text(json.dumps(existing), encoding="utf-8")
+    merged = gen.run_us_etf_only(path)
+    assert merged[:3] == existing
+    by_code = {row[0]: row for row in merged}
+    assert by_code["SPY"][6:8] == ["US", "etf"] and by_code["QQQ"][7] == "etf"
+    # Re-running replaces the seed rows instead of duplicating them.
+    assert len(gen.run_us_etf_only(path)) == len(merged)
