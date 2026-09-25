@@ -28,6 +28,10 @@ RUNTIME_SCHEDULER_SUPPRESS_START_ENV = "DSA_RUNTIME_SCHEDULER_SUPPRESS_START"
 RUNTIME_SCHEDULER_ARGS_ENV = "DSA_RUNTIME_SCHEDULER_ARGS"
 RUNTIME_SCHEDULER_TIMEOUT_ENV = "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS"
 DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS = 45 * 60
+# A scheduled run that a restart interrupted is started again when the server
+# comes back within this many minutes of the run's start (at most twice).
+SCHEDULE_CATCHUP_MINUTES = 60
+SCHEDULE_CATCHUP_ATTEMPTS = 2
 _RUNTIME_ANALYSIS_LOCK = threading.Lock()
 SCHEDULE_ARGS_OVERRIDE_KEYS = {
     "no_notify",
@@ -76,6 +80,38 @@ def _setup_child_logging() -> None:
                       debug=bool(getattr(config, "debug", False)))
     except Exception:  # never block a scheduled run on logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+
+def _run_record_path() -> str:
+    database = os.getenv("DATABASE_PATH", "./data/stock_analysis.db")
+    return os.path.join(os.path.dirname(os.path.abspath(database)), "scheduled_run.json")
+
+
+def _read_run_record() -> Dict[str, Any]:
+    import json
+    try:
+        with open(_run_record_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_run_record(record: Dict[str, Any]) -> None:
+    import json
+    path = _run_record_path()
+    try:
+        temporary = f"{path}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+        os.replace(temporary, path)
+    except OSError as exc:  # the record only enables catch-up; runs never depend on it
+        logger.warning("Scheduled run record not written: %s", exc)
+
+
+def _latest_slot(times: List[str], now: datetime) -> Optional[str]:
+    passed = [value for value in times if value <= now.strftime("%H:%M")]
+    return f"{now.date().isoformat()} {max(passed)}" if passed else None
 
 
 def _run_scheduled_analysis_process(
@@ -486,6 +522,7 @@ class RuntimeSchedulerService:
         *,
         lock_held: bool = False,
         generation: Optional[int] = None,
+        scheduled: bool = False,
     ) -> None:
         if not lock_held and not self._run_lock.acquire(blocking=False):
             self._record_analysis_busy_skip()
@@ -496,6 +533,7 @@ class RuntimeSchedulerService:
 
         result_queue = None
         timeout_partial_context: Optional[Dict[str, Any]] = None
+        slot = _latest_slot(self._current_times(), datetime.now()) if scheduled else None
         try:
             context = multiprocessing.get_context("spawn")
             result_queue = context.Queue()
@@ -512,6 +550,11 @@ class RuntimeSchedulerService:
                 process.start()
                 self._analysis_process = process
                 self._last_run_at = run_started_at.isoformat()
+            if slot:
+                previous = _read_run_record()
+                attempts = previous.get("attempts", 0) + 1 if previous.get("slot") == slot else 1
+                _write_run_record({"slot": slot, "status": "started", "started_at": run_started_at.isoformat(),
+                                   "attempts": attempts})
 
             result = None
             deadline = time.monotonic() + timeout
@@ -525,6 +568,12 @@ class RuntimeSchedulerService:
                     if not process.is_alive():
                         deadline = min(deadline, time.monotonic() + 2)
 
+            if slot and (result is not None or not process.is_alive() or time.monotonic() >= deadline):
+                # Finished, failed or timed out: only a run cut off by a shutdown stays "started".
+                with self._analysis_process_lock:
+                    if generation == self._analysis_generation:
+                        _write_run_record({**_read_run_record(), "status": "finished",
+                                           "finished_at": datetime.now().isoformat()})
             if result is None and process.is_alive():
                 logger.error(
                     "Runtime scheduled analysis exceeded %ss; terminating worker",
@@ -597,6 +646,7 @@ class RuntimeSchedulerService:
         stock_codes: Optional[List[str]] = None,
         *,
         generation: Optional[int] = None,
+        scheduled: bool = False,
     ) -> bool:
         with self._analysis_process_lock:
             current_generation = self._analysis_generation
@@ -611,6 +661,7 @@ class RuntimeSchedulerService:
                 stock_codes,
                 lock_held=True,
                 generation=generation,
+                scheduled=scheduled,
             ),
             daemon=True,
             name="runtime-scheduler-watchdog",
@@ -701,6 +752,7 @@ class RuntimeSchedulerService:
             scheduled_analysis = partial(
                 self._start_analysis_watchdog,
                 generation=generation,
+                scheduled=True,
             )
             times = normalize_schedule_times(
                 getattr(config, "schedule_times", None),
@@ -737,6 +789,26 @@ class RuntimeSchedulerService:
             self._thread = thread
             self._enabled = True
             thread.start()
+            if not run_immediately and self._interrupted_slot(times):
+                self._run_in_background_thread(scheduled_analysis)
+
+    def _interrupted_slot(self, times: List[str]) -> bool:
+        """Whether the latest scheduled run was cut off by a restart and should start again."""
+        record = _read_run_record()
+        now = datetime.now()
+        slot = _latest_slot(times, now)
+        if not slot or record.get("slot") != slot or record.get("status") != "started":
+            return False
+        try:
+            started = datetime.fromisoformat(record["started_at"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if (now - started).total_seconds() > SCHEDULE_CATCHUP_MINUTES * 60:
+            return False
+        if record.get("attempts", 1) >= SCHEDULE_CATCHUP_ATTEMPTS + 1:
+            return False
+        logger.warning("Scheduled run for %s was interrupted by a restart; starting it again", slot)
+        return True
 
     def stop(self) -> None:
         with self._lock:

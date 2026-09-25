@@ -1093,8 +1093,16 @@ def stabilize_decision_with_structure(
         )
 
         has_significant_risk = _has_structural_risk_alert(result)
+        # Without capital-flow data (US), levels alone must not overrule a call that the
+        # deterministic trend confirms: a strong downtrend sells at support, a strong
+        # uptrend breaks out at resistance.
+        trend_confirms = flow_absent and _trend_confirms(trend_dict, decision_type)
 
-        if decision_type == "buy":
+        if decision_type == "buy" and trend_confirms:
+            pass
+        elif decision_type == "sell" and trend_confirms:
+            pass
+        elif decision_type == "buy":
             if near_resistance and flow_bias != "inflow":
                 _downgrade_to_structural_hold(
                     result,
@@ -1223,6 +1231,23 @@ def _sync_stability_dashboard_fields(result: "AnalysisResult") -> None:
     dashboard["sentiment_score"] = getattr(result, "sentiment_score", None)
     dashboard["operation_advice"] = getattr(result, "operation_advice", None)
     dashboard["decision_type"] = getattr(result, "decision_type", None)
+
+
+_BULL_TREND = {"强势多头", "多头排列"}
+_BEAR_TREND = {"强势空头", "空头排列"}
+_BUY_SIGNALS = {"强烈买入", "买入"}
+_SELL_SIGNALS = {"强烈卖出", "卖出"}
+
+
+def _trend_confirms(trend_dict: Dict[str, Any], decision_type: str) -> bool:
+    """Whether the rule-based trend (MA alignment or its signal) points the same way as the call."""
+    status = getattr(trend_dict.get("trend_status"), "value", trend_dict.get("trend_status"))
+    signal = getattr(trend_dict.get("buy_signal"), "value", trend_dict.get("buy_signal"))
+    if decision_type == "buy":
+        return status in _BULL_TREND or signal in _BUY_SIGNALS
+    if decision_type == "sell":
+        return status in _BEAR_TREND or signal in _SELL_SIGNALS
+    return False
 
 
 def _as_dict_for_decision_guard(value: Any) -> Dict[str, Any]:

@@ -304,7 +304,10 @@ async def events(request: Request, after: Optional[int] = Query(default=None, ge
     async def stream():
         nonlocal cursor
         while not await request.is_disconnected():
-            batch = await asyncio.to_thread(service.repo.events, after=cursor, limit=100)
+            try:
+                batch = await asyncio.to_thread(service.repo.events, after=cursor, limit=100)
+            except RuntimeError:
+                return  # the server is shutting down: the thread pool no longer accepts work
             for event in batch:
                 cursor = event["id"]
                 yield f"id: {cursor}\ndata: {json.dumps(event, allow_nan=False)}\n\n"

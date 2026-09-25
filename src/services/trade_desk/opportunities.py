@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -47,7 +48,9 @@ QUOTE_SECONDS = 60
 BREAKOUT_PACE = 1.3
 NEAR_TRIGGER = 0.02
 NEAR_STRENGTH = 60
-SCAN_BREAKOUTS_PER_DAY = 5  # names outside the watchlist; watchlist breakouts are not capped
+SCAN_BREAKOUTS_PER_DAY = 5
+BREAKOUT_MARGIN_ATR = 0.15  # beyond the level by this much, not a one-cent poke
+LEVELS_RETRY_SECONDS = 300  # names outside the watchlist; watchlist breakouts are not capped
 OPENING_GRACE = timedelta(minutes=15)
 REGIME = ("SPY", "QQQ")
 # Broad inverse ETFs; single stocks are shorted directly or with puts.
@@ -55,14 +58,21 @@ INVERSE_ETFS = {"SPY": "SH", "VOO": "SH", "IVV": "SH", "QQQ": "PSQ", "IWM": "RWM
                 "SMH": "SOXS (3x)", "SOXX": "SOXS (3x)", "XLF": "SEF", "TLT": "TBF"}
 
 
-_FUND_WORDS = re.compile(r"\b(daily|proshares|direxion|etf|shares|tradr|graniteshares|leverage[d]?)\b", re.I)
-_GEARED_WORDS = re.compile(r"\b(bear|bull|inverse|(short|long)(?![- ]term)|ultra\w*|[1-3](\.\d+)?x)\b", re.I)
+# Fund families that only issue daily-reset leveraged/inverse funds (report names are
+# often cut to ~31 characters, e.g. "Direxion Daily Semiconductor Be").
+_GEARED_FAMILY = re.compile(r"^(direxion daily|proshares (ultra|short)|tradr\b|t-rex\b|defiance daily|leverage shares|"
+                            r"microsectors|axs (\d|short))", re.I)
+_MULTIPLE = re.compile(r"(?<![\w.])-?[1-9](\.\d+)?x\b", re.I)
+_FUND_WORDS = re.compile(r"\b(daily|etf|shares|fund|trust|etn)\b", re.I)
+_INVERSE_WORDS = re.compile(r"\b(bear|bull|inverse)\b", re.I)
 
 
 def geared_fund(name: str) -> bool:
     """Leveraged or inverse ETFs: daily-reset funds that decay and are not shorted."""
-    from .pulse import leverage
-    return leverage(name or "") > 1 or bool(_GEARED_WORDS.search(name or "") and _FUND_WORDS.search(name or ""))
+    name = name or ""
+    if _GEARED_FAMILY.search(name.strip()):
+        return True
+    return bool(_FUND_WORDS.search(name) and (_MULTIPLE.search(name) or _INVERSE_WORDS.search(name)))
 
 
 def enabled() -> bool:
@@ -335,7 +345,8 @@ def breakout_levels(bars: List[Dict[str, Any]], day: date) -> Optional[Dict[str,
     highs, lows = [bar["high"] for bar in history], [bar["low"] for bar in history]
     ranges = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
               for i in range(len(history) - 14, len(history))]
-    volumes = [bar.get("volume") or 0 for bar in history[-50:]]
+    volumes = [volume if isinstance(volume, (int, float)) and math.isfinite(volume) else 0
+               for volume in (bar.get("volume") for bar in history[-50:])]
     return {"high20": max(highs[-20:]), "low20": min(lows[-20:]), "ma50": sum(closes[-50:]) / 50,
             "atr": sum(ranges) / len(ranges), "avg_volume": sum(volumes) / len(volumes)}
 
@@ -365,11 +376,13 @@ class BreakoutWatch:
         self._next = 0.0
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="breakout-levels")
         self._loading = None
+        self._retry_at: Optional[float] = None
 
     def stop(self):
         self._pool.shutdown(wait=False, cancel_futures=True)
 
-    def add(self, bars: Dict[str, List[Dict[str, Any]]], day: date, context: Optional[Dict[str, str]] = None) -> None:
+    def add(self, bars: Dict[str, List[Dict[str, Any]]], day: date,
+            context: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         """Levels for names from a scan, computed from bars already downloaded."""
         self._extra = list(bars)
         self._context.update(context or {})
@@ -382,14 +395,21 @@ class BreakoutWatch:
 
     def _load(self, day: date, tickers: List[str]) -> Dict[str, Dict[str, float]]:
         bars = self._bars(tickers)
-        return {ticker: levels for ticker, rows in bars.items() if (levels := breakout_levels(rows, day))}
+        levels = {ticker: levels for ticker, rows in bars.items() if (levels := breakout_levels(rows, day))}
+        if tickers and len(levels) < len(tickers) / 2:
+            raise RuntimeError(f"levels for only {len(levels)}/{len(tickers)} tickers")
+        return levels
 
     def tick(self, now: datetime, session: str) -> None:
         if session != "regular":
             return
         day = _session_day(now)
-        if self._day != day:
-            self._day, self._levels = day, {}
+        clock = self._clock()
+        if self._day != day or (self._retry_at is not None and clock >= self._retry_at and self._loading is None):
+            if self._day != day:
+                # Notes from an earlier day's review never ride on today's alerts.
+                self._day, self._levels, self._context = day, {}, {}
+            self._retry_at = None
             tickers = list(dict.fromkeys([*self._watchlist(), *self._extra]))
             self._loading = self._pool.submit(self._load, day, tickers)
             return
@@ -398,10 +418,10 @@ class BreakoutWatch:
                 return
             try:
                 self._levels = {**self._loading.result(), **self._levels}
-            except Exception as exc:  # the next day retries; scans still add names
-                logger.warning("Breakout levels unavailable: %s", type(exc).__name__)
+            except Exception as exc:  # retried in a few minutes; scans still add names
+                logger.warning("Breakout levels unavailable: %s", exc)
+                self._retry_at = clock + LEVELS_RETRY_SECONDS
             self._loading = None
-        clock = self._clock()
         if clock < self._next or not self._levels:
             return
         self._next = clock + QUOTE_SECONDS
@@ -416,8 +436,9 @@ class BreakoutWatch:
             if not levels or not price or not volume or levels["avg_volume"] <= 0:
                 continue
             pace = volume / (levels["avg_volume"] * fraction)
-            up = price > levels["high20"] and price > levels["ma50"]
-            down = price < levels["low20"] and price < levels["ma50"]
+            margin = BREAKOUT_MARGIN_ATR * levels["atr"]
+            up = price > levels["high20"] + margin and price > levels["ma50"]
+            down = price < levels["low20"] - margin and price < levels["ma50"]
             if pace < BREAKOUT_PACE or not (up or down):
                 continue
             key = f"breakout:{day.isoformat()}:{ticker}:{'up' if up else 'down'}"
@@ -428,7 +449,10 @@ class BreakoutWatch:
             sign, level = (1, levels["high20"]) if up else (-1, levels["low20"])
             stop, atr = price - sign * 1.5 * levels["atr"], levels["atr"]
             change = quote.get("change_pct")
-            note = self._context.get(ticker, "")
+            review = self._context.get(ticker) or {}
+            same_way = review.get("direction") == ("long" if up else "short")
+            note = (review.get("text", "") if same_way else
+                    f"Today's trend review was {review['direction']}; this move goes against it." if review else "")
             geared = geared_fund(quote.get("name", ""))
             held_note = self._held(ticker) if self._held is not None else ""
             if geared:  # daily-reset funds: ATR targets mean little and shorting them is not advised
@@ -444,8 +468,13 @@ class BreakoutWatch:
                     earnings_line = earnings.note(self._earnings_date(ticker, day), day)
                 except Exception:  # the alert goes out without the note
                     earnings_line = ""
-                levels_line = (f"Swing levels: stop {stop:.2f} (1.5 ATR) · targets {price + sign * 3 * atr:.2f} / "
-                               f"{price + sign * 4.5 * atr:.2f}")
+                if same_way and review.get("stop") and review.get("targets"):
+                    # The trend review's own levels, so the two messages agree.
+                    levels_line = (f"Idea levels: stop {review['stop']:.2f} · targets "
+                                   + " / ".join(f"{target:.2f}" for target in review["targets"]))
+                else:
+                    levels_line = (f"Swing levels: stop {stop:.2f} (1.5 ATR) · targets {price + sign * 3 * atr:.2f} / "
+                                   f"{price + sign * 4.5 * atr:.2f}")
                 how = ("buy shares with that stop" if up else
                        "sell/trim if held · short shares (margin + borrow; loss unbounded — use the stop)")
                 if held_note:
@@ -473,9 +502,11 @@ class OpportunityRunner:
                  news: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
                  review: Callable[[str], Optional[List[Dict[str, Any]]]] = _review_with_llm,
                  earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
-                 held: Optional[Callable[[str], str]] = None):
+                 held: Optional[Callable[[str], str]] = None,
+                 schedule_times: Optional[Callable[[], List[str]]] = None):
         self.service = service
         self._held = held
+        self._schedule_times = schedule_times or _configured_schedule_times
         self._earnings_date = earnings_date
         self.emit = emit
         self.breakouts = breakouts
@@ -533,24 +564,57 @@ class OpportunityRunner:
             return
         rows = self.service.repo.db.get_analysis_history(days=1, limit=200)
         if self._last_id is None:
-            # After a restart, a run from the last hour is still processed; its
-            # persisted dedup key stops a second message if it was already sent.
-            self._last_id = max((row.id for row in rows if row.created_at
-                                 and _naive(now) - row.created_at > WINDOW), default=0)
+            state = self._state()
+            if state.get("day") == _session_day(now).isoformat():
+                self._announced_day = _session_day(now)
+                self._announced = dict(state.get("announced") or {})
+            # The last published run survives restarts; without one, a run from the
+            # last hour is still processed (its slot's dedup key stops a second send).
+            self._last_id = state.get("last_id") or max(
+                (row.id for row in rows if row.created_at and _naive(now) - row.created_at > WINDOW), default=0)
         batch = [row for row in rows if row.id > self._last_id and _US_TICKER.match(str(row.code or ""))
+                 and str(row.code).upper() not in NOT_TICKERS
                  and row.created_at and _naive(now) - row.created_at <= WINDOW]
         if len(batch) < MIN_BATCH or _naive(now) - max(row.created_at for row in batch) < SETTLE:
             return
         self._last_id = max(row.id for row in batch)
+        slot = self._slot(min(row.created_at for row in batch))
+        if slot is None:
+            return  # one-off analyses, not a scheduled run
         reports = {}
         for row in sorted(batch, key=lambda item: item.id):
             reports[row.code] = {"id": row.id, "name": str(getattr(row, "name", "") or ""),
                                  "advice": row.operation_advice, "score": row.sentiment_score,
                                  "summary": " ".join(str(row.analysis_summary or "").split())[:400]}
-        self._scan = self._pool.submit(self.scan, reports, self._last_id)
+        self._scan = self._pool.submit(self.scan, reports, self._last_id, slot)
+
+    def _state(self) -> Dict[str, Any]:
+        try:
+            return self.service.repo.setting("opportunity_state", {}) or {}
+        except Exception:
+            return {}
+
+    def _save_state(self, day: date) -> None:
+        try:
+            self.service.repo.set_setting("opportunity_state", {"last_id": self._last_id, "day": day.isoformat(),
+                                                                "announced": self._announced})
+        except Exception as exc:  # restarts may then repeat a scan; the slot key still stops a second send
+            logger.info("Opportunity state not saved: %s", type(exc).__name__)
+
+    def _slot(self, first: datetime) -> Optional[str]:
+        """The scheduled time this batch belongs to (its first report within an hour of it), else None."""
+        for value in sorted(self._schedule_times(), reverse=True):
+            try:
+                hour, minute = (int(part) for part in value.split(":"))
+            except ValueError:
+                continue
+            start = first.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if start <= first <= start + WINDOW:
+                return f"{first.date().isoformat()} {value}"
+        return None
 
     # scan (background thread) ----------------------------------------------
-    def scan(self, reports: Dict[str, Dict[str, Any]], batch_id: int) -> Dict[str, Any]:
+    def scan(self, reports: Dict[str, Dict[str, Any]], batch_id: int, slot: str = "") -> Dict[str, Any]:
         from data_provider.us_session import session_window
         now = self._now()
         watchlist = [t for t in self._watchlist() if _US_TICKER.match(t)]
@@ -594,10 +658,12 @@ class OpportunityRunner:
         near = {ticker: bars[ticker] for ticker, setup in scores.items()
                 if ticker not in REGIME and setup["strength"] >= NEAR_STRENGTH
                 and min(abs(setup["price"] / setup["high20"] - 1), abs(setup["price"] / setup["low20"] - 1)) <= NEAR_TRIGGER}
-        notes = {idea["ticker"]: f"Trend review: {idea['direction']} · {idea['conviction']} conviction — {idea.get('thesis', '')}"
+        notes = {idea["ticker"]: {"direction": idea["direction"], "stop": idea["stop"], "targets": idea["targets"],
+                                  "text": f"Trend review: {idea['direction']} · {idea['conviction']} conviction — "
+                                          f"{idea.get('thesis', '')}"}
                  for idea in ideas}
         logger.info("Trade opportunities: %d scored, %d candidates, %d ideas", len(scores), len(candidates), len(ideas))
-        return {"batch": batch_id, "ideas": ideas, "regime": regime, "day": _session_day(now),
+        return {"batch": batch_id, "slot": slot or str(batch_id), "ideas": ideas, "regime": regime, "day": _session_day(now),
                 "watch_bars": {**{t: bars[t] for t in watchlist if t in bars}, **near}, "notes": notes,
                 "scored": len(scores), "candidates": len(candidates)}
 
@@ -610,18 +676,20 @@ class OpportunityRunner:
         fresh, repeats = [], []
         for idea in result["ideas"]:
             if self._held is not None:
-                idea["held_note"] = self._held(idea["ticker"]) or ""
+                idea["held_note"] = self._held(idea["ticker"])  # None when holdings are unknown
             previous = self._announced.get(idea["ticker"])
             (repeats if previous == f"{idea['direction']}:{idea['conviction']}" else fresh).append(idea)
             self._announced[idea["ticker"]] = f"{idea['direction']}:{idea['conviction']}"
         if not fresh:
+            self._save_state(result["day"])
             return  # nothing new since the last run today
         follow = {idea["ticker"] for idea in fresh if idea["conviction"] == "high"
                   and not geared_fund(idea.get("name", ""))} if regular_session else set()
         scanned = (f"Scanned {result['scored']} stocks · {result['candidates']} strong trends reviewed · "
                    f"{len(result['ideas'])} passed")
         event = self.emit("trade_opportunities", {"underlying": "", "message": format_message(
-            fresh, repeats, result["regime"], options_follow=follow, scanned=scanned)}, f"opportunities:{result['batch']}")
+            fresh, repeats, result["regime"], options_follow=follow, scanned=scanned)}, f"opportunities:{result['slot']}")
+        self._save_state(result["day"])
         if event is None:
             return  # already sent before a restart
         jobs = {}
@@ -645,7 +713,7 @@ class OpportunityRunner:
                 continue
             jobs[job["id"]] = f"{'long' if bullish else 'short'} · high"
         if jobs:
-            self._pending = {"jobs": jobs, "batch": result["batch"], "started": self._now()}
+            self._pending = {"jobs": jobs, "batch": result["slot"], "started": self._now()}
 
     def _finish_options(self) -> None:
         pending = self._pending
@@ -660,6 +728,17 @@ class OpportunityRunner:
         if lines:
             self.emit("options_ideas", {"underlying": "", "message": "\n".join(lines)},
                       f"options-ideas:{pending['batch']}")
+
+
+NOT_TICKERS = {"MARKET"}  # the market review row
+
+
+def _configured_schedule_times() -> List[str]:
+    from src.config import get_config
+    from src.scheduler import normalize_schedule_times
+    config = get_config()
+    return normalize_schedule_times(getattr(config, "schedule_times", None),
+                                    fallback_time=getattr(config, "schedule_time", "18:00"))
 
 
 def _naive(now: datetime) -> datetime:

@@ -33,7 +33,15 @@ def volume_fraction(now: datetime) -> float:
     """Expected share of the day's volume already traded at ``now`` (1.0 outside the session)."""
     local = now.astimezone(_NEW_YORK)
     opened = datetime.combine(local.date(), dtime(9, 30), _NEW_YORK)
-    minutes = (local - opened).total_seconds() / 60
+    length = 390.0
+    try:  # early-close days (13:00) compress the same profile into a shorter session
+        from src.core.trading_calendar import get_market_session_bounds
+        start, end = get_market_session_bounds("us", now)
+        if start is not None and end is not None:
+            opened, length = start.astimezone(_NEW_YORK), (end - start).total_seconds() / 60
+    except Exception:
+        pass
+    minutes = (local - opened).total_seconds() / 60 * 390 / max(length, 1)
     if minutes <= 0 or minutes >= 390:
         return 1.0
     for (m0, f0), (m1, f1) in zip(_VOLUME_CURVE, _VOLUME_CURVE[1:]):

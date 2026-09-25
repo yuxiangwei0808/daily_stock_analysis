@@ -20,11 +20,13 @@ never share counts, cost or dollar amounts; the dashboard shows the details.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -78,7 +80,11 @@ def parse_code(code: str) -> Dict[str, Any]:
             "right": "call" if right == "C" else "put", "strike": int(strike) / 1000}
 
 
-def _trading_day(day: date) -> bool:
+CALENDAR_HORIZON = timedelta(days=300)  # the holiday calendar only covers about a year ahead
+
+
+@lru_cache(maxsize=4096)
+def _calendar_open(day: date) -> bool:
     from src.core.trading_calendar import is_market_open
     try:
         return bool(is_market_open("us", day))
@@ -86,24 +92,26 @@ def _trading_day(day: date) -> bool:
         return day.weekday() < 5
 
 
+def _trading_day(day: date, today: Optional[date] = None) -> bool:
+    if today is not None and day - today > CALENDAR_HORIZON:
+        return day.weekday() < 5  # beyond the calendar: weekdays, without per-day warnings
+    return _calendar_open(day)
+
+
 def trading_days_until(expiry: date, today: date) -> int:
     """Trading sessions after today up to and including expiry (0 on expiration day)."""
-    from src.core.trading_calendar import is_market_open
     days, cursor = 0, today
     while cursor < expiry:
         cursor += timedelta(days=1)
-        try:
-            open_day = is_market_open("us", cursor)
-        except Exception:
-            open_day = cursor.weekday() < 5
-        days += 1 if open_day else 0
+        days += 1 if _trading_day(cursor, today) else 0
     return days
 
 
 def _mark(quote: Optional[Dict[str, Any]], fallback: Optional[float]) -> Optional[float]:
+    """Bid/ask mid; with no bid, half the ask. A last trade is used only without any quote."""
     if quote:
-        bid, ask = quote.get("bid"), quote.get("ask")
-        if bid and ask and 0 < bid <= ask:
+        bid, ask = quote.get("bid") or 0, quote.get("ask") or 0
+        if ask > 0 and 0 <= bid <= ask:
             return (bid + ask) / 2
         if quote.get("price"):
             return quote["price"]
@@ -150,7 +158,8 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
         mark = _mark(quotes.get(info["ticker"]), row.get("price"))
         groups.setdefault((info["underlying"], info["expiry"]), []).append(
             {**info, "code": info["ticker"], "name": row.get("name", ""), "qty": qty,
-             "average_cost": row.get("average_cost"), "mark": mark})
+             "average_cost": row.get("average_cost"), "mark": mark,
+             "prev_close": (quotes.get(info["ticker"]) or {}).get("prev_close")})
     options = []
     for (underlying, expiry), legs in sorted(groups.items()):
         cost = sum(leg["qty"] * (leg["average_cost"] or 0) * 100 for leg in legs)
@@ -159,15 +168,22 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
         net_calls = sum(leg["qty"] for leg in legs if leg["right"] == "call")
         strikes = sorted({leg["strike"] for leg in legs})
         points = [0.0, *strikes, strikes[-1] * 3]
-        max_value = None if net_calls > 0 else max(_intrinsic(legs, spot) for spot in points)
+        # A cap exists only with short legs; long-only positions (a long put too) use on-cost levels.
+        capped = net_calls <= 0 and any(leg["qty"] < 0 for leg in legs)
+        max_value = max(_intrinsic(legs, spot) for spot in points) if capped else None
         pnl_pct = (value - cost) / abs(cost) * 100 if value is not None and cost else None
+        previous = (sum(leg["qty"] * leg["prev_close"] * 100 for leg in legs)
+                    if all(leg.get("prev_close") for leg in legs) else None)
+        day_pct = (value - previous) / abs(previous) * 100 if value is not None and previous else None
         pct_of_max = ((value - cost) / (max_value - cost) * 100
                       if value is not None and max_value is not None and max_value > cost else None)
         spot = (quotes.get(underlying) or {}).get("price")
-        options.append({"key": f"{underlying} {expiry.isoformat()}", "underlying": underlying,
+        signature = hashlib.sha1("|".join(sorted(f"{leg['code']}:{leg['qty']:g}" for leg in legs)).encode()).hexdigest()[:10]
+        options.append({"key": f"{underlying} {expiry.isoformat()}", "underlying": underlying, "signature": signature,
+                        "expired": expiry < today,
                         "expiry": expiry.isoformat(), "days_left": trading_days_until(expiry, today),
                         "label": _label(legs), "legs": legs, "cost": cost, "value": value, "max_value": max_value,
-                        "pnl_pct": pnl_pct, "pct_of_max": pct_of_max, "underlying_price": spot,
+                        "pnl_pct": pnl_pct, "pct_of_max": pct_of_max, "underlying_price": spot, "day_pct": day_pct,
                         "weight_pct": abs(value) / total * 100 if total and value is not None else None})
     return {"account": raw.get("account"), "account_type": raw.get("account_type"),
             "synced_at": raw.get("synced_at"), "total_assets": total, "cash": raw.get("cash"),
@@ -185,7 +201,8 @@ def describe_option(position: Dict[str, Any]) -> str:
     if (position.get("pct_of_max") or 0) > 0:
         parts.append(f"{position['pct_of_max']:.0f}% of max profit")
     days = position["days_left"]
-    parts.append("expires today" if days == 0 else f"{days} trading day{'s' if days != 1 else ''} left")
+    parts.append("expired" if position.get("expired") else "expires today" if days == 0
+                 else f"{days} trading day{'s' if days != 1 else ''} left")
     return " · ".join(parts)
 
 
@@ -196,40 +213,55 @@ def describe_stock(position: Dict[str, Any]) -> str:
 
 
 # -- rule text ------------------------------------------------------------------------
-_NUMBER = r"\$?(-?\d+(?:\.\d+)?)"
+_NUMBER = r"\$?([-+]?\d+(?:\.\d+)?)"
+_BELOW = re.compile(r"\b(loss|lose|loses|lost|losing|down|drawdown|below|under|drops?|falls?|lower|stop)\b|<|-\s*\d", re.I)
+_PNL_WORDS = re.compile(r"\b(loss|lose|loses|lost|losing|profit|gain|gains|p&l|pnl|drawdown|position|spread|option|"
+                        r"calls?|puts?|down|up|stop|return)\b|p&l", re.I)
+_ABOVE = re.compile(r"\b(profit|gain|gains|up|above|over|rises?|reach(?:es)?|hits?|target|higher)\b|>|\+\s*\d", re.I)
 
 
 def parse_rule_text(text: str) -> Optional[Dict[str, Any]]:
-    """Common phrasings to a rule draft; None when the wording is not recognised."""
+    """Common phrasings to a rule draft; None when the wording is ambiguous or not recognised."""
     lowered = " ".join(text.lower().split())
-    patterns = [
-        ("days_to_expiry", rf"{_NUMBER}\s*(?:trading\s*)?days?\s*(?:left\s*)?(?:before|to|until|till|of|from)?\s*(?:the\s*)?expir"),
-        ("days_to_expiry", rf"expir\w*\s*(?:in|within|of|at)?\s*{_NUMBER}\s*(?:trading\s*)?days?"),
-        ("pnl_below", rf"(?:loss|lose|losing|down|drawdown|p&l|pnl)\D{{0,20}}?-?{_NUMBER}\s*%"),
-        ("pnl_above", rf"(?:profit|gain|up|p&l|pnl)\D{{0,20}}?\+?{_NUMBER}\s*%"),
-        ("price_below", rf"(?:drops?|falls?|below|under|stop(?:\s*loss)?|breaks?|<=?|lower than)\D{{0,25}}?{_NUMBER}"),
-        ("price_above", rf"(?:rises?|above|over|exceeds?|breaks? out|>=?|higher than|reach(?:es)?|hits?|target)\D{{0,25}}?{_NUMBER}"),
-    ]
-    for kind, pattern in patterns:
+    for pattern in (rf"\b{_NUMBER}\s*(?:trading\s*)?days?\s*(?:left\s*)?(?:before|to|until|till|of|from)?\s*(?:the\s*)?expir",
+                    rf"\bexpir\w*\s*(?:in|within|of|at)?\s*{_NUMBER}\s*(?:trading\s*)?days?\b"):
         match = re.search(pattern, lowered)
         if match:
-            value = float(match.group(1))
-            if kind == "pnl_below":
-                value = -abs(value)
-            elif kind in {"pnl_above", "days_to_expiry", "price_below", "price_above"}:
-                value = abs(value)
-            return {"kind": kind, "value": value, "note": text.strip()[:200]}
+            return {"kind": "days_to_expiry", "value": abs(float(match.group(1))), "note": text.strip()[:200]}
+    percent = re.search(rf"{_NUMBER}\s*%", lowered)
+    if percent:
+        if re.search(r"\bof\s+(?:the\s+)?max", lowered):
+            return None  # share of max profit is not an alert type
+        if not _PNL_WORDS.search(lowered):
+            return None  # "USO falls 5%" is a price move, not position P&L
+        value = float(percent.group(1))
+        below, above = bool(_BELOW.search(lowered)), bool(_ABOVE.search(lowered))
+        if percent.group(1).startswith("-") or (below and not above):
+            return {"kind": "pnl_below", "value": -abs(value), "note": text.strip()[:200]}
+        if percent.group(1).startswith("+") or (above and not below):
+            return {"kind": "pnl_above", "value": abs(value), "note": text.strip()[:200]}
+        return None
+    # A price: a number not followed by % or a period word ("50 day average").
+    for kind, words in (("price_below", r"(?:drops?|falls?|below|under|stop(?:\s*loss)?|breaks? down|lower than|<=?)"),
+                        ("price_above", r"(?:rises?|above|over|exceeds?|breaks? out|higher than|reach(?:es)?|hits?|"
+                                        r"target|>=?)")):
+        match = re.search(rf"(?:\b|(?=[<>])){words}\D{{0,25}}?{_NUMBER}(?![\d.]*\s*(?:%|-?\s*days?\b|/))", lowered)
+        if match:
+            return {"kind": kind, "value": abs(float(match.group(1))), "note": text.strip()[:200]}
     return None
 
 
-def parse_rule_with_model(text: str, position: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def parse_rule_with_model(text: str, position: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Model fallback; it sees only the Discord-safe description of the position, never amounts."""
     from src.agent.runner import try_parse_json
     from .advisor import _generation_backend
+    described = ("none (a ticker alert)" if not position else describe_option(position) if "expiry" in position
+                 else describe_stock(position))
     prompt = ("Turn this alert request about one brokerage position into JSON. Kinds: price_below / price_above "
               "(underlying stock price), days_to_expiry (trading days left, options only), pnl_below / pnl_above "
               "(position P&L in percent on cost; below uses a negative number). Return only "
               '{"kind": "...", "value": <number>} or {"kind": null} if it is not one of these.\n'
-              f"Position: {position}\nRequest: {text}")
+              f"Position: {described}\nRequest: {text}")
     backend, _ = _generation_backend()
     data = try_parse_json(backend.generate(prompt, {"temperature": 0, "max_output_tokens": 512}).text or "") or {}
     if data.get("kind") in RULE_KINDS and isinstance(data.get("value"), (int, float)):
@@ -293,10 +325,19 @@ class Holdings:
         raw = self.raw()
         quotes = {}
         if live and raw.get("positions"):
+            codes = self.codes(raw)
+            provider = self.service.provider("live")
             try:
-                quotes = self.service.provider("live").watchlist_quotes(self.codes(raw))
-            except Exception as exc:  # broker prices from the last sync remain
+                quotes = provider.watchlist_quotes(codes)
+            except Exception as exc:
+                # One unquotable code must not blank every price: retry stocks and options apart.
                 logger.info("Holdings quotes unavailable: %s", type(exc).__name__)
+                for part in ([c for c in codes if parse_code(c)["kind"] == "stock"],
+                             [c for c in codes if parse_code(c)["kind"] == "option"]):
+                    try:
+                        quotes.update(provider.watchlist_quotes(part) if part else {})
+                    except Exception:
+                        pass  # broker prices from the last sync remain
         return build_view(raw, quotes, _local(now or utcnow()).date())
 
     def note(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> str:
@@ -357,7 +398,12 @@ class Holdings:
                 else (f"{ticker} shares" if position else ""),
                 **checked, "note": str(body.get("note") or "")[:200],
                 "repeat": "daily" if body.get("repeat") == "daily" else "once",
-                "status": "active", "created_at": utcnow().isoformat(), "triggered_at": None}
+                "status": "active", "arm": 0, "created_at": utcnow().isoformat(), "triggered_at": None}
+        live = self.view()
+        now_value = rule_fires(rule, self.position(rule["position_key"], live),
+                               _prices(live).get(ticker) if rule["kind"].startswith("price") else None)
+        if now_value is not None:
+            rule["warning"] = f"This already holds (now {now_value}); it will fire at the next check in the session."
         with self._lock:
             rules = self.rules()
             if len(rules) >= MAX_RULES:
@@ -371,14 +417,21 @@ class Holdings:
             rule = next((item for item in rules if item["id"] == rule_id), None)
             if rule is None:
                 raise KeyError(rule_id)
+            rearm = False
             if "status" in changes:
                 if changes["status"] not in {"active", "paused"}:
                     raise ValueError("Status must be active or paused")
+                rearm = changes["status"] == "active" and rule["status"] != "active"
                 rule["status"] = changes["status"]
-                if changes["status"] == "active":
-                    rule["triggered_at"] = None
             if "value" in changes:
                 rule.update(validate_rule({**rule, "value": changes["value"]}, None, check_position=False))
+                rearm = rearm or rule["status"] == "triggered"
+                if rule["status"] == "triggered":
+                    rule["status"] = "active"
+            if rearm:
+                # A new arm number gives the alert a fresh dedup key, so it can send again.
+                rule["arm"] = int(rule.get("arm") or 0) + 1
+                rule["triggered_at"] = None
             if "note" in changes:
                 rule["note"] = str(changes["note"] or "")[:200]
             self._save_rules(rules)
@@ -400,6 +453,12 @@ class Holdings:
                     if once:
                         item["status"] = "triggered"
             self._save_rules(rules)
+
+
+def _prices(view: Dict[str, Any]) -> Dict[str, float]:
+    prices = {row["ticker"]: row["price"] for row in view["stocks"] if row.get("price")}
+    prices.update({row["underlying"]: row["underlying_price"] for row in view["options"] if row.get("underlying_price")})
+    return prices
 
 
 def rule_fires(rule: Dict[str, Any], position: Optional[Dict[str, Any]], price: Optional[float]) -> Optional[str]:
@@ -440,28 +499,36 @@ class HoldingsMonitor:
         self._levels: Dict[str, Dict[str, float]] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="holdings")
         self._tasks: Dict[str, Any] = {}
-        self.last_error: Optional[str] = None
+        self.errors: Dict[str, str] = {}
+
+    @property
+    def last_error(self) -> Optional[str]:
+        """The broker sync's error; other tasks succeeding does not hide it."""
+        return self.errors.get("sync")
 
     def stop(self):
         self._pool.shutdown(wait=False, cancel_futures=True)
 
-    def _run(self, name: str, function, *args):
-        """Queue a background task unless the same one is still pending."""
+    def _run(self, name: str, function, *args) -> bool:
+        """Queue a background task unless the same one is still pending; True when queued."""
         task = self._tasks.get(name)
         if task is None or task.done():
-            self._tasks[name] = self._pool.submit(self._safe, function, *args)
+            self._tasks[name] = self._pool.submit(self._safe, name, function, *args)
+            return True
+        return False
 
-    def _safe(self, function, *args):
+    def _safe(self, name: str, function, *args):
         try:
             function(*args)
-            self.last_error = None
+            self.errors.pop(name, None)
         except Exception as exc:  # the next tick retries; alerts keep using the last snapshot
-            self.last_error = type(exc).__name__
-            logger.warning("Holdings %s failed: %s", getattr(function, "__name__", "task"), type(exc).__name__)
+            self.errors[name] = type(exc).__name__
+            logger.warning("Holdings %s failed: %s", name, type(exc).__name__)
 
     def _load_levels(self, day: date) -> None:
         tickers = self.holdings.tickers()
         levels = {}
+        earnings.many([t for t in tickers if not self._geared(t)], day, lookup=self._earnings_date)  # warm the cache
         from .opportunities import breakout_levels
         for ticker, rows in self._bars(tickers).items():
             found = breakout_levels(rows, day)
@@ -480,8 +547,8 @@ class HoldingsMonitor:
                 self._run("sync", self.holdings.sync)
                 return
         elif local.time() >= dtime(16, 5) and self._after_close_day != day and _trading_day(day):
-            self._after_close_day = day
-            self._run("sync", self.holdings.sync)
+            if self._run("sync", self.holdings.sync):  # a still-running session sync is not the close
+                self._after_close_day = day
             return
         elif (local.time() >= SUMMARY_AT and self._summary_day != day and _trading_day(day)
               and self._after_close_day == day and self._tasks.get("sync") is not None
@@ -497,7 +564,7 @@ class HoldingsMonitor:
         if session != "regular" or clock < self._next_quotes:
             return
         if self._levels_day != day:
-            self._levels_day = day  # retried tomorrow if the download fails
+            self._levels_day, self._levels = day, {}  # yesterday's levels never judge today
             self._run("levels", self._load_levels, day)
         self._next_quotes = clock + QUOTE_SECONDS
         self.check(now)
@@ -518,8 +585,7 @@ class HoldingsMonitor:
         local = _local(now)
         day = local.date()
         view = self.holdings.view(now=now)
-        prices = {row["ticker"]: row["price"] for row in view["stocks"]}
-        prices.update({row["underlying"]: row["underlying_price"] for row in view["options"] if row["underlying_price"]})
+        prices = _prices(view)
         extra = sorted({rule["ticker"] for rule in self.holdings.rules()
                         if rule["status"] == "active" and rule["ticker"] not in prices})
         if extra:  # alerts on tickers you do not hold
@@ -529,7 +595,13 @@ class HoldingsMonitor:
             except Exception as exc:
                 logger.info("Alert quotes unavailable: %s", type(exc).__name__)
         self._rules(view, prices, now)
-        morning, last_hour = local.time() >= MORNING, local.time() >= LAST_HOUR
+        from src.core.trading_calendar import get_market_session_bounds
+        try:
+            closing = get_market_session_bounds("us", now)[1]
+        except Exception:
+            closing = None
+        last_hour = (now >= closing - timedelta(hours=1)) if closing is not None else local.time() >= LAST_HOUR
+        morning = local.time() >= MORNING
         for position in view["options"]:
             self._option_defaults(position, day, morning, last_hour)
         for position in view["stocks"]:
@@ -556,12 +628,15 @@ class HoldingsMonitor:
                        f"{rule['value']:g}{'%' if rule['kind'].startswith('pnl') else ''} — now {observed}."
                        + (f"\nPosition: {context}" if context else "")
                        + (f"\nNote: {rule['note']}" if rule.get("note") else ""))
-            key = f"rule:{rule['id']}:{day if rule['repeat'] == 'daily' else 'once'}"
+            key = f"rule:{rule['id']}:{rule.get('arm') or 0}:{day if rule['repeat'] == 'daily' else 'once'}"
             self._alert("rule", rule["ticker"], message, key)
             self.holdings.mark_triggered(rule["id"], utcnow().isoformat(), rule["repeat"] == "once")
 
     def _option_defaults(self, position, day, morning, last_hour):
-        key, ticker, days = position["key"], position["underlying"], position["days_left"]
+        if position.get("expired"):
+            return  # the broker still lists it after expiry; nothing left to warn about
+        # The legs' signature keeps a rolled position on the same expiry from inheriting old alerts.
+        key, ticker, days = f"{position['key']}:{position.get('signature', '')}", position["underlying"], position["days_left"]
         text = describe_option(position)
         if morning and days in EXPIRY_WARN_DAYS:
             self._alert("expiry", ticker, f"Expires in {days} trading day{'s' if days != 1 else ''}: {text}",
@@ -610,11 +685,14 @@ class HoldingsMonitor:
                 self._alert("earnings", ticker, f"{earnings.note(when, day)}. {text}",
                             f"hold-earnings:{ticker}:{when.isoformat()}")
 
-    def _earnings(self, ticker: str, day: date) -> Optional[date]:
+    def _geared(self, ticker: str) -> bool:
         from .opportunities import geared_fund
         names = [row.get("name", "") for row in self.holdings.raw().get("positions") or []
                  if parse_code(row["code"])["ticker"] == ticker]
-        if names and geared_fund(names[0]):
+        return bool(names) and geared_fund(names[0])
+
+    def _earnings(self, ticker: str, day: date) -> Optional[date]:
+        if self._geared(ticker):
             return None
         try:
             return self._earnings_date(ticker, day)

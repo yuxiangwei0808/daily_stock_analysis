@@ -388,6 +388,7 @@ export interface HoldingRule {
   status: 'active' | 'paused' | 'triggered';
   createdAt: string;
   triggeredAt?: string | null;
+  warning?: string;
 }
 
 export interface PortfolioSummary {

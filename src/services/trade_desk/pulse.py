@@ -47,7 +47,8 @@ NEWS_MAX_AGE = timedelta(hours=2)
 NEWS_DAILY_LIMIT = 20
 OPENING_GRACE = timedelta(minutes=15)  # opening prints swing widely; day levels still alert
 FAST_DAILY_LIMIT = 3
-_LEVERAGE = [(re.compile(r"\b3x\b|ultrapro", re.I), 3.0), (re.compile(r"\b2x\b|\bultra\b", re.I), 2.0)]
+_LEVERAGE = [(re.compile(r"\b3x\b|ultrapro", re.I), 3.0),
+             (re.compile(r"\b2x\b|\bproshares ultra\b", re.I), 2.0)]
 _NAME_STOPWORDS = {"the", "inc", "corp", "corporation", "company", "group", "holdings", "trust", "fund",
                    "daily", "etf", "shares", "class", "ltd", "plc", "technologies", "spdr", "ishares"}
 
@@ -134,6 +135,7 @@ class MarketPulse:
         self._history: Dict[str, deque] = {}
         self._fast_alerted: Dict[str, datetime] = {}
         self._fast_counts: Dict[tuple, int] = {}
+        self._level_high: Dict[tuple, float] = {}  # (day, ticker, sign) -> highest level alerted
         self._names: Dict[str, str] = {}
         self._headlines: Dict[str, List[Dict[str, Any]]] = {}
         self._seen: set = set()
@@ -185,8 +187,11 @@ class MarketPulse:
             factor = leverage(self._names.get(ticker, ""))
             if change is not None:
                 crossed = [level for level in levels if abs(change) >= level * factor]
-                if crossed:
-                    level, sign = crossed[-1] * factor, "+" if change > 0 else "-"
+                sign = "+" if change > 0 else "-"
+                # A move giving back gains crosses lower levels again; only new highs alert.
+                if crossed and crossed[-1] * factor > self._level_high.get((day, ticker, sign), 0):
+                    level = crossed[-1] * factor
+                    self._level_high[(day, ticker, sign)] = level
                     self._emit("market_move", {
                         "underlying": ticker, "kind": "day_move", "price": price, "change_pct": change,
                         "message": f"{ticker} {'up' if change > 0 else 'down'} {abs(change):.1f}% today "

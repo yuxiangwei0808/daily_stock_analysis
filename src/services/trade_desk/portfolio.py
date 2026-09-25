@@ -69,7 +69,7 @@ def build_summary(view: Dict[str, Any], raw: Dict[str, Any], bars: Dict[str, Lis
     geared = geared or geared_fund
     total = view.get("total_assets") or 0
     stocks, options = view["stocks"], view["options"]
-    today_pl = sum(row.get("today_pl") or 0 for row in raw.get("positions") or [])
+    today_pl = sum(row.get("today_pl") or 0 for row in raw.get("positions") or []) + (raw.get("closed_today_pl") or 0)
     prior = total - today_pl
     stock_value = sum(row["value"] or 0 for row in stocks)
     option_value = sum(row["value"] or 0 for row in options)
@@ -100,8 +100,8 @@ def build_summary(view: Dict[str, Any], raw: Dict[str, Any], bars: Dict[str, Lis
                 pairs_offset.append((a["ticker"], b["ticker"], corr))
             elif corr >= TOGETHER_CORR and min(a.get("weight_pct") or 0, b.get("weight_pct") or 0) >= PAIR_MIN_WEIGHT:
                 pairs_together.append((a["ticker"], b["ticker"], corr))
-    movers = sorted((row for row in stocks if row.get("day_pct") is not None), key=lambda row: abs(row["day_pct"]),
-                    reverse=True)[:3]
+    movers = sorted((row for row in stocks + options if row.get("day_pct") is not None),
+                    key=lambda row: abs(row["day_pct"]) * (row.get("weight_pct") or 1) ** 0.5, reverse=True)[:3]
     upcoming = []
     for row in options:
         if row["days_left"] <= EXPIRY_DAYS:
@@ -133,8 +133,9 @@ def build_summary(view: Dict[str, Any], raw: Dict[str, Any], bars: Dict[str, Lis
                  "weight_pct": row.get("weight_pct"), "pnl_pct": row.get("pnl_pct"), "day_pct": row.get("day_pct")}
                 for row in top],
         "concentrated": [row["ticker"] for row in stocks if (row.get("weight_pct") or 0) >= CONCENTRATION],
-        "movers": [{"ticker": row["ticker"], "day_pct": row["day_pct"], "weight_pct": row.get("weight_pct")}
-                   for row in movers],
+        "movers": [{"ticker": row["ticker"] if "ticker" in row
+                    else f"{row['underlying']} {row['expiry'][5:].replace('-', '/')} {row['label']}",
+                    "day_pct": row["day_pct"], "weight_pct": row.get("weight_pct")} for row in movers],
         "offsets": [{"a": a, "b": b, "corr": round(c, 2)} for a, b, c in pairs_offset],
         "together": [{"a": a, "b": b, "corr": round(c, 2)} for a, b, c in pairs_together],
         "betas": {ticker: round(beta, 2) for ticker, beta in betas.items()},
@@ -181,8 +182,8 @@ def format_summary(summary: Dict[str, Any]) -> str:
         notes.append(f"Leveraged/inverse funds {_pct(summary['geared_pct'], False)} of the account "
                      f"({', '.join(summary['geared'])}) — daily reset, they lose value when held through chop")
     if summary.get("hedges"):
-        notes.append("Hedging the book: " + ", ".join(
-            f"{item['ticker']} {item['contribution'] * 100:+.0f}% of a 1% SPY move" for item in summary["hedges"]))
+        notes.append("Hedges: " + ", ".join(
+            f"{item['ticker']} takes {abs(item['contribution']):.2f}% off each 1% SPY move" for item in summary["hedges"]))
     notes += [f"{item['a']} and {item['b']} offset each other (correlation {item['corr']:+.2f})" for item in summary["offsets"]]
     notes += [f"{item['a']} and {item['b']} move together (correlation {item['corr']:+.2f})" for item in summary["together"]]
     if notes:

@@ -48,7 +48,9 @@ bot-token/channel configuration). Enable proactive suggestions and Discord deliv
 in Trade Desk preferences. New-idea delivery defaults to three per New York trading
 day and a 60-minute symbol cooldown. Position and data-outage alerts have separate
 deduplication and do not consume this idea limit. Delivery attempts are persisted;
-failures retry at most three times. Proactive discovery, its model runs (at most one per 15-minute cycle) and idea delivery happen only during the regular session; pre-market and after-hours produce none. Without Discord configuration the in-app journal
+failures retry at most three times. Long messages are sent in parts split at
+blank lines (an idea is never cut in half); a retry sends only the parts that
+failed. After a "wait" verdict a proactive symbol rests for four hours. Proactive discovery, its model runs (at most one per 15-minute cycle) and idea delivery happen only during the regular session; pre-market and after-hours produce none. Without Discord configuration the in-app journal
 remains available. `TRADE_DESK_PUBLIC_URL` should be the address accessible on your
 phone; localhost links on another device will not reach this server.
 
@@ -191,7 +193,11 @@ Both event types use the worker's deduplicated, retried Discord delivery
 With `TRADE_OPPORTUNITIES_ENABLED=true` (default off) the worker looks for
 strong trends to go long or short over days to weeks. Nothing is ordered.
 
-- **When:** after each scheduled stock-report run (at least five fresh US
+- **When:** after each scheduled stock-report run whose first report lands within
+  an hour of a `SCHEDULE_TIMES` slot (one-off analyses and the market-review row
+  never start a scan; the last published run and today's announced ideas are
+  kept in `trade_desk_settings` so restarts neither rescan nor resend; the
+  message's dedup key is the slot) — at least five fresh US
   reports, none in the last three minutes), including the after-close run.
 - **Universe:** the watchlist plus `SCREENING_US_UNIVERSE` (S&P 500 by default,
   loaded once a day), about 520 names, from one batched yfinance download of six
@@ -233,7 +239,12 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   are quoted every minute through OpenD. A price above the prior 20-day high and
   MA50 (or below the low and MA50) at ≥ 1.3× normal volume pace emits one
   `breakout` alert per stock, direction and day, with ATR stop and targets.
-  Names outside the watchlist are capped at five alerts a day.
+  Names outside the watchlist are capped at five alerts a day. The price must
+  clear the level by 0.15 ATR (no one-cent pokes); when today's trend review has
+  an idea in the same direction its stop and targets are shown instead of ATR
+  levels, and a move against the review says so. Notes reset each session; a
+  failed level download is retried after five minutes. Volume pace follows the
+  session's real length on early-close days.
 - **Leveraged/inverse ETFs** (detected from the name, e.g. "Bear 3X", "UltraPro
   Short"): long ideas say "short-term, small size"; bearish ones only say sell or
   trim if held (never short the fund); no options follow-up, and breakout alerts

@@ -90,7 +90,7 @@ function SummaryCard({ summary, onBuilt }: { summary?: PortfolioSummary | null; 
   );
 }
 
-function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: () => void; onCancel: () => void }) {
+function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: (warning?: string) => void; onCancel: () => void }) {
   const { t } = useUiLanguage();
   const kinds = useMemo<HoldingRuleKind[]>(() => (target.isOption
     ? ['price_below', 'price_above', 'days_to_expiry', 'pnl_below', 'pnl_above']
@@ -128,9 +128,9 @@ function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: 
     setBusy('save');
     setProblem('');
     try {
-      await tradeDeskApi.createHoldingRule({ positionKey: target.positionKey, ticker: target.ticker, kind, value: number,
+      const created = await tradeDeskApi.createHoldingRule({ positionKey: target.positionKey, ticker: target.ticker, kind, value: number,
         note: note.trim(), repeat });
-      onSaved();
+      onSaved(created.warning);
     } catch (error) {
       setProblem(errorText(error));
     } finally {
@@ -187,11 +187,16 @@ function RuleForm({ target, onSaved, onCancel }: { target: RuleTarget; onSaved: 
 function RuleList({ rules, onChanged }: { rules: HoldingRule[]; onChanged: () => void }) {
   const { t } = useUiLanguage();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [problem, setProblem] = useState('');
   if (!rules.length) return null;
   const run = async (rule: HoldingRule, action: () => Promise<unknown>) => {
     setBusyId(rule.id);
+    setProblem('');
     try {
       await action();
+      onChanged();
+    } catch (error) {
+      setProblem(errorText(error));
       onChanged();
     } finally {
       setBusyId(null);
@@ -199,6 +204,7 @@ function RuleList({ rules, onChanged }: { rules: HoldingRule[]; onChanged: () =>
   };
   return (
     <ul className="mt-3 space-y-2">
+      {problem ? <li className="text-xs text-danger">{problem}</li> : null}
       {rules.map((rule) => (
         <li key={rule.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-elevated/50 px-3 py-2 text-sm">
           <div className="min-w-0">
@@ -225,7 +231,7 @@ function RuleList({ rules, onChanged }: { rules: HoldingRule[]; onChanged: () =>
 }
 
 function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel }: {
-  position: HoldingOption; rules: HoldingRule[]; adding: boolean; onAdd: () => void; onChanged: () => void; onCancel: () => void;
+  position: HoldingOption; rules: HoldingRule[]; adding: boolean; onAdd: () => void; onChanged: (warning?: string) => void; onCancel: () => void;
 }) {
   const { t } = useUiLanguage();
   const expiry = position.expiry.slice(5).replace('-', '/');
@@ -272,7 +278,7 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel }: {
 
 function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
   stocks: HoldingStock[]; rulesFor: (key: string) => HoldingRule[]; adding: string | null;
-  onAdd: (key: string) => void; onChanged: () => void; onCancel: () => void;
+  onAdd: (key: string) => void; onChanged: (warning?: string) => void; onCancel: () => void;
 }) {
   const { t } = useUiLanguage();
   return (
@@ -357,7 +363,8 @@ export const HoldingsPanel: React.FC = () => {
     }
   };
 
-  const changed = () => { setAdding(null); void load(); };
+  const [notice, setNotice] = useState('');
+  const changed = (warning?: string) => { setAdding(null); setNotice(warning ?? ''); void load(); };
   const rules = data?.rules ?? [];
   const view = data?.view;
   const heldKeys = new Set([...(view?.stocks ?? []).map((row) => row.key), ...(view?.options ?? []).map((row) => row.key)]);
@@ -373,6 +380,7 @@ export const HoldingsPanel: React.FC = () => {
       <InlineAlert variant="info" message={t('tradeDesk.holdings.readOnly')} />
       {problem ? <InlineAlert variant="danger" message={problem} /> : null}
       {data?.error ? <InlineAlert variant="warning" message={`${t('tradeDesk.holdings.syncProblem')}: ${data.error}`} /> : null}
+      {notice ? <InlineAlert variant="warning" message={notice} action={<Button size="sm" variant="ghost" onClick={() => setNotice('')}>{t('tradeDesk.close')}</Button>} /> : null}
       <Card variant="gradient" padding="md">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -415,7 +423,7 @@ export const HoldingsPanel: React.FC = () => {
   );
 };
 
-function TickerRuleForm({ onSaved, onCancel }: { onSaved: () => void; onCancel: () => void }) {
+function TickerRuleForm({ onSaved, onCancel }: { onSaved: (warning?: string) => void; onCancel: () => void }) {
   const { t } = useUiLanguage();
   const [ticker, setTicker] = useState('');
   const symbol = ticker.trim().toUpperCase();

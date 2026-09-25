@@ -1052,6 +1052,9 @@ class StockAnalysisPipeline:
                 'price': getattr(realtime_quote, 'price', None),
                 'change_pct': getattr(realtime_quote, 'change_pct', None),
                 'pre_close': getattr(realtime_quote, 'pre_close', None),
+                # After the close change_pct is the after-hours move; these keep the day's.
+                'regular_close': getattr(realtime_quote, 'regular_close', None),
+                'regular_change_pct': getattr(realtime_quote, 'regular_change_pct', None),
                 'quote_session': getattr(realtime_quote, 'quote_session', None),
                 'data_quality': getattr(realtime_quote, 'data_quality', None),
                 'missing_fields': getattr(realtime_quote, 'missing_fields', None),

@@ -29,14 +29,30 @@ def collect_us_market_scan(watchlist=(), *, now=None):
             timeout_sec=parse_source_timeout_seconds("SCREENING_SNAPSHOT_CALL_TIMEOUT_SEC", default=60),
             label="US market session scan",
         )
-        equities = snapshot[snapshot.code.isin(universe)]
-        sectors = snapshot[snapshot.code.isin(SECTOR_ETFS)].sort_values("change_pct", ascending=False)
+        snapshot = snapshot.copy()
+        day_basis = (result["session"] == "postmarket" and "day_change_pct" in snapshot
+                     and len(snapshot) and snapshot["day_change_pct"].notna().mean() >= 0.5)
+        if day_basis:
+            # After the close, breadth, sectors and movers describe the regular session;
+            # the after-hours move stays beside it and drives the unverified-mover list.
+            snapshot["after_hours_pct"] = snapshot["change_pct"]
+            snapshot["after_hours_amount"] = snapshot["amount"]
+            snapshot["change_pct"] = snapshot["day_change_pct"]
+            snapshot["amount"] = snapshot["day_amount"].fillna(snapshot["amount"])
+        result["change_basis"] = "regular_session" if day_basis else "session"
+        equities = snapshot[snapshot.code.isin(universe) & snapshot.change_pct.notna()]
+        sectors = snapshot[snapshot.code.isin(SECTOR_ETFS) & snapshot.change_pct.notna()].sort_values(
+            "change_pct", ascending=False)
         tracked = {str(code).strip().upper().replace("-", ".") for code in watchlist}
         outside = equities[(~equities.code.isin(tracked)) & (equities.price >= 5)]
         candidates = outside[outside.amount >= 1_000_000]
         unverified_movers = []
+        after_hours_movers = []
         if result["session"] in {"premarket", "postmarket"}:
-            unverified = outside[outside.amount.fillna(0).le(0) & outside.change_pct.abs().ge(2)]
+            # Extended-session moves: after the close these use the after-hours columns.
+            move, amount = ("after_hours_pct", "after_hours_amount") if day_basis else ("change_pct", "amount")
+            extended = outside.assign(change_pct=outside[move], amount=outside[amount])
+            unverified = extended[extended.amount.fillna(0).le(0) & extended.change_pct.abs().ge(2)]
             unverified = unverified.assign(move_size=unverified.change_pct.abs()).sort_values(
                 "move_size", ascending=False, kind="stable",
             ).head(10)
@@ -44,6 +60,11 @@ def collect_us_market_scan(watchlist=(), *, now=None):
                 {**row, "liquidity_status": "unverified"}
                 for row in unverified[["code", "price", "change_pct", "provider_timestamp"]].to_dict("records")
             ]
+            if day_basis:
+                liquid = extended[(extended.amount >= 1_000_000) & extended.change_pct.abs().ge(2)]
+                after_hours_movers = liquid.assign(move_size=liquid.change_pct.abs()).sort_values(
+                    "move_size", ascending=False, kind="stable",
+                ).head(8)[["code", "price", "change_pct", "amount", "provider_timestamp"]].to_dict("records")
         fields = ["code", "price", "change_pct", "volume", "amount", "provider_timestamp"]
         sector_rows = [{"name": f"{SECTOR_ETFS[row.code]} ({row.code} ETF)", "code": row.code,
                         "change_pct": row.change_pct, "provider_timestamp": row.provider_timestamp}
@@ -62,7 +83,7 @@ def collect_us_market_scan(watchlist=(), *, now=None):
             "losers": candidates[candidates.change_pct <= -2].sort_values(
                 "change_pct", ascending=True, kind="stable",
             ).head(5)[fields].to_dict("records"),
-            "unverified_movers": unverified_movers,
+            "unverified_movers": unverified_movers, "after_hours_movers": after_hours_movers,
             "sectors": sector_rows, "sector_available_count": len(sector_rows),
             "warnings": snapshot.attrs.get("source_errors", []),
         })
@@ -80,8 +101,11 @@ def render_us_market_scan(scan, language="en"):
     lines.extend(str(warning) for warning in scan.get("warnings", []))
     if not scan.get("available"):
         return "\n\n".join(lines)
+    day_basis = scan.get("change_basis") == "regular_session"
     lines += [
-        f"As of: {scan.get('as_of')} | Session: {scan['session']} | Source: Yahoo Finance 5-minute bars",
+        f"As of: {scan.get('as_of')} | Session: {scan['session']} | Source: Yahoo Finance 5-minute bars"
+        + (" | Moves below are today's regular session (close vs previous close), not after-hours"
+           if day_basis else ""),
         f"Coverage: {scan['available_count']}/{scan['requested_count']} configured stocks; "
         f"{scan['excluded_count']} excluded. Sector ETF proxies: {scan['sector_available_count']}/11.",
         "Universe breadth only (not all US listings): "
@@ -97,10 +121,17 @@ def render_us_market_scan(scan, language="en"):
         if not rows:
             lines.append("No qualifying fresh candidates.")
             continue
-        lines += ["| Symbol | Price USD | Session move | Estimated session USD volume | Quote time |",
+        lines += [f"| Symbol | Price USD | {'Day move' if day_basis else 'Session move'} | "
+                  f"Estimated {'day' if day_basis else 'session'} USD volume | Quote time |",
                   "|---|---:|---:|---:|---|"]
         lines += [f"| {r['code']} | {r['price']:.2f} | {r['change_pct']:+.2f}% | {r['amount']:,.0f} | {r['provider_timestamp']} |"
                   for r in rows]
+    if scan.get("after_hours_movers"):
+        lines += ["#### After-hours movers outside your watchlist",
+                  "| Symbol | Price USD | After-hours move | Estimated after-hours USD volume | Quote time |",
+                  "|---|---:|---:|---:|---|"]
+        lines += [f"| {r['code']} | {r['price']:.2f} | {r['change_pct']:+.2f}% | {r['amount']:,.0f} | {r['provider_timestamp']} |"
+                  for r in scan["after_hours_movers"]]
     if scan.get("unverified_movers"):
         label = ("Price movers outside your watchlist — liquidity unverified" if language == "en"
                  else "自选股外价格异动 — 流动性未验证")
@@ -114,6 +145,7 @@ def render_us_market_scan(scan, language="en"):
                   "| Symbol | Price USD | Session move | Quote time |", "|---|---:|---:|---|"]
         lines += [f"| {r['code']} | {r['price']:.2f} | {r['change_pct']:+.2f}% | {r['provider_timestamp']} |"
                   for r in scan["unverified_movers"]]
-    lines += ["#### Sector ETF performance (proxies)", "| ETF / sector | Session move | Quote time |", "|---|---:|---|"]
+    lines += ["#### Sector ETF performance (proxies)",
+              f"| ETF / sector | {'Day move' if day_basis else 'Session move'} | Quote time |", "|---|---:|---|"]
     lines += [f"| {r['name']} | {r['change_pct']:+.2f}% | {r['provider_timestamp']} |" for r in scan.get("sectors", [])]
     return "\n\n".join(lines[:6]) + "\n\n" + "\n".join(lines[6:])

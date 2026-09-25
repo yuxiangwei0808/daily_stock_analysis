@@ -106,12 +106,20 @@ def _session_row(ticker, intraday, daily, now, session, start, end):
         return None
     # Pre/open moves use the prior regular close; after-hours moves use today's close.
     reference = None
+    day_change_pct = day_amount = None
     if session == "postmarket":
         from src.core.trading_calendar import get_market_session_bounds
         opening, closing = get_market_session_bounds("us", now)
         regular = intraday[(intraday.index >= opening) & (intraday.index < closing)]
         if not regular.empty and (closing - regular.index[-1]).total_seconds() <= 10 * 60:
             reference = float(regular.iloc[-1]["Close"])
+            # The day's regular-session move beside the after-hours one (today's close vs the prior close).
+            earlier = daily[[d.date() < now.date() for d in daily.index]] if not daily.empty else daily
+            previous = float(earlier.iloc[-1]["Close"]) if not earlier.empty else None
+            if previous and math.isfinite(previous) and previous > 0:
+                day_change_pct = round((reference / previous - 1) * 100, 4)
+            regular_volume = regular["Volume"].fillna(0).clip(lower=0)
+            day_amount = float((regular_volume * regular["Close"]).sum())
     else:
         from datetime import datetime as _datetime, time as _time
         from src.core.trading_calendar import get_effective_trading_date, get_market_session_bounds
@@ -132,9 +140,12 @@ def _session_row(ticker, intraday, daily, now, session, start, end):
     if reference is None or not math.isfinite(reference) or reference <= 0:
         return None
     volume = bars["Volume"].fillna(0).clip(lower=0)
+    change_pct = round((price / reference - 1) * 100, 4)
     return {
+        "day_change_pct": change_pct if session == "regular" else day_change_pct,
+        "day_amount": day_amount,
         "code": ticker.replace("-", "."), "name": ticker.replace("-", "."), "price": price,
-        "change_pct": round((price / reference - 1) * 100, 4),
+        "change_pct": change_pct,
         "amount": float((volume * bars["Close"]).sum()),  # estimated session dollar volume
         "volume": int(volume.sum()), "total_mv": None, "circ_mv": None,
         "pe_ratio": None, "pb_ratio": None, "volume_ratio": None,
@@ -162,7 +173,7 @@ def fetch_us_snapshot(tickers=None, *, universe_source=None, max_workers=8, now=
                                (tickers if tickers is not None else fetch_us_universe(source)) if str(t).strip()))
     columns = ["code", "name", "price", "change_pct", "amount", "volume", "total_mv", "circ_mv",
                "pe_ratio", "pb_ratio", "volume_ratio", "turnover_rate", "industry", "quote_session",
-               "provider_timestamp", "is_stale", "reference_price"]
+               "provider_timestamp", "is_stale", "reference_price", "day_change_pct", "day_amount"]
     attrs = {"snapshot_source": "yfinance_5m", "session": session, "as_of": now.isoformat(),
              "universe_source": source, "requested_count": len(symbols), "source_errors": [],
              "coverage_note": "Configured US universe only; not whole-exchange breadth. "

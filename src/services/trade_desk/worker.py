@@ -20,6 +20,33 @@ _EVENT_LABELS = {"opportunity": "Opportunity", "price_trigger": "Price trigger",
                  "position_reconciliation": "Reconcile position", "monitor_capacity": "Monitor capacity"}
 
 
+DISCORD_PART_LIMIT = 1900
+WAIT_COOLDOWN = timedelta(hours=4)
+
+
+def discord_parts(content, limit=DISCORD_PART_LIMIT):
+    """Split at blank lines first (an idea stays whole), then at lines, then hard."""
+    pieces = []  # (separator before the piece, text)
+    for paragraph in content.split("\n\n"):
+        if len(paragraph) <= limit:
+            pieces.append(("\n\n", paragraph))
+            continue
+        for number, line in enumerate(paragraph.split("\n")):
+            for start in range(0, max(len(line), 1), limit):
+                pieces.append(("\n\n" if number == 0 and start == 0 else "\n", line[start:start + limit]))
+    parts, current = [], ""
+    for separator, text in pieces:
+        candidate = f"{current}{separator}{text}" if current else text
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            parts.append(current)
+            current = text
+    if current:
+        parts.append(current)
+    return parts
+
+
 class TradeDeskWorker:
     def __init__(self, service):
         self.service = service
@@ -60,10 +87,13 @@ class TradeDeskWorker:
         return list(dict.fromkeys([*pulse.watch_tickers(), *held]))
 
     def _held_note(self, ticker):
+        """The "You hold" line, "" when not held, None when holdings are unknown."""
         try:
+            if not self.service.holdings.raw().get("positions") and not self.service.holdings.raw().get("synced_at"):
+                return None
             return self.service.holdings.note(ticker)
-        except Exception:  # the idea goes out without the position line
-            return ""
+        except Exception:  # unknown: ideas keep the generic "if you hold it" wording
+            return None
 
     def start(self):
         if self._thread or not self.service.enabled:
@@ -313,8 +343,11 @@ class TradeDeskWorker:
                 symbols = self._scan_future.result()
                 existing = self.repo.advice_list(100)
                 for symbol in symbols[:10]:
+                    # A symbol assessed within the hour waits; after a "wait" verdict it
+                    # rests for four hours, so the same leaders do not repeat all day.
                     if any(j["request"]["ticker"] == symbol and j.get("source") == "proactive" and
-                           now - datetime.fromisoformat(j["created_at"]) < timedelta(hours=1) for j in existing):
+                           now - datetime.fromisoformat(j["created_at"]) <
+                           (WAIT_COOLDOWN if j.get("assessment") == "wait" else timedelta(hours=1)) for j in existing):
                         continue
                     # One symbol's failure must not end the whole discovery cycle.
                     try:
@@ -440,10 +473,21 @@ class TradeDeskWorker:
                 content = f"🧭 **Trade Desk · {label}** · {ticker}\n{message}\n{link}"
             if payload.get("data_mode") == "replay":
                 content = "SYNTHETIC REPLAY / PAPER ONLY\n" + content
-            try:
-                success = bool(NotificationService().send_to_discord(content))
-                diagnostic = "delivered" if success else "Discord delivery failed"
-            except Exception as exc:
-                success, diagnostic = False, type(exc).__name__
+            # Each part is sent once: a retry only sends the parts that failed.
+            parts = discord_parts(content)
+            sent = set(prior["payload"].get("sent_parts", [])) if prior else set()
+            diagnostic = "delivered"
+            for index, part in enumerate(parts):
+                if index in sent:
+                    continue
+                try:
+                    if NotificationService().send_to_discord(part):
+                        sent.add(index)
+                    else:
+                        diagnostic = "Discord delivery failed"
+                except Exception as exc:
+                    diagnostic = type(exc).__name__
+            success = len(sent) == len(parts)
             self.repo.event("discord_delivery", {"event_id": event["id"], "attempt": attempt + 1,
-                            "success": success, "diagnostic": diagnostic})
+                            "success": success, "diagnostic": diagnostic if not success else "delivered",
+                            "sent_parts": sorted(sent), "parts": len(parts)})

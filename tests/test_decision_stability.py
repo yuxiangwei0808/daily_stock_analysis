@@ -376,3 +376,34 @@ def test_us_structure_guard_wording_does_not_cite_capital_flow() -> None:
     reason = near_resistance.dashboard["decision_stability"]["reason"]
     assert near_resistance.decision_type == "hold"  # buying right at resistance is still held back
     assert "breakout" in reason and "inflow" not in reason and "flow" not in reason
+
+
+def test_us_calls_confirmed_by_the_trend_are_not_downgraded_at_levels() -> None:
+    # A strong downtrend sells at support; without a confirming trend it is still held back.
+    sell = _result(decision_type="sell", operation_advice="Sell", score=30, current_price=30.4)
+    sell.code = "SOXS"
+    stabilize_decision_with_structure(
+        sell,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0], trend_status="强势空头", buy_signal="强烈卖出"),
+        _unsupported_fund_flow(),
+    )
+    assert sell.decision_type == "sell" and sell.sentiment_score == 30
+
+    unconfirmed = _result(decision_type="sell", operation_advice="Sell", score=30, current_price=30.4)
+    unconfirmed.code = "SOXS"
+    stabilize_decision_with_structure(
+        unconfirmed,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0], trend_status="盘整", buy_signal="观望"),
+        _unsupported_fund_flow(),
+    )
+    assert unconfirmed.decision_type == "hold"
+
+    # A strong uptrend buying into resistance keeps the buy.
+    buy = _result(decision_type="buy", operation_advice="Buy", score=72, current_price=33.8)
+    buy.code = "AAPL"
+    stabilize_decision_with_structure(
+        buy,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0], trend_status="多头排列", buy_signal="买入"),
+        _unsupported_fund_flow(),
+    )
+    assert buy.decision_type == "buy"

@@ -45,8 +45,8 @@ def _leg(
     )
 
 
-def _snapshot() -> QuoteSnapshot:
-    now = datetime.now(UTC).replace(microsecond=0)
+def _snapshot(now: datetime | None = None) -> QuoteSnapshot:
+    now = now or datetime.now(UTC).replace(microsecond=0)
     options: list[OptionQuote] = []
     for expiry in (now + timedelta(days=2), now + timedelta(days=35)):
         for strike in (90.0, 95.0, 100.0, 105.0, 110.0):
@@ -238,8 +238,10 @@ def test_fractional_second_horizon_and_sensitivity_are_reported() -> None:
     assert estimate.available is True
     assert estimate.assumptions["time_to_horizon_years"] == pytest.approx(1.5 / (365 * 24 * 3600))
 
+    # An intraday horizon needs an open session: pin a Thursday 11:00 New York quote time.
     candidate = build_candidates(
-        _snapshot(), TradeAdviceRequest(ticker="TEST", horizon="intraday", strategies=["long_call"])
+        _snapshot(datetime(2026, 9, 24, 15, 0, tzinfo=UTC)),
+        TradeAdviceRequest(ticker="TEST", horizon="intraday", strategies=["long_call"]),
     )[0]
     assert {item["sensitivity"] for item in candidate.scenarios if item["kind"] == "preexpiry_sensitivity"} >= {
         "spot",

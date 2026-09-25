@@ -595,7 +595,13 @@ def test_extended_price_movers_survive_missing_volume_without_passing_liquidity_
     monkeypatch.setattr("yfinance.download", lambda *a, **k: intraday if k["interval"] == "5m" else daily)
     monkeypatch.setattr(scan, "fetch_us_universe", lambda source: list(quotes))
     result = scan.collect_us_market_scan(["AAPL"], now=current)
-    assert [row["code"] for row in result["gainers"]] == ["AMD"]
+    if current.hour == 17:
+        # After the close, gainers are the day's regular-session moves (flat here);
+        # the liquid after-hours move is listed on its own.
+        assert result["change_basis"] == "regular_session" and result["gainers"] == []
+        assert [row["code"] for row in result["after_hours_movers"]] == ["AMD"]
+    else:
+        assert [row["code"] for row in result["gainers"]] == ["AMD"]
     assert result["losers"] == []
     assert {row["code"] for row in result["unverified_movers"]} == {"NVDA", "TSLA"}
     assert all(row["liquidity_status"] == "unverified" for row in result["unverified_movers"])
@@ -1209,3 +1215,26 @@ def test_afterhours_quote_keeps_the_days_close_and_move_for_reports():
     assert {"regular_close", "regular_change_pct"} <= set(quote.to_dict())
     regular = apply_us_quote_metadata(UnifiedRealtimeQuote(code="AAPL"), info(), at("2026-09-21T11:00"))
     assert regular.regular_close is None  # only after the close
+
+
+def test_after_the_close_breadth_and_sectors_use_the_regular_session(monkeypatch):
+    from src.services import us_market_scan as scan
+    current = at("2026-09-21T17:00")
+    closes = {"AAA": (105, 105.2), "BBB": (97, 97.1), "XLK": (102, 102.0)}  # (regular close, after-hours)
+    intraday = pd.concat({
+        code: bars([at("2026-09-21T09:30"), at("2026-09-21T15:55"), current - pd.Timedelta(minutes=5)],
+                   [100, close, after], [50000, 50000, 5000])
+        for code, (close, after) in closes.items()
+    }, axis=1, names=["Ticker", "Price"])
+    daily = pd.concat({code: bars([datetime(2026, 9, 18), datetime(2026, 9, 21)], [100, close])
+                       for code, (close, _) in closes.items()}, axis=1, names=["Ticker", "Price"])
+    monkeypatch.setattr("yfinance.download", lambda *a, **k: intraday if k["interval"] == "5m" else daily)
+    monkeypatch.setattr(scan, "fetch_us_universe", lambda source: ["AAA", "BBB"])
+    result = scan.collect_us_market_scan([], now=current)
+    assert result["change_basis"] == "regular_session"
+    assert (result["advancers"], result["decliners"]) == (1, 1)
+    assert result["gainers"][0]["code"] == "AAA" and result["gainers"][0]["change_pct"] == pytest.approx(5.0)
+    assert result["losers"][0]["change_pct"] == pytest.approx(-3.0)
+    assert result["sectors"][0]["change_pct"] == pytest.approx(2.0)
+    text = scan.render_us_market_scan(result)
+    assert "today's regular session" in text and "| Day move |" in text

@@ -91,9 +91,11 @@ def _row(i, code, score, created):
 
 class FakeService:
     def __init__(self):
-        self.rows, self.jobs, self.submitted = [], {}, []
+        self.rows, self.jobs, self.submitted, self.settings = [], {}, [], {}
         self.repo = SimpleNamespace(db=SimpleNamespace(get_analysis_history=lambda days, limit: list(self.rows)),
-                                    advice=lambda job_id: self.jobs.get(job_id))
+                                    advice=lambda job_id: self.jobs.get(job_id),
+                                    setting=lambda key, default=None: self.settings.get(key, default),
+                                    set_setting=lambda key, value: self.settings.__setitem__(key, value))
 
     def submit(self, request, source):
         job = {"id": f"job-{request.ticker}", "status": "running", "request": {"ticker": request.ticker}}
@@ -109,7 +111,8 @@ def _runner(service, sent, clock, review, earnings_date=lambda ticker, day: None
         now=lambda: clock["now"],
         universe=lambda: ["AAPL", "XOM"], bars=lambda tickers: {t: strong for t in tickers},
         news=lambda ticker: [{"published_at": "2026-09-25T12:00:00+00:00", "title": f"{ticker} wins", "source": "X"}],
-        review=review, earnings_date=earnings_date)
+        review=review, earnings_date=earnings_date,
+        schedule_times=lambda: [opp._naive(NY_MIDDAY - timedelta(minutes=20)).strftime("%H:%M")])
 
 
 def _run_batch(runner, service, clock, first_id, regular=True):
@@ -137,7 +140,7 @@ def test_a_finished_run_sends_opportunities_then_options_for_high_conviction():
     runner.tick(True)  # the first look records where the history stands; older runs are not re-announced
     _run_batch(runner, service, clock, 10)
     [(event_type, payload, key)] = sent
-    assert event_type == "trade_opportunities" and key == "opportunities:14"
+    assert event_type == "trade_opportunities" and key.startswith("opportunities:2026-09-25 ")
     message = payload["message"]
     assert message.startswith("🎯 **Trade opportunities**")
     assert "🟢 **NVDA** · LONG · high conviction" in message and "🟢 **AAPL** · LONG · medium conviction" in message
@@ -244,14 +247,28 @@ def test_a_restart_still_processes_the_last_hour_but_never_sends_twice():
         return {"id": len(sent)}
 
     review = lambda prompt: [{"ticker": "NVDA", "direction": "long", "conviction": "high"}]  # noqa: E731
-    for _ in range(2):  # the same batch seen by two process lifetimes
-        runner = _runner(service, [], clock, review)
-        runner.emit = emit
-        runner.tick(True)
-        runner._scan.result(timeout=10)
-        clock["now"] += timedelta(minutes=1)
-        runner.tick(True)
-    assert [key for _, _, key in sent] == ["opportunities:5"] and len(service.submitted) == 1
+    runner = _runner(service, [], clock, review)
+    runner.emit = emit
+    runner.tick(True)
+    runner._scan.result(timeout=10)
+    clock["now"] += timedelta(minutes=1)
+    runner.tick(True)
+    # A restart with the saved state skips the published run entirely.
+    restarted = _runner(service, [], clock, review)
+    restarted.emit = emit
+    clock["now"] += timedelta(minutes=1)
+    restarted.tick(True)
+    assert restarted._scan is None
+    # Without saved state (a crash before it was written) the run is scanned again,
+    # but the scheduled slot's dedup key stops a second message.
+    service.settings.clear()
+    again = _runner(service, [], clock, review)
+    again.emit = emit
+    again.tick(True)
+    again._scan.result(timeout=10)
+    clock["now"] += timedelta(minutes=1)
+    again.tick(True)
+    assert len(sent) == 1 and sent[0][2].startswith("opportunities:2026-09-25 ") and len(service.submitted) == 1
 
 
 def test_leveraged_and_inverse_funds_are_never_suggested_as_shorts_or_options():
@@ -260,6 +277,9 @@ def test_leveraged_and_inverse_funds_are_never_suggested_as_shorts_or_options():
     assert not opp.geared_fund("NVIDIA Corporation") and not opp.geared_fund("SPDR S&P 500 ETF Trust")
     assert not opp.geared_fund("Vanguard Long-Term Treasury ETF") and not opp.geared_fund("iShares Short Term Bond ETF")
     assert opp.geared_fund("ProShares Short S&P500")
+    assert opp.geared_fund("Direxion Daily Semiconductor Be")  # report names are cut to ~31 characters
+    assert not opp.geared_fund("iShares Short Treasury Bond ETF")
+    assert not opp.geared_fund("PIMCO Enhanced Short Maturity Active ETF")
     idea = {"ticker": "SOXS", "name": "Direxion Daily Semiconductor Bear 3X Shares", "direction": "short",
             "conviction": "high"}
     assert opp.expressions(idea, options_follow=False) == [
@@ -337,3 +357,93 @@ def test_breakout_alerts_carry_the_earnings_warning():
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
     assert "⚠️ Earnings Sep 29 (in 4 days) — inside the hold" in sent[0]["message"]
+
+
+def test_one_off_analyses_and_the_market_row_do_not_start_a_scan():
+    clock, service, sent = {"now": NY_MIDDAY}, FakeService(), []
+    runner = _runner(service, sent, clock, lambda prompt: [])
+    runner._schedule_times = lambda: ["09:40"]  # nothing scheduled near midday
+    runner.tick(True)
+    _row_time = opp._naive(clock["now"]) - timedelta(minutes=5)
+    service.rows += [_row(10 + i, code, 70, _row_time) for i, code in enumerate(["NVDA", "JPM", "AAPL", "MSFT", "AMD"])]
+    clock["now"] += timedelta(minutes=1)
+    runner.tick(True)
+    assert runner._scan is None and sent == []
+    runner._schedule_times = lambda: [opp._naive(NY_MIDDAY - timedelta(minutes=20)).strftime("%H:%M")]
+    service.rows += [_row(20 + i, "MARKET", 50, _row_time) for i in range(5)]
+    clock["now"] += timedelta(minutes=1)
+    runner.tick(True)
+    assert runner._scan is None  # five market-review rows are not a stock batch
+
+
+def test_published_state_survives_a_restart():
+    clock, service, sent = {"now": NY_MIDDAY}, FakeService(), []
+    review = lambda prompt: [{"ticker": "AAPL", "direction": "long", "conviction": "medium"}]  # noqa: E731
+    runner = _runner(service, sent, clock, review)
+    runner.tick(True)
+    _run_batch(runner, service, clock, 10)
+    assert len(sent) == 1 and service.settings["opportunity_state"]["announced"]["AAPL"] == "long:medium"
+    restarted = _runner(service, sent, clock, review)
+    clock["now"] += timedelta(minutes=1)
+    restarted.tick(True)
+    assert restarted._scan is None and restarted._announced == {"AAPL": "long:medium"}
+
+
+def _watch(history, quotes, sent, watchlist=("NVDA",)):
+    return opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": len(sent)},
+                             watchlist=lambda: list(watchlist), bars=lambda tickers: {t: history for t in tickers},
+                             clock=lambda: 0.0, earnings_date=lambda ticker, day: None)
+
+
+def test_breakouts_need_a_real_margin_and_reuse_the_ideas_levels():
+    history = _bars(n=80, step=0.5)  # high20 about 140.5, ATR about 1
+    levels = opp.breakout_levels(history, date(2026, 9, 25))
+    quotes = {"NVDA": {"price": levels["high20"] + 0.05, "volume": 900_000, "change_pct": 1.0}}
+    sent = []
+    watch = _watch(history, quotes, sent)
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.result(timeout=10)
+    watch.tick(NY_MIDDAY, "regular")
+    assert sent == []  # a few cents above the high is not a breakout
+    quotes["NVDA"]["price"] = 150.0
+    watch._context = {"NVDA": {"direction": "long", "stop": 138.0, "targets": [160.0, 170.0], "text": "Trend review: long"}}
+    watch._next = 0.0
+    watch.tick(NY_MIDDAY + timedelta(minutes=1), "regular")
+    [payload] = sent
+    assert "Idea levels: stop 138.00 · targets 160.00 / 170.00" in payload["message"]
+    assert "Trend review: long" in payload["message"]
+
+
+def test_a_breakout_against_the_review_says_so_and_notes_reset_daily():
+    history = _bars(n=80, start=200, step=-0.5)
+    sent = []
+    watch = _watch(history, {"NVDA": {"price": 150.0, "volume": 900_000, "change_pct": -3.0}}, sent)
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.result(timeout=10)
+    watch._context = {"NVDA": {"direction": "long", "stop": 1.0, "targets": [2.0], "text": "Trend review: long"}}
+    watch.tick(NY_MIDDAY, "regular")
+    assert "Today's trend review was long; this move goes against it." in sent[0]["message"]
+    assert "Idea levels" not in sent[0]["message"]
+    watch.tick(NY_MIDDAY + timedelta(days=3), "regular")  # the next session
+    assert watch._context == {}
+
+
+def test_a_failed_level_load_is_retried():
+    calls = {"n": 0}
+
+    def bars(tickers):
+        calls["n"] += 1
+        return {} if calls["n"] == 1 else {t: _bars(n=80, step=0.5) for t in tickers}
+
+    tick = {"clock": 0.0}
+    watch = opp.BreakoutWatch(lambda: FakeProvider({}), lambda *a: None, watchlist=lambda: ["NVDA"], bars=bars,
+                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None)
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.exception(timeout=10)
+    watch.tick(NY_MIDDAY, "regular")
+    assert watch._levels == {} and watch._retry_at == opp.LEVELS_RETRY_SECONDS
+    tick["clock"] = opp.LEVELS_RETRY_SECONDS + 1
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.result(timeout=10)
+    watch.tick(NY_MIDDAY, "regular")
+    assert "NVDA" in watch._levels

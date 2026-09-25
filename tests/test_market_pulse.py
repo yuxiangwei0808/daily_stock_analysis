@@ -133,3 +133,13 @@ def test_headlines_must_name_the_stock():
     assert not mentions("One disappointing White Sox prospect", "SOXS", "Direxion Daily Semiconductor Bear 3X")
     assert not mentions("Why Bernstein targets $3,000 for SanDisk (SNDK)", "MSFT", "Microsoft Corporation")
     assert mentions("Microsoft beats estimates", "MSFT", "Microsoft Corporation")
+
+
+def test_a_fading_move_does_not_alert_again_at_lower_levels():
+    provider, events = Provider(), []
+    pulse = _pulse(provider, events)
+    for minute, change in enumerate([9.0, 6.0, 4.0]):
+        provider.quotes = {"AAPL": {"price": 100 + change, "change_pct": change}}
+        pulse.check_moves(NOW + timedelta(minutes=minute * 20))
+    day_moves = [e[1]["message"] for e in events if e[1]["kind"] == "day_move"]
+    assert len(day_moves) == 1 and "past +8%" in day_moves[0]

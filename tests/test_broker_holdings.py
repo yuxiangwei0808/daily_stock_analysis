@@ -310,7 +310,7 @@ def test_portfolio_summary_exposure_hedges_and_wording():
     assert text.startswith("📊 **Portfolio** · Fri Sep 25\nAccount -1.6% today")
     assert "a 1% SPY move ≈ +0.1% on the account" in text
     assert "• USO 10/16 160/170C spread 5.4% of account" in text and "NVDA 10.0% of account · +66.7% on cost · +5.3% today" in text
-    assert "Hedging the book: SOXS -9% of a 1% SPY move" in text
+    assert "Hedges: SOXS takes 0.09% off each 1% SPY move" in text
     assert "NVDA and SOXS offset each other" in text and "NVDA earnings Sep 29 (in 4 days)" in text
     assert "$" not in text
 
@@ -337,3 +337,78 @@ def test_summary_is_sent_once_after_the_close_sync(store, monkeypatch):
     assert len([e for e in events if e[0] == "portfolio_summary"]) == 1
     monitor.stop()
     restarted.stop()
+
+
+def test_rearming_a_triggered_alert_sends_it_again(store):
+    rule = store.add_rule({"position_key": "USO 2026-10-16", "kind": "price_below", "value": 151})
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY)
+    assert store.rules()[0]["status"] == "triggered"
+    store.update_rule(rule["id"], {"status": "active"})
+    monitor.check(MIDDAY + timedelta(minutes=1))
+    assert len([e for e in events if e[1]["kind"] == "rule"]) == 2
+    store.update_rule(rule["id"], {"value": 152})  # editing a triggered alert re-arms it
+    assert store.rules()[0]["status"] == "active"
+    monitor.check(MIDDAY + timedelta(minutes=2))
+    assert len([e for e in events if e[1]["kind"] == "rule"]) == 3
+
+
+def test_a_rule_that_already_holds_warns_when_added(store):
+    rule = store.add_rule({"position_key": "NVDA", "kind": "pnl_below", "value": 80})  # +66.7% is already below
+    assert "already holds" in rule["warning"]
+    assert "warning" not in store.add_rule({"position_key": "NVDA", "kind": "pnl_below", "value": -50})
+
+
+def test_long_puts_use_on_cost_levels_and_zero_bids_do_not_use_stale_trades():
+    raw = {"total_assets": 10_000, "positions": [
+        {"code": "US.SPY261016P550000", "qty": 1.0, "side": "LONG", "average_cost": 5.0, "price": 10.0},
+        {"code": "US.QQQ261016C500000", "qty": 1.0, "side": "LONG", "average_cost": 1.0, "price": 2.5}]}
+    view = h.build_view(raw, {"SPY261016P550000": {"price": 10.0, "bid": 9.9, "ask": 10.1},
+                              "QQQ261016C500000": {"price": 2.5, "bid": 0.0, "ask": 0.05}}, TODAY)
+    put, call = sorted(view["options"], key=lambda row: row["underlying"], reverse=True)
+    assert put["pct_of_max"] is None and put["pnl_pct"] == pytest.approx(100.0)
+    assert call["legs"][0]["mark"] == pytest.approx(0.025)  # half the ask, not the stale 2.50 trade
+
+
+def test_a_rolled_spread_on_the_same_expiry_gets_its_own_alerts(store):
+    monitor, events = _monitor(store)
+    raw = store.raw()
+    for row in raw["positions"]:
+        row["code"] = row["code"].replace("261016", "260929")
+    store.repo.set_setting("broker_holdings", raw)
+    monitor.check(MIDDAY)
+    raw["positions"][0]["code"] = "US.USO260929C165000"
+    raw["positions"][1]["code"] = "US.USO260929C175000"
+    store.repo.set_setting("broker_holdings", raw)
+    monitor.check(MIDDAY + timedelta(minutes=1))
+    expiry = [e for e in events if e[1]["kind"] == "expiry"]
+    assert len(expiry) == 2 and "165/175C" in expiry[1][1]["message"]
+
+
+def test_an_expired_position_still_listed_gets_no_alerts(store):
+    raw = store.raw()
+    for row in raw["positions"]:
+        row["code"] = row["code"].replace("261016", "260924")  # yesterday
+    store.repo.set_setting("broker_holdings", raw)
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY)
+    assert not [e for e in events if e[1]["underlying"] == "USO"]
+    assert "expired" in h.describe_option(store.view(live=False, now=MIDDAY)["options"][0])
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("close at 50% profit", ("pnl_above", 50)), ("p&l above 20%", ("pnl_above", 20)),
+    ("warn me if the spread loses 50%", ("pnl_below", -50)), ("set a stop at -30%", ("pnl_below", -30)),
+    ("USO falls 5%", None), ("spread hits 80% of max", None), ("below the 50 day average", None),
+    ("if it breaks 160", None), ("stop if USO below 145 for the 10/16 spread", ("price_below", 145)),
+])
+def test_rule_text_avoids_misreadings(text, expected):
+    draft = h.parse_rule_text(text)
+    assert (draft and (draft["kind"], draft["value"])) == expected if expected else draft is None
+
+
+def test_trading_days_beyond_the_calendar_do_not_warn(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        days = h.trading_days_until(date(2028, 1, 21), TODAY)
+    assert 320 <= days <= 340 and not caplog.records
