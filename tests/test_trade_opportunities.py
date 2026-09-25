@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from src.services.trade_desk import opportunities as opp
-from src.services.trade_desk import trend
+from src.services.trade_desk import earnings, trend
 
 NY_MIDDAY = datetime(2026, 9, 25, 16, 30, tzinfo=timezone.utc)  # 12:30 New York
 
@@ -102,14 +102,14 @@ class FakeService:
         return job
 
 
-def _runner(service, sent, clock, review):
+def _runner(service, sent, clock, review, earnings_date=lambda ticker, day: None):
     strong = _bars(last_volume=2_000_000, jump=2)
     return opp.OpportunityRunner(
         service, lambda t, p, k: sent.append((t, p, k)) or {"id": len(sent)}, watchlist=lambda: ["NVDA", "JPM"],
         now=lambda: clock["now"],
         universe=lambda: ["AAPL", "XOM"], bars=lambda tickers: {t: strong for t in tickers},
         news=lambda ticker: [{"published_at": "2026-09-25T12:00:00+00:00", "title": f"{ticker} wins", "source": "X"}],
-        review=review)
+        review=review, earnings_date=earnings_date)
 
 
 def _run_batch(runner, service, clock, first_id, regular=True):
@@ -186,7 +186,7 @@ def test_breakouts_alert_once_on_volume_and_cap_scan_names():
     sent, tick = [], {"clock": 0.0}
     watch = opp.BreakoutWatch(lambda: provider, lambda t, p, k: sent.append((t, p, k)) or {"id": 1},
                               watchlist=lambda: ["NVDA", "JPM"], bars=lambda tickers: {t: history for t in tickers},
-                              clock=lambda: tick["clock"])
+                              clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None)
     watch.tick(NY_MIDDAY, "regular")  # loads the day's levels in the background
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
@@ -271,10 +271,69 @@ def test_leveraged_and_inverse_funds_are_never_suggested_as_shorts_or_options():
     sent = []
     watch = opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": 1},
                               watchlist=lambda: ["SOXS"], bars=lambda tickers: {t: history for t in tickers},
-                              clock=lambda: 0.0)
+                              clock=lambda: 0.0, earnings_date=lambda ticker, day: None)
     watch.tick(NY_MIDDAY, "regular")
     watch._loading.result(timeout=10)
     watch.tick(NY_MIDDAY, "regular")
     [payload] = sent
     assert payload["kind"] == "breakdown" and "targets" not in payload["message"]
     assert "shorting it is not advised" in payload["message"] and "short shares" not in payload["message"]
+
+
+def test_earnings_notes_warn_inside_the_hold_and_mention_the_month_ahead():
+    today = date(2026, 9, 25)
+    assert earnings.note(date(2026, 10, 2), today).startswith("⚠️ Earnings Oct 2 (in 7 days) — inside the hold")
+    assert earnings.note(date(2026, 9, 26), today).startswith("⚠️ Earnings Sep 26 (tomorrow)")
+    assert earnings.note(date(2026, 10, 20), today) == "Earnings Oct 20 (in 25 days)"
+    assert earnings.note(date(2026, 12, 1), today) == "" and earnings.note(None, today) == ""
+
+
+def test_earnings_lookup_uses_the_earliest_upcoming_date_and_caches(monkeypatch):
+    import yfinance as yf
+    calls = []
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            calls.append(symbol)
+            self.calendar = {"Earnings Date": [date(2026, 10, 30), date(2026, 10, 28)]}
+
+    monkeypatch.setattr(yf, "Ticker", FakeTicker)
+    earnings._cache.clear()
+    assert earnings.next_earnings("BRK.B", date(2026, 9, 25)) == date(2026, 10, 28)
+    assert earnings.next_earnings("BRK.B", date(2026, 9, 25)) == date(2026, 10, 28)
+    assert calls == ["BRK-B"]
+    monkeypatch.setattr(yf, "Ticker", lambda symbol: SimpleNamespace(calendar={}))  # funds publish none
+    assert earnings.next_earnings("SPY", date(2026, 9, 25)) is None
+
+
+def test_earnings_inside_the_hold_cap_conviction_and_skip_options():
+    clock, service, sent, prompts = {"now": NY_MIDDAY}, FakeService(), [], []
+    dates = {"NVDA": date(2026, 10, 1), "AAPL": date(2026, 10, 20)}
+
+    def review(prompt):
+        prompts.append(prompt)
+        return [{"ticker": t, "direction": "long", "conviction": "high"} for t in ("NVDA", "AAPL")]
+
+    runner = _runner(service, sent, clock, review, earnings_date=lambda ticker, day: dates.get(ticker))
+    runner.tick(True)
+    _run_batch(runner, service, clock, 10)
+    message = sent[0][1]["message"]
+    assert '"next_earnings": "2026-10-01 (in 6 days)"' in prompts[0]
+    assert '"next_earnings": "none published"' in prompts[0]
+    assert "🟢 **NVDA** · LONG · medium conviction" in message  # capped from high
+    assert "⚠️ Earnings Oct 1 (in 6 days) — inside the hold" in message
+    assert "🟢 **AAPL** · LONG · high conviction" in message and "Earnings Oct 20 (in 25 days)" in message
+    assert [ticker for ticker, *_ in service.submitted] == ["AAPL"]
+
+
+def test_breakout_alerts_carry_the_earnings_warning():
+    history = _bars(n=80, step=0.5)
+    quotes = {"NVDA": {"price": 150.0, "volume": 900_000, "change_pct": 3.0, "name": "NVIDIA Corporation"}}
+    sent = []
+    watch = opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": 1},
+                              watchlist=lambda: ["NVDA"], bars=lambda tickers: {t: history for t in tickers},
+                              clock=lambda: 0.0, earnings_date=lambda ticker, day: date(2026, 9, 29))
+    watch.tick(NY_MIDDAY, "regular")
+    watch._loading.result(timeout=10)
+    watch.tick(NY_MIDDAY, "regular")
+    assert "⚠️ Earnings Sep 29 (in 4 days) — inside the hold" in sent[0]["message"]

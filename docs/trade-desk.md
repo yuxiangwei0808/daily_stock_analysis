@@ -211,6 +211,14 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   direction or rejects, and gives a conviction (low/medium/high), entry, stop,
   targets, horizon, thesis and invalidation. Stops or targets on the wrong side
   of the price fall back to the ATR levels.
+- **Earnings:** each reviewed candidate's next earnings date comes from Yahoo's
+  calendar (`earnings.py`, cached per day; funds have none; for an unconfirmed
+  window the earliest day). The model sees it. Earnings within 14 days (inside
+  the hold) cap conviction at medium, so no options follow-up, and the idea shows
+  "⚠️ Earnings … inside the hold: gap risk; size down or exit before"; within 30
+  days a plain "Earnings …" line is shown. Options comparisons are told the date
+  so expiries after it are weighed for IV crush. Breakout alerts carry the same
+  note.
 - **Delivery:** medium/high ideas (at most `TRADE_OPPORTUNITIES_MAX`) are sent as
   one `trade_opportunities` Discord message with labelled ways to act. Long: buy
   shares. Short: sell or trim if held; short shares (margin and borrow needed,
