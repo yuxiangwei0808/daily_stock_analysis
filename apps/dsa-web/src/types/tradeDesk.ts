@@ -324,6 +324,23 @@ export interface TradePreferences {
 
 export type TradePreferencesUpdate = Partial<Pick<TradePreferences, 'discordEnabled'>>;
 
+export interface TrackRecordGroup {
+  label: string;
+  open: number;
+  closed: number;
+  winRate?: number | null;
+  avgReturnPct?: number | null;
+  avgR?: number | null;
+  avgVsSpyPct?: number | null;
+}
+
+export interface TrackRecord {
+  windowDays: number;
+  groups: Record<string, TrackRecordGroup>;
+  recent: Array<{ ticker: string; direction: string; verdict: string; signalDay: string; status: string;
+    reason?: string | null; returnPct?: number | null; kind?: string }>;
+}
+
 export type HoldingRuleKind = 'price_below' | 'price_above' | 'days_to_expiry' | 'pnl_below' | 'pnl_above';
 
 export interface HoldingStock {

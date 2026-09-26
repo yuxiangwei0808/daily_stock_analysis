@@ -31,16 +31,26 @@ QUOTES = {"USO261016C160000": {"price": 3.4, "bid": 3.3, "ask": 3.5},
 
 @pytest.fixture
 def repo():
+    # One in-memory connection is shared by every thread (StaticPool); the monitor's
+    # background sync and its checks run concurrently, so sessions are serialized
+    # here the way separate connections isolate them in the real database.
+    import threading
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     sessions = sessionmaker(engine)
+    lock = threading.RLock()
+
+    @contextmanager
+    def session():
+        with lock, sessions() as opened:
+            yield opened
 
     @contextmanager
     def transaction():
-        with sessions() as session:
-            with session.begin():
-                yield session
+        with lock, sessions() as opened:
+            with opened.begin():
+                yield opened
 
-    yield TradeDeskRepository(SimpleNamespace(_engine=engine, get_session=sessions, session_scope=transaction))
+    yield TradeDeskRepository(SimpleNamespace(_engine=engine, get_session=session, session_scope=transaction))
     engine.dispose()
 
 

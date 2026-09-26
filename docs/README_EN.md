@@ -46,6 +46,7 @@ Forked from [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_
 - **Model tiers and second opinions**: routine work and your own requests use different models, and your requests get independent opinions (`TARGETED_GENERATION_BACKEND`, `SECOND_OPINION_BACKENDS`; Codex and Claude Code CLIs with per-tier model and effort).
 - **Free news sources**: Google News RSS, Yahoo Finance, Finnhub (`FREE_NEWS_SOURCES`).
 - **Home and notifications**: watchlist grouped by moomoo groups with live quotes; readable Discord messages split at paragraphs; anything about your holdings shows percentages only; optionally a market review only after the close (`MARKET_REVIEW_TIMES`) and a midday brief of changed calls only (`BRIEF_CHANGES_ONLY_TIMES`).
+- **Backtest and track record**: a backtest of the trade-plan rules (`scripts/backtest_trade_plans.py`, see [strategy-backtest.md](strategy-backtest.md)); every trade idea and breakout is tracked forward with a weekly summary, including candidates the model rejected, to measure whether its review adds value.
 - **Reliability**: a scheduled run interrupted by a restart resumes on its own; Discord deliveries are deduplicated and a failed send retries only the missing parts.
 
 **Minimal setup** (details in [.env.example](../.env.example), [trade-desk.md](trade-desk.md) and [LLM_CONFIG_GUIDE_EN.md](LLM_CONFIG_GUIDE_EN.md)):

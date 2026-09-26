@@ -66,12 +66,15 @@ class TradeDeskWorker:
         self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit, tickers=watched,
                                          held=self._held_tickers if self._holdings is not None else None)
                        if pulse.enabled() else None)
-        self._breakouts = self._opportunities = None
+        self._breakouts = self._opportunities = self._tracker = None
         if opportunities.enabled():
             held_side = self._held_side if self._holdings is not None else None
-            self._breakouts = opportunities.BreakoutWatch(lambda: service.provider("live"), self._emit,
-                                                          watchlist=watched, held=held_note,
-                                                          history=self._breakout_history, held_side=held_side)
+            from .idea_tracker import TrackerJob, record_breakout
+            self._breakouts = opportunities.BreakoutWatch(
+                lambda: service.provider("live"), self._emit, watchlist=watched, held=held_note,
+                history=self._breakout_history, held_side=held_side,
+                track=lambda *args: record_breakout(self.repo, *args))
+            self._tracker = TrackerJob(self.repo, self._emit)
             self._opportunities = opportunities.OpportunityRunner(
                 service, self._emit, watchlist=watched, breakouts=self._breakouts, held=held_note,
                 held_side=held_side)
@@ -173,7 +176,7 @@ class TradeDeskWorker:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
-        for part in (self._pulse, self._breakouts, self._opportunities, self._holdings):
+        for part in (self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker):
             if part is not None:
                 part.stop()
         self.repo.release(self.owner)
@@ -321,6 +324,11 @@ class TradeDeskWorker:
                 self._holdings.tick(now, session_window(now)[0], quotes=quotes, shared=True)
             except Exception as exc:  # optional; plan monitoring continues
                 logger.warning("Holdings monitor failed: %s", type(exc).__name__)
+        if self._tracker is not None:
+            try:
+                self._tracker.tick(now)
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Idea tracker failed: %s", type(exc).__name__)
         if self._opportunities is not None:
             try:
                 self._breakouts.tick(now, session_window(now)[0], quotes=quotes, shared=True)
@@ -353,7 +361,7 @@ class TradeDeskWorker:
                 delivered_parts.setdefault(event["payload"].get("event_id"), set(event["payload"].get("sent_parts", [])))
         wanted = {"price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
                   "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout",
-                  "holding_alert", "portfolio_summary"}
+                  "holding_alert", "portfolio_summary", "track_record"}
         for event in reversed(events):
             if event["event_type"] not in wanted:
                 continue
@@ -384,7 +392,7 @@ class TradeDeskWorker:
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
             ticker = payload.get("underlying", "")
-            if event["event_type"] in {"trade_opportunities", "portfolio_summary"}:
+            if event["event_type"] in {"trade_opportunities", "portfolio_summary", "track_record"}:
                 content = message  # carries its own header
             elif event["event_type"] == "options_ideas":
                 content = f"🧭 **Options ideas** · for today's high-conviction trades\n{message}"

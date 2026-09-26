@@ -433,9 +433,11 @@ class BreakoutWatch:
                  earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
                  held: Optional[Callable[[str], str]] = None,
                  history: Optional[Callable[[], List[tuple]]] = None, confirm_checks: int = 2,
-                 held_side: Optional[Callable[[str], Optional[str]]] = None):
+                 held_side: Optional[Callable[[str], Optional[str]]] = None,
+                 track: Optional[Callable[..., Any]] = None):
         import time
         self._held_side = held_side
+        self._track = track  # records each alert for the forward track record
         self._confirm = max(1, confirm_checks)
         self._earnings_date = earnings_date
         self._held = held
@@ -603,6 +605,15 @@ class BreakoutWatch:
             event = self._emit("breakout", {"underlying": ticker, "kind": "breakout" if up else "breakdown",
                                             "price": price, "level": round(level, 2), "change_pct": change,
                                             "message": message}, key)
+            if event is not None and self._track is not None:
+                try:
+                    if same_way and review.get("stop") and review.get("targets"):
+                        track_stop, track_target = review["stop"], review["targets"][0]
+                    else:
+                        track_stop, track_target = stop, price + sign * 3 * atr
+                    self._track(ticker, "long" if up else "short", price, track_stop, track_target, day)
+                except Exception as exc:
+                    logger.info("Breakout tracking skipped: %s", type(exc).__name__)
             if event is not None and ticker not in watchlist:
                 self._scan_alerts[day] = self._scan_alerts.get(day, 0) + 1
         for pending in list(self._pending):
@@ -838,7 +849,15 @@ class OpportunityRunner:
         logger.info("Trade opportunities: %d scored, %d candidates (%s), %d ideas", len(scores), len(candidates),
                     ", ".join(f"{item['ticker']} {item['direction']} {item['strength']}{'*' if item['source'] == 'watchlist' else ''}"
                               for item in candidates), len(ideas))
-        return {"batch": batch_id, "slot": slot or str(batch_id), "ideas": ideas, "regime": regime, "day": _session_day(now),
+        # Every reviewed candidate is tracked forward: sent ideas with their levels, the rest
+        # (rejected, below R:R 1, or beyond the message limit) as "rejected" with the rule's levels.
+        sent = {idea["ticker"]: idea for idea in ideas}
+        tracked = [{**item, **({key: sent[item["ticker"]][key] for key in ("stop", "targets")}
+                               if item["ticker"] in sent else {}),
+                    "verdict": sent[item["ticker"]]["conviction"] if item["ticker"] in sent else "rejected"}
+                   for item in candidates]
+        return {"batch": batch_id, "slot": slot or str(batch_id), "ideas": ideas, "tracked": tracked,
+                "regime": regime, "day": _session_day(now),
                 "watch_bars": {**{t: bars[t] for t in watchlist if t in bars}, **near}, "notes": notes,
                 "scored": len(scores), "candidates": len(candidates)}
 
@@ -846,6 +865,11 @@ class OpportunityRunner:
     def _publish(self, result: Dict[str, Any], regular_session: bool) -> None:
         if self.breakouts is not None:
             self.breakouts.add(result["watch_bars"], result["day"], result["notes"])
+        try:
+            from .idea_tracker import record_scan
+            record_scan(self.service.repo, result)
+        except Exception as exc:  # tracking is a record; publishing goes on without it
+            logger.info("Idea tracking skipped: %s", type(exc).__name__)
         if self._announced_day != result["day"]:
             self._announced_day, self._announced = result["day"], {}
         fresh, repeats = [], []

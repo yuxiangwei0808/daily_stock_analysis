@@ -216,6 +216,14 @@ def _holdings(request: Request):
     return get_service(request).holdings
 
 
+@router.get("/track-record")
+async def idea_track_record(request: Request, days: int = Query(default=90, ge=7, le=730)):
+    """Forward results of trade ideas (approved vs rejected by the review) and breakout alerts."""
+    from src.services.trade_desk.idea_tracker import track_record
+    service = get_service(request)
+    return await invoke(track_record, service.repo, None, days)
+
+
 @router.get("/holdings")
 async def holdings_view(request: Request):
     """Read-only broker positions with live marks, plus your alert rules."""

@@ -268,6 +268,23 @@ strong trends to go long or short over days to weeks. Nothing is ordered.
   trim if held (never short the fund); no options follow-up, and breakout alerts
   show the stop without ATR targets.
 
+## Forward track record of ideas and breakouts
+
+Because the model review cannot be backtested, every scan's reviewed candidates
+are followed forward (`idea_tracker.py`, table `trade_desk_tracked_ideas`): the
+ideas that were sent (verdict `high` / `medium`, with their printed stop and first
+target) and the candidates that were not (`rejected` — by the review, by R:R < 1
+or by the message limit — with the rule's ATR levels), plus every breakout alert.
+Entry is the alert price; from the next session daily bars settle each record like
+the backtest (stop first when a day touches both, gaps fill at the open, otherwise
+the close after 15 sessions; 5 bps per side), with SPY over the same days as the
+benchmark (shorts are compared with the market's move in their favour).
+
+After 16:30 New York time each trading day the worker settles open records; on the
+week's last trading day it posts "📒 Idea track record" (last 90 days per group,
+and approved vs rejected once each has 10 closed ideas). `GET /track-record?days=`
+and the Journal tab show the same. Nothing is traded.
+
 ## Broker holdings and your alerts
 
 With `TRADE_DESK_BROKER_ACCOUNT` set (a real moomoo account id or its last

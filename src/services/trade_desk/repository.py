@@ -37,6 +37,15 @@ class PlanRecord(Base):
     created_at = Column(String(40), nullable=False, index=True)
 
 
+class TrackedIdeaRecord(Base):
+    """A trade idea or breakout alert followed forward to its stop, target or time exit."""
+    __tablename__ = "trade_desk_tracked_ideas"
+    id = Column(String(120), primary_key=True)
+    status = Column(String(16), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    created_at = Column(String(40), nullable=False, index=True)
+
+
 class FillRecord(Base):
     __tablename__ = "trade_desk_fills"
     id = Column(String(64), primary_key=True)
@@ -311,6 +320,35 @@ class TradeDeskRepository:
         with self.db.session_scope() as session:
             session.merge(SettingsRecord(id=key, payload=encoded(value)))
         return value
+
+    def track_idea(self, record_id, payload):
+        """Store a new tracked idea; an existing id is left untouched (False)."""
+        try:
+            with self.db.session_scope() as session:
+                if session.get(TrackedIdeaRecord, record_id) is not None:
+                    return False
+                session.add(TrackedIdeaRecord(id=record_id, status="open", payload=encoded(payload),
+                                              created_at=utcnow().isoformat()))
+            return True
+        except IntegrityError:
+            return False
+
+    def tracked_ideas(self, status=None, since=None, limit=5000):
+        with self.db.get_session() as session:
+            query = select(TrackedIdeaRecord)
+            if status:
+                query = query.where(TrackedIdeaRecord.status == status)
+            if since:
+                query = query.where(TrackedIdeaRecord.created_at >= since)
+            rows = session.execute(query.order_by(TrackedIdeaRecord.created_at.desc()).limit(limit)).scalars().all()
+            return [{"id": row.id, "status": row.status, "created_at": row.created_at, **json.loads(row.payload)}
+                    for row in rows]
+
+    def update_tracked_idea(self, record_id, payload, status):
+        with self.db.session_scope() as session:
+            row = session.get(TrackedIdeaRecord, record_id)
+            if row is not None:
+                row.payload, row.status = encoded(payload), status
 
     def lease(self, owner, seconds=45):
         now = utcnow()
