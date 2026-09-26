@@ -193,6 +193,10 @@ Both event types use the worker's deduplicated, retried Discord delivery
 
 ## Swing trade opportunities
 
+> Backtest note (see [strategy-backtest.md](strategy-backtest.md)): the deterministic
+> trend and breakout rules below showed no edge over random entries in 2021–2026,
+> and their short side was clearly harmful. The model review on top is untested.
+
 With `TRADE_OPPORTUNITIES_ENABLED=true` (default off) the worker looks for
 strong trends to go long or short over days to weeks. Nothing is ordered.
 
