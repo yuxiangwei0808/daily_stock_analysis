@@ -717,7 +717,8 @@ const HomePage: React.FC = () => {
     const load = () => {
       systemConfigApi.getWatchlistGroups().then((groups) => {
         if (!active) return;
-        setWatchlistGroups(groups);
+        // A transient empty answer keeps the groups already shown.
+        setWatchlistGroups((previous) => (groups.length ? groups : previous));
         timer = window.setTimeout(load, groups.length ? 300_000 : 60_000);
       }).catch(() => {
         if (active) timer = window.setTimeout(load, 60_000);

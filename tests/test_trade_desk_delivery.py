@@ -137,3 +137,30 @@ def test_one_shared_snapshot_serves_every_live_watch(repo, monkeypatch):
     assert calls == [["AAA", "BBB", "CCC", "USO", "USO261016C160000"]] and set(quotes) == set(calls[0])
     assert desk._shared_quotes("regular") is None  # once a minute
     assert desk._shared_quotes("postmarket") is None and len(calls) == 1
+
+
+def test_a_failed_shared_snapshot_retries_stocks_and_options_apart(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+
+    def quotes(codes):
+        if any(code.startswith("USO2") for code in codes) and len(codes) > 1:
+            raise RuntimeError("quota")
+        if any(code.startswith("USO2") for code in codes):
+            raise RuntimeError("no option rights")
+        return {code: {"price": 1} for code in codes}
+    provider = SimpleNamespace(watchlist_quotes=quotes)
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None,
+                                                         provider=lambda mode: provider))
+    desk._holdings = SimpleNamespace(codes=lambda: ["USO261016C160000", "USO", "NVDA"])
+    assert set(desk._shared_quotes("regular")) == {"USO", "NVDA"}  # stocks survive the option failure
+
+
+def test_pulse_treats_never_synced_holdings_as_unknown(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    holdings = SimpleNamespace(raw=lambda: {}, tickers=lambda: [])
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=holdings,
+                                                         provider=lambda mode: None))
+    with pytest.raises(LookupError):
+        desk._held_tickers()  # the pulse then applies every level to every name

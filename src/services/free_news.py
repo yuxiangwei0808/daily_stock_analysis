@@ -96,13 +96,29 @@ def finnhub_news(ticker: str, api_key: str, days: int = 3, limit: int = 10) -> L
     return items[:limit]
 
 
+_extra_names: Dict[str, List[str]] = {}
+_NAME_SUFFIXES = re.compile(r"\b(inc|incorporated|corp|corporation|co|company|holdings?|group|ltd|limited|plc|"
+                            r"class [a-z]|common stock|the)\b\.?", re.I)
+
+
+def remember_name(ticker: str, name: str) -> None:
+    """Teach relevance a company name (e.g. from an OpenD quote) for tickers the alias map lacks."""
+    core = " ".join(_NAME_SUFFIXES.sub(" ", name or "").replace(",", " ").split())
+    aliases = [core] if len(core) >= 3 else []
+    first = core.split(" ")[0] if core else ""
+    if len(first) >= 4 and first.lower() not in {"first", "united", "american", "general"}:
+        aliases.append(first)
+    if aliases:
+        _extra_names[ticker.upper()] = list(dict.fromkeys(aliases))
+
+
 def _names(ticker: str) -> List[str]:
     try:
         from src.data.stock_mapping import STOCK_ENGLISH_NAME_MAP
         aliases = STOCK_ENGLISH_NAME_MAP.get(ticker.upper(), ())
     except Exception:
         aliases = ()
-    return [ticker.upper(), *aliases]
+    return [ticker.upper(), *aliases, *_extra_names.get(ticker.upper(), [])]
 
 
 def _dedupe(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -150,10 +166,13 @@ def ticker_news(ticker: str, sources: Iterable[str], *, days: int = 3, limit: in
     short = len(ticker) <= 2  # "A", "ON", "F": plain words, so the story must mark the ticker or name the company
     for item in merged:
         text = f"{item['title']} {item['summary']}"
-        marked = re.search(rf"\$\b{re.escape(ticker)}\b|\({re.escape(ticker)}\)|:\s?{re.escape(ticker)}\b", text)
+        marked = re.search(rf"\${re.escape(ticker)}\b|\({re.escape(ticker)}\)|\b(?:NYSE|NASDAQ|Nasdaq):\s?"
+                           rf"{re.escape(ticker)}\b", text)
         named = any(re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", text,
                               re.IGNORECASE if len(name) > 5 else 0) for name in names[1:])
-        if short:
+        if item["feed"] == "finnhub":
+            item["related"] = True  # fetched by ticker from a company-news endpoint
+        elif short:
             item["related"] = bool(marked or named)
         else:
             item["related"] = item["feed"] != "yahoo_finance" or bool(marked or named) or bool(

@@ -41,7 +41,17 @@ _ENV_BEFORE_COLLECTION = dict(os.environ)
 
 
 def pytest_collection_finish(session):
-    """Undo .env values that test modules loaded at import (module-level load_dotenv)."""
+    """Undo .env values that test modules loaded at import (module-level load_dotenv).
+
+    Also import the modules that bind ``from src.config import get_config`` at import
+    time now, before any test stubs ``src.config.get_config``: a first import under a
+    stub would keep the stub for the rest of the session and break unrelated tests.
+    """
+    for module in ("src.storage", "src.notification", "src.core.pipeline"):
+        try:
+            __import__(module)
+        except Exception:  # an import problem surfaces in the tests that need the module
+            pass
     for key in [key for key in os.environ if key not in _ENV_BEFORE_COLLECTION]:
         del os.environ[key]
     for key, value in _ENV_BEFORE_COLLECTION.items():

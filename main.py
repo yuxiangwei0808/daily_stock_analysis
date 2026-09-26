@@ -752,10 +752,9 @@ def _save_reused_market_review_report(
 def _market_review_due(config: Config, args) -> bool:
     """Scheduled runs review the market only in MARKET_REVIEW_TIMES slots (empty = every run)."""
     times = list(getattr(config, 'market_review_times', None) or [])
-    if not times or not getattr(args, 'schedule', False):
+    slot = getattr(args, 'scheduled_slot', None)  # set by the schedulers, never by manual runs
+    if not times or not slot:
         return True
-    from src.scheduler import current_slot
-    slot = current_slot(list(getattr(config, 'schedule_times', None) or []))
     due = slot in times
     if not due:
         logger.info("大盘复盘本轮跳过：当前定时 %s 不在 MARKET_REVIEW_TIMES %s 中", slot, times)
@@ -917,12 +916,14 @@ def run_full_analysis(
             if effective_region is not None
             else (getattr(config, 'market_review_region', 'cn') or 'cn')
         )
-        should_run_market_review = (
+        market_review_configured = (
             config.market_review_enabled
             and not args.no_market_review
             and (market_review_region or '') != ''
-            and _market_review_due(config, args)
         )
+        # MARKET_REVIEW_TIMES only skips producing/pushing the review; stock analyses
+        # in other slots keep the daily market context (reusing the stored review).
+        should_run_market_review = market_review_configured and _market_review_due(config, args)
         if (
             not getattr(args, "dry_run", False)
             and not stock_codes
@@ -935,7 +936,7 @@ def run_full_analysis(
             )
             return _return_with_auto_backtest(False)
         should_use_daily_market_context = (
-            should_run_market_review
+            market_review_configured
             and getattr(config, 'daily_market_context_enabled', True)
         )
         analysis_reference_time = datetime.now(timezone.utc)
@@ -956,8 +957,10 @@ def run_full_analysis(
             query_source="cli",
             save_context_snapshot=save_context_snapshot,
             daily_market_context_enabled=should_use_daily_market_context,
-            daily_market_context_allow_generate=should_use_daily_market_context,
+            daily_market_context_allow_generate=should_use_daily_market_context and should_run_market_review,
         )
+        # Set only for scheduled runs; manual runs are never trimmed or gated by the clock.
+        pipeline.scheduled_slot = getattr(args, 'scheduled_slot', None)
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
             # content must avoid silently reusing unrelated historical reports.
@@ -1833,7 +1836,12 @@ def main() -> int:
 
             def scheduled_task():
                 runtime_config = _reload_runtime_config()
-                result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                from src.scheduler import current_slot
+                args.scheduled_slot = current_slot(list(getattr(runtime_config, 'schedule_times', None) or []))
+                try:
+                    result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                finally:
+                    args.scheduled_slot = None
                 if result is False:
                     reason = _LAST_ANALYSIS_FAILURE_REASON or "unknown"
                     raise RuntimeError(

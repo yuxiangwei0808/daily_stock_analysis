@@ -236,3 +236,16 @@ def test_short_tickers_need_a_marked_mention_and_outages_are_not_cached(monkeypa
     free_news.ticker_news("ZZZZ", ["google_news"])
     free_news.ticker_news("ZZZZ", ["google_news"])
     assert len(calls) == 2  # not cached
+
+
+def test_a_remembered_company_name_makes_short_ticker_news_relevant(monkeypatch):
+    from src.services import free_news
+    free_news._cache.clear()
+    free_news.remember_name("F", "Ford Motor Company")
+    items = [{"title": "Ford recalls 100,000 trucks", "url": "1", "source": "X", "published_at": "2026-09-25T12:00:00+00:00",
+              "summary": "", "feed": "google_news"},
+             {"title": "Update: A market wrap", "url": "2", "source": "Y", "published_at": "2026-09-25T11:00:00+00:00",
+              "summary": "", "feed": "google_news"}]
+    monkeypatch.setattr(free_news, "google_news", lambda *a, **k: [dict(item) for item in items])
+    result = {item["url"]: item["related"] for item in free_news.ticker_news("F", ["google_news"])}
+    assert result == {"1": True, "2": False}

@@ -64,7 +64,7 @@ class TradeDeskWorker:
         watched = self._watched if self._holdings is not None else pulse.watch_tickers
         held_note = self._held_note if self._holdings is not None else None
         self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit, tickers=watched,
-                                         held=service.holdings.tickers if self._holdings is not None else None)
+                                         held=self._held_tickers if self._holdings is not None else None)
                        if pulse.enabled() else None)
         self._breakouts = self._opportunities = None
         if opportunities.enabled():
@@ -101,10 +101,26 @@ class TradeDeskWorker:
         if not codes:
             return {}
         try:
-            return self.service.provider("live").watchlist_quotes(sorted(codes))
-        except Exception as exc:  # this minute is skipped; the next one retries
+            provider = self.service.provider("live")
+        except Exception as exc:
             logger.warning("Live quotes unavailable: %s", type(exc).__name__)
-            return None
+            return {}
+        try:
+            return provider.watchlist_quotes(sorted(codes))
+        except Exception as exc:
+            # Stocks and option contracts apart: a quota or permission problem with one kind
+            # does not silence every live watch. An empty dict still lets date-based
+            # holdings alerts (expiry, earnings) run on the last synced prices.
+            logger.warning("Live quotes unavailable (%s); retrying stocks and options apart", type(exc).__name__)
+            from .holdings import parse_code
+            quotes = {}
+            for kind in ("stock", "option"):
+                part = sorted(code for code in codes if parse_code(code)["kind"] == kind)
+                try:
+                    quotes.update(provider.watchlist_quotes(part) if part else {})
+                except Exception:
+                    pass
+            return quotes
 
     def _breakout_history(self):
         new_york = ZoneInfo("America/New_York")
@@ -112,6 +128,12 @@ class TradeDeskWorker:
                  datetime.fromisoformat(event["created_at"]).astimezone(new_york).date())
                 for event in self.repo.events(limit=500, newest=True, types=["breakout"],
                                               since=(utcnow() - timedelta(days=10)).isoformat())]
+
+    def _held_tickers(self):
+        """Held tickers, or an error (read by the pulse as "unknown") before the first sync."""
+        if not self.service.holdings.raw().get("synced_at"):
+            raise LookupError("holdings not synced yet")
+        return self.service.holdings.tickers()
 
     def _held_side(self, ticker):
         """"long"/"short"/"mixed", "" when not held, None when holdings are unknown."""

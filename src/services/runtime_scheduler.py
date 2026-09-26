@@ -381,6 +381,7 @@ class RuntimeSchedulerService:
             "stocks": None,
             "portfolio": None,
             "workers": None,
+            "scheduled_slot": None,  # "HH:MM" for timed runs; None for "Run now"
         }
         defaults.update(self._schedule_args_overrides)
         return SimpleNamespace(**defaults)
@@ -564,7 +565,8 @@ class RuntimeSchedulerService:
             result_queue = context.Queue()
             process = context.Process(
                 target=self._analysis_process_target,
-                args=(result_queue, stock_codes, dict(self._schedule_args_overrides)),
+                args=(result_queue, stock_codes, {**self._schedule_args_overrides,
+                                                  "scheduled_slot": slot[-5:] if slot else None}),
                 name="runtime-scheduled-analysis",
             )
             timeout = self._analysis_timeout_seconds()

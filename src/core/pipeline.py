@@ -3478,6 +3478,8 @@ class StockAnalysisPipeline:
         Returns:
             分析结果列表
         """
+        # History rows this run saves are newer than this; changes-only briefs compare with older ones.
+        self._run_started_at = datetime.now()
         start_time = time.time()
         
         # 使用配置中的股票列表
@@ -3879,7 +3881,8 @@ class StockAnalysisPipeline:
             if not skip_push and report_type == ReportType.BRIEF:
                 # Later scheduled runs can push only the calls that changed (BRIEF_CHANGES_ONLY_TIMES).
                 from src.services.brief_changes import changes_only
-                trimmed = changes_only(results, self.db, self.config, self.query_id or "")
+                trimmed = changes_only(results, self.db, self.config, getattr(self, "scheduled_slot", None),
+                                       getattr(self, "_run_started_at", None))
                 if trimmed is not None:
                     changed, header = trimmed
                     report = header + ("\n\n" + self._generate_aggregate_report(changed, report_type) if changed else "")

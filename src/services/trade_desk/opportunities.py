@@ -806,7 +806,9 @@ class OpportunityRunner:
             when = dates.get(item["ticker"])
             item["earnings"] = when.isoformat() if when else None
         context = {}
+        from src.services.free_news import remember_name
         for item in candidates:
+            remember_name(item["ticker"], item.get("name", ""))  # short tickers need the name to match news
             try:
                 # Only stories about the stock; market-wide items would read as its news.
                 headlines = [f"{h['published_at'][:10]} {h['title']} ({h.get('source', '')})"

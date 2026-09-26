@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, ConfigDict, Field
 
 from src.services.trade_desk.models import Model, TradeAdviceRequest
 
@@ -77,6 +77,8 @@ class PaperSettlementInput(Model):
 
 
 class Preferences(Model):
+    # Old tabs may still send removed settings (proactive discovery); they are ignored, not rejected.
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
     discord_enabled: Optional[bool] = None
 
 

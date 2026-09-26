@@ -619,8 +619,7 @@ class HoldingsMonitor:
         if session == "regular":
             if clock >= self._next_sync:
                 self._next_sync = clock + SYNC_SECONDS
-                self._run("sync", self.holdings.sync)
-                return
+                self._run("sync", self.holdings.sync)  # no return: this minute's quotes are still checked
         elif local.time() >= dtime(16, 5) and self._after_close_day != day and _trading_day(day):
             if self._run("sync", self.holdings.sync):  # a still-running session sync is not the close
                 self._after_close_day = day

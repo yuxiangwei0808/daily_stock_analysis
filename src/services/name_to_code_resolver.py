@@ -364,7 +364,9 @@ def _watchlist_needs_cn_names() -> bool:
         codes = [str(code).strip().lower() for code in (get_config().stock_list or [])]
     except Exception:
         return True
-    return not codes or any(re.fullmatch(r"(sh|sz|bj)?\d{6}|hk\d{3,5}|\d{5}(\.hk)?", code) for code in codes)
+    return not codes or any(
+        re.fullmatch(r"(sh|sz|bj)?\d{6}(\.(sh|ss|sz|bj))?|hk\d{3,5}|\d{4,5}(\.hk)?", code)
+        or re.search(r"[\u4e00-\u9fff]", code) for code in codes)
 
 
 def warmup_akshare_cache() -> None:

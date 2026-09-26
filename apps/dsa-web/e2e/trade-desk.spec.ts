@@ -20,7 +20,7 @@ async function setup(page: Page) {
     let body: unknown = { items: [] };
     if (path.endsWith('/advice')) body = route.request().method() === 'POST' ? advice : { items: [advice] };
     else if (path.includes('/advice/')) body = advice;
-    else if (path.endsWith('/preferences')) body = { proactive_enabled: false, discord_enabled: false, opportunity_daily_limit: 3, cooldown_minutes: 60 };
+    else if (path.endsWith('/preferences')) body = { discord_enabled: false };
     else if (path.endsWith('/outcomes')) body = { paper: { closed_trades: 0, realized_pnl: 0, win_rate: null }, manual_live: { closed_trades: 0, realized_pnl: 0, win_rate: null } };
     await route.fulfill({ json: body });
   });

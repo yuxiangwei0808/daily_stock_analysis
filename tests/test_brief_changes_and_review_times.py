@@ -12,15 +12,13 @@ def test_slot_helpers():
     assert current_slot(["09:40", "12:00"], datetime(2026, 9, 25, 14, 0)) is None
 
 
-def test_market_review_runs_only_in_its_slots(monkeypatch):
+def test_market_review_runs_only_in_its_slots():
     import main
     config = SimpleNamespace(market_review_times=["16:10"], schedule_times=["09:40", "12:00", "16:10"])
-    monkeypatch.setattr("src.scheduler.current_slot", lambda times, now=None: "12:00")
-    assert main._market_review_due(config, SimpleNamespace(schedule=True)) is False
-    assert main._market_review_due(config, SimpleNamespace(schedule=False)) is True  # a manual run always may
-    monkeypatch.setattr("src.scheduler.current_slot", lambda times, now=None: "16:10")
-    assert main._market_review_due(config, SimpleNamespace(schedule=True)) is True
-    assert main._market_review_due(SimpleNamespace(market_review_times=[]), SimpleNamespace(schedule=True)) is True
+    assert main._market_review_due(config, SimpleNamespace(scheduled_slot="12:00")) is False
+    assert main._market_review_due(config, SimpleNamespace(scheduled_slot="16:10")) is True
+    assert main._market_review_due(config, SimpleNamespace(scheduled_slot=None)) is True  # manual / Run now
+    assert main._market_review_due(SimpleNamespace(market_review_times=[]), SimpleNamespace(scheduled_slot="12:00"))
 
 
 def _result(code, advice, score):
@@ -28,24 +26,29 @@ def _result(code, advice, score):
                            action=None, report_language="en")
 
 
-def test_changes_only_brief_keeps_changed_calls(monkeypatch):
-    monkeypatch.setattr("src.schemas.decision_action.display_decision_type_for_result",
-                        lambda result, report_language="en": {"Buy": "buy", "Sell": "sell"}.get(result.operation_advice, "hold"))
-    morning = datetime(2026, 9, 25, 9, 50)
-    earlier = [SimpleNamespace(id=1, code="AAA", operation_advice="Watch", sentiment_score=50, created_at=morning),
-               SimpleNamespace(id=2, code="BBB", operation_advice="Watch", sentiment_score=50, created_at=morning),
-               SimpleNamespace(id=3, code="CCC", operation_advice="Watch", sentiment_score=45, created_at=morning)]
+def _row(i, code, advice, score, when):
+    return SimpleNamespace(id=i, code=code, operation_advice=advice, sentiment_score=score, created_at=when)
+
+
+def test_changes_only_brief_compares_with_rows_saved_before_this_run():
+    morning, run_start, now = datetime(2026, 9, 25, 9, 50), datetime(2026, 9, 25, 12, 0), datetime(2026, 9, 25, 12, 8)
+    earlier = [_row(1, "AAA", "Watch", 50, morning), _row(2, "BBB", "Watch", 50, morning),
+               _row(3, "CCC", "Watch", 45, morning),
+               # this run's own rows, saved before the push: never the baseline
+               _row(10, "AAA", "Buy", 70, now), _row(11, "BBB", "Watch", 52, now), _row(12, "CCC", "Watch", 58, now)]
     db = SimpleNamespace(get_analysis_history=lambda **kwargs: earlier)
-    config = SimpleNamespace(brief_changes_only_times=["12:00"], schedule_times=["09:40", "12:00", "16:10"],
-                             report_language="en")
+    config = SimpleNamespace(brief_changes_only_times=["12:00"], report_language="en")
     results = [_result("AAA", "Buy", 70), _result("BBB", "Watch", 52), _result("CCC", "Watch", 58),
                _result("NEW", "Watch", 50)]
-    changed, header = changes_only(results, db, config, "q", now=datetime(2026, 9, 25, 12, 15))
+    changed, header = changes_only(results, db, config, "12:00", run_start)
     assert [r.code for r in changed] == ["AAA", "CCC", "NEW"]  # bucket change, 13-point move, new name
     assert header == "_12:00 update: only calls that changed since 09:50 (3 of 4)._"
-    assert changes_only(results, db, config, "q", now=datetime(2026, 9, 25, 16, 20)) is None  # full brief at 16:10
+    assert changes_only(results, db, config, "16:10", run_start) is None  # full brief in other slots
+    assert changes_only(results, db, config, None, run_start) is None  # manual runs are never trimmed
+    first = SimpleNamespace(get_analysis_history=lambda **kwargs: [_row(10, "AAA", "Buy", 70, now)])
+    assert changes_only(results, first, config, "12:00", run_start) is None  # first run of the day
     unchanged = [_result("AAA", "Watch", 51), _result("BBB", "Watch", 50)]
-    changed, header = changes_only(unchanged, db, config, "q", now=datetime(2026, 9, 25, 12, 15))
+    changed, header = changes_only(unchanged, db, config, "12:00", run_start)
     assert changed == [] and "no call changed since 09:50" in header
 
 
