@@ -51,3 +51,17 @@ def test_a_run_whose_worker_is_still_alive_is_not_started_again(tmp_path, monkey
         child.kill()
         child.wait()
     assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is True
+
+
+def test_the_worker_marks_its_own_run_finished(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "db.sqlite"))
+    rs._write_run_record({"slot": "2026-09-25 16:10", "status": "started", "pid": os.getpid(),
+                          "started_at": datetime.now().isoformat(), "attempts": 1})
+    monkeypatch.setattr(rs.os, "setsid", lambda: None, raising=False)
+    monkeypatch.setattr(rs, "_setup_child_logging", lambda: None)
+    monkeypatch.setattr(rs.RuntimeSchedulerService, "__init__", lambda self, **kwargs: setattr(self, "_last_error", None))
+    monkeypatch.setattr(rs.RuntimeSchedulerService, "_run_analysis_locked", lambda self, codes: True)
+    sent = []
+    rs._run_scheduled_analysis_process(SimpleNamespace(put=sent.append), None, {})
+    assert rs._read_run_record()["status"] == "finished" and sent == [{"success": True, "error": None}]

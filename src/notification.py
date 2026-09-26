@@ -1206,6 +1206,12 @@ class NotificationService(
             label = "盘后" if getattr(result, "report_language", "zh") == "zh" else "AH"
             text += f" · {label} {cls._display_price(price)}" + (f" ({change:+.2f}%)" if finite(change) else "")
             return text
+        session = snapshot.get("quote_session") if isinstance(snapshot, dict) else None
+        if session in {"premarket", "postmarket"}:
+            # No verified regular close: say the print is extended-hours rather than the day's.
+            zh = getattr(result, "report_language", "zh") == "zh"
+            label = ("盘前" if zh else "PM") if session == "premarket" else ("盘后" if zh else "AH")
+            return f" | {label} {cls._display_price(price)}" + (f" ({change:+.2f}%)" if finite(change) else "")
         text = f" | {cls._display_price(price)}"
         if finite(change):
             text += f" ({change:+.2f}%)"

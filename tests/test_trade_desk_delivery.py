@@ -121,3 +121,19 @@ def test_one_unquotable_code_does_not_blank_the_batch():
             return [{"code": code} for code in codes]
 
     assert [row["code"] for row in Stub()._snapshot_rows(["US.A", "US.BAD", "US.B", "US.C"])] == ["US.A", "US.B", "US.C"]
+
+
+def test_one_shared_snapshot_serves_every_live_watch(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    calls = []
+    provider = SimpleNamespace(watchlist_quotes=lambda codes: calls.append(codes) or {code: {"price": 1} for code in codes})
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None,
+                                                         provider=lambda mode: provider))
+    desk._pulse = SimpleNamespace(_tickers=lambda: ["AAA", "BBB"])
+    desk._breakouts = SimpleNamespace(tickers=lambda: ["BBB", "CCC"])
+    desk._holdings = SimpleNamespace(codes=lambda: ["USO261016C160000", "USO"])
+    quotes = desk._shared_quotes("regular")
+    assert calls == [["AAA", "BBB", "CCC", "USO", "USO261016C160000"]] and set(quotes) == set(calls[0])
+    assert desk._shared_quotes("regular") is None  # once a minute
+    assert desk._shared_quotes("postmarket") is None and len(calls) == 1

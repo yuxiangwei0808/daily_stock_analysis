@@ -146,7 +146,9 @@ def collect_opinions(
 
 def agreement(opinions: Sequence[Dict[str, Any]]) -> str:
     """'agree' when every available verdict has the same action, else 'split'."""
-    actions = {item.get("action") for item in opinions if item.get("status") == "ok"}
+    # "hold" and "watch" are the same verdict for agreement: neither buys nor sells.
+    actions = {{"hold": "watch"}.get(item.get("action"), item.get("action"))
+               for item in opinions if item.get("status") == "ok"}
     if len(actions) <= 1:
         return "agree" if actions else "unavailable"
     return "split"

@@ -278,7 +278,7 @@ def test_api_authentication_validation_and_mode_isolation(repo, monkeypatch):
         assert client.post('/api/v1/trade-desk/advice', cookies=auth_cookies, json={
             'ticker': 'TEST', 'allocation': -1}).status_code == 422
         assert client.patch('/api/v1/trade-desk/preferences', cookies=auth_cookies, json={
-            'proactive_enabled': True, 'opportunity_daily_limit': 3}).json()['proactive_enabled'] is True
+            'discord_enabled': True}).json()['discord_enabled'] is True
         response = client.post('/api/v1/trade-desk/plans', cookies=auth_cookies, json={
             'advice_id': row['advice_id'], 'candidate_id': row['candidate']['id']})
         assert response.status_code == 201, response.text
@@ -327,40 +327,6 @@ def test_discord_delivery_retries_are_bounded_and_persisted(repo, monkeypatch):
         worker._deliver()
     assert len(calls) == 3
     assert [e['payload']['attempt'] for e in repo.events() if e['event_type'] == 'discord_delivery'] == [1, 2, 3]
-    worker.stop()
-    svc.stop()
-
-
-def test_proactive_requires_fresh_quotes_and_deduplicates_ideas(repo, monkeypatch):
-    from src.services.trade_desk.worker import TradeDeskWorker
-    import data_provider.us_session
-    monkeypatch.setattr(data_provider.us_session, 'session_window', lambda now=None: ('regular', None, None))
-    snap = snapshot()
-    snap.evidence = [{'kind': 'market_scan', 'title': 'Observed test market context'}]
-    item = candidate(snap).model_copy(update={'evidence_confidence': 'high',
-        'entry_conditions': ['Break the observed range'], 'invalidation': 'Range failure',
-        'exit_conditions': ['Close if invalidated']})
-    job = repo.create_advice(TradeAdviceRequest(ticker='TEST').model_dump(mode='json'), source='proactive')
-    repo.update_advice(job['id'], {'status': 'completed', 'llm_status': 'ready',
-        'assessment': 'compare', 'explanation': 'Conditional test idea',
-        'snapshot': snap.model_dump(mode='json'),
-        'candidates': [item.model_dump(mode='json')]})
-    repo.set_preferences({'proactive_enabled': True})
-    svc = service(repo, snap)
-    worker = TradeDeskWorker(svc)
-    worker._next_scan = float('inf')
-    svc._latest[('live', 'TEST')] = snap
-    snap.stale = True
-    worker._proactive()
-    assert not [e for e in repo.events() if e['event_type'] == 'opportunity']
-    snap.stale = False
-    snap.options[0].ask = 4
-    worker._proactive()
-    assert not [e for e in repo.events() if e['event_type'] == 'opportunity']
-    snap.options[0].ask = 2.1
-    worker._proactive()
-    worker._proactive()
-    assert len([e for e in repo.events() if e['event_type'] == 'opportunity']) == 1
     worker.stop()
     svc.stop()
 
@@ -509,28 +475,6 @@ def test_paper_covered_calls_respect_all_explicitly_owned_shares(repo):
     svc.paper_fill(selected['id'], quantity=1)
     with pytest.raises(ValueError, match='do not cover'):
         svc.paper_fill(selected['id'])
-    svc.stop()
-
-
-def test_discovery_carries_attributed_research_without_replacing_quotes(repo, monkeypatch):
-    from src.services.trade_desk.worker import TradeDeskWorker
-    import src.services.us_market_scan
-    import src.config
-    monkeypatch.setattr(src.config, 'get_config', lambda: SimpleNamespace(stock_list=['TEST']))
-    monkeypatch.setattr(src.services.us_market_scan, 'collect_us_market_scan', lambda watchlist: {
-        'session': 'regular', 'gainers': [{'code': 'OTHER', 'price': 999, 'change_pct': 3,
-        'volume': 100000, 'amount': 1000000, 'provider_timestamp': '2026-09-22T14:00:00Z'}]})
-    snap = snapshot()
-    snap.underlying = 'OTHER'
-    svc = service(repo, snap)
-    worker = TradeDeskWorker(svc)
-    assert worker._discover() == ['TEST', 'OTHER']
-    market = svc.snapshot(TradeAdviceRequest(ticker='OTHER'))
-    assert market.spot == 100
-    assert market.evidence[0]['metrics']['price'] == 999
-    assert 'research data' in market.evidence[0]['source']
-    assert svc.snapshot(TradeAdviceRequest(ticker='OTHER')).evidence == market.evidence
-    worker.stop()
     svc.stop()
 
 
@@ -927,36 +871,6 @@ def test_expired_held_positions_raise_reconciliation_not_hourly_outages(repo, mo
         svc.stop()
 
 
-def test_discovery_skips_non_us_watchlist_codes_and_failing_symbols(repo, monkeypatch):
-    from src.services.trade_desk.worker import TradeDeskWorker
-    import src.config
-    import src.services.us_market_scan
-    monkeypatch.setattr(src.config, 'get_config', lambda: SimpleNamespace(stock_list=['600519', 'hk00700', 'BAD', 'TEST']))
-    monkeypatch.setattr(src.services.us_market_scan, 'collect_us_market_scan', lambda watchlist: {'gainers': []})
-    svc = service(repo)
-    worker = TradeDeskWorker(svc)
-    try:
-        assert worker._discover() == ['BAD', 'TEST']
-        calls = []
-        def snap_for(request, required_contracts=()):
-            calls.append(request.ticker)
-            if request.ticker == 'BAD':
-                raise RuntimeError('provider failure')
-            return snapshot()
-        svc.snapshot = snap_for
-        submitted = []
-        svc.submit = lambda request, source='manual': submitted.append(request.ticker)
-        repo.set_preferences({'proactive_enabled': True})
-        monkeypatch.setattr('data_provider.us_session.session_window', lambda now=None: ('regular', None, None))
-        worker._next_scan = float('inf')
-        worker._scan_future = SimpleNamespace(done=lambda: True, result=lambda: ['BAD', 'TEST'])
-        worker._proactive()
-        assert calls == ['BAD', 'TEST'] and submitted == ['TEST']
-    finally:
-        worker.stop()
-        svc.stop()
-
-
 @pytest.mark.parametrize('message,allocation,allowed', [
     ('Try it with 5000.', 5000, True), ('What about $5k?', 5000, True),
     ('Use 2.5x leverage', 2, False), ('Compare bearish instead', 700, False),
@@ -1046,25 +960,6 @@ def test_slow_model_call_reprices_instead_of_marking_every_candidate_stale(repo,
         svc.stop()
 
 
-@pytest.mark.parametrize('phase', ['premarket', 'postmarket', 'closed'])
-def test_proactive_runs_only_in_the_regular_session(repo, monkeypatch, phase):
-    import data_provider.us_session
-    from src.services.trade_desk.worker import TradeDeskWorker
-    monkeypatch.setattr(data_provider.us_session, 'session_window', lambda now=None: (phase, None, None))
-    repo.set_preferences({'proactive_enabled': True})
-    svc = service(repo)
-    worker = TradeDeskWorker(svc)
-    scans = []
-    worker._discover = lambda: scans.append(1) or ['TEST']
-    try:
-        worker._proactive()
-        assert worker._scan_future is None and not scans
-        assert not [e for e in repo.events() if e['event_type'] == 'opportunity']
-    finally:
-        worker.stop()
-        svc.stop()
-
-
 class _Generation:
     def __init__(self, text):
         self.text, self.calls = text, []
@@ -1103,7 +998,7 @@ def test_model_tiers_route_scans_to_the_routine_model_and_panel_user_requests(re
 
     svc = service(repo, snap, Codex())
     scan = repo.create_advice(TradeAdviceRequest(ticker='TEST', data_mode='replay').model_dump(mode='json'),
-                              source='proactive')
+                              source='opportunity')
     svc._run_advice(scan['id'], threading.Event())
     scan = repo.advice(scan['id'])
     assert Codex.calls == 0 and scan['explanation'] == 'Routine view' and scan['llm_status'] == 'ready'

@@ -711,12 +711,22 @@ const HomePage: React.FC = () => {
   const [watchlistGroups, setWatchlistGroups] = useState<WatchlistGroup[]>([]);
   useEffect(() => {
     let active = true;
-    // Broker groups are optional; the flat watchlist is shown without them.
-    systemConfigApi.getWatchlistGroups().then((groups) => {
-      if (active) setWatchlistGroups(groups);
-    }).catch(() => undefined);
+    let timer: number | undefined;
+    // Broker groups are optional; the flat watchlist is shown without them. An empty
+    // answer (OpenD not ready yet) is retried after a minute, otherwise every 5 minutes.
+    const load = () => {
+      systemConfigApi.getWatchlistGroups().then((groups) => {
+        if (!active) return;
+        setWatchlistGroups(groups);
+        timer = window.setTimeout(load, groups.length ? 300_000 : 60_000);
+      }).catch(() => {
+        if (active) timer = window.setTimeout(load, 60_000);
+      });
+    };
+    load();
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
   }, []);
   const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, HomeWatchlistQuote>>({});
@@ -725,7 +735,8 @@ const HomePage: React.FC = () => {
     const load = () => {
       if (document.visibilityState !== 'visible') return;
       systemConfigApi.getWatchlistQuotes().then((quotes) => {
-        if (active) setWatchlistQuotes(quotes);
+        // An empty answer keeps the last prices instead of blanking every row.
+        if (active) setWatchlistQuotes((previous) => (Object.keys(quotes).length ? quotes : previous));
       }).catch(() => undefined);
     };
     load();

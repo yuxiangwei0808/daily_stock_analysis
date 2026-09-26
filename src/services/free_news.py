@@ -70,7 +70,7 @@ def yahoo_finance_news(ticker: str, limit: int = 10) -> List[Dict[str, Any]]:
     import yfinance as yf
 
     items = []
-    for raw in yf.Ticker(ticker).get_news(count=limit) or []:
+    for raw in yf.Ticker(ticker.replace(".", "-")).get_news(count=limit) or []:  # BRK.B -> BRK-B
         content = raw.get("content") or raw
         published = None
         try:
@@ -130,11 +130,14 @@ def ticker_news(ticker: str, sources: Iterable[str], *, days: int = 3, limit: in
                 "yahoo_finance": lambda: yahoo_finance_news(ticker, limit=limit),
                 "finnhub": lambda: finnhub_news(ticker, finnhub_key, days=days, limit=limit)}
 
+    failures = []
+
     def fetch(name):
         try:
             return fetchers[name]()
         except Exception as exc:  # best-effort: one source failing never blocks the others
             logger.info("Free news source %s unavailable for %s: %s", name, ticker, type(exc).__name__)
+            failures.append(name)
             return []
 
     with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="free-news") as pool:
@@ -144,13 +147,20 @@ def ticker_news(ticker: str, sources: Iterable[str], *, days: int = 3, limit: in
     # Ticker feeds (Yahoo) mix in general market stories; items naming the
     # stock come first and are flagged, the rest remain as market context.
     names = _names(ticker)
+    short = len(ticker) <= 2  # "A", "ON", "F": plain words, so the story must mark the ticker or name the company
     for item in merged:
         text = f"{item['title']} {item['summary']}"
-        item["related"] = item["feed"] != "yahoo_finance" or any(
-            re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", text, re.IGNORECASE if len(name) > 5 else 0)
-            for name in names)
+        marked = re.search(rf"\$\b{re.escape(ticker)}\b|\({re.escape(ticker)}\)|:\s?{re.escape(ticker)}\b", text)
+        named = any(re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", text,
+                              re.IGNORECASE if len(name) > 5 else 0) for name in names[1:])
+        if short:
+            item["related"] = bool(marked or named)
+        else:
+            item["related"] = item["feed"] != "yahoo_finance" or bool(marked or named) or bool(
+                re.search(rf"(?<![A-Za-z]){re.escape(ticker)}(?![A-Za-z])", text))
     merged.sort(key=lambda item: (item["related"], item["published_at"]), reverse=True)
     result = _dedupe(merged)[:limit]
-    with _cache_lock:
-        _cache[key] = (time.monotonic(), result)
+    if len(failures) < len(sources):  # an outage of every source is retried, not cached
+        with _cache_lock:
+            _cache[key] = (time.monotonic(), result)
     return list(result)

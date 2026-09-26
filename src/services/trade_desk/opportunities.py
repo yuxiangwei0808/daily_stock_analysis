@@ -479,7 +479,12 @@ class BreakoutWatch:
         bars = self._bars(tickers)
         return {ticker: levels for ticker, rows in bars.items() if (levels := breakout_levels(rows, day))}
 
-    def tick(self, now: datetime, session: str) -> None:
+    def tickers(self) -> List[str]:
+        """What the breakout watch needs quoted (for the worker's shared snapshot)."""
+        return list(self._levels)
+
+    def tick(self, now: datetime, session: str, quotes: Any = None, shared: bool = False) -> None:
+        """With ``shared``, ``quotes`` is the worker's snapshot this minute (None = not a quote minute)."""
         if session != "regular":
             return
         day = _session_day(now)
@@ -511,13 +516,15 @@ class BreakoutWatch:
                 logger.warning("Breakout levels unavailable: %s", exc)
                 self._retry_at = clock + LEVELS_RETRY_SECONDS
             self._loading = None
-        if clock < self._next or not self._levels:
+        if not self._levels or (shared and quotes is None) or (not shared and clock < self._next):
             return
         self._next = clock + QUOTE_SECONDS
         local = now.astimezone(_NEW_YORK)
         if local < datetime.combine(day, datetime.min.time().replace(hour=9, minute=30), _NEW_YORK) + OPENING_GRACE:
             return
-        quotes = self._provider().watchlist_quotes(list(self._levels))
+        if not shared:
+            quotes = self._provider().watchlist_quotes(list(self._levels))
+        quotes = {ticker: quote for ticker, quote in quotes.items() if ticker in self._levels}
         fraction = trend.volume_fraction(now)
         watchlist = set(self._watchlist())
         # Early prints may include pre-market volume in the snapshot: ask for more pace then.
@@ -801,8 +808,9 @@ class OpportunityRunner:
         context = {}
         for item in candidates:
             try:
+                # Only stories about the stock; market-wide items would read as its news.
                 headlines = [f"{h['published_at'][:10]} {h['title']} ({h.get('source', '')})"
-                             for h in self._news(item["ticker"])[:5]]
+                             for h in self._news(item["ticker"]) if h.get("related", True)][:5]
             except Exception as exc:
                 logger.info("Headlines unavailable for %s: %s", item["ticker"], type(exc).__name__)
                 headlines = []

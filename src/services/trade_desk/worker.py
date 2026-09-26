@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .models import TradeAdviceRequest, identity, utcnow
@@ -15,13 +12,13 @@ from .models import TradeAdviceRequest, identity, utcnow
 logger = logging.getLogger(__name__)
 
 
-_EVENT_LABELS = {"opportunity": "Opportunity", "price_trigger": "Price trigger", "invalidation": "Invalidated",
+_EVENT_LABELS = {"price_trigger": "Price trigger", "invalidation": "Invalidated",
                  "target": "Target reached", "time_exit": "Time to exit", "data_outage": "Data outage",
                  "position_reconciliation": "Reconcile position", "monitor_capacity": "Monitor capacity"}
 
 
 DISCORD_PART_LIMIT = 1900
-WAIT_COOLDOWN = timedelta(hours=4)
+SHARED_QUOTE_SECONDS = 60
 
 
 def discord_parts(content, limit=DISCORD_PART_LIMIT):
@@ -54,13 +51,11 @@ class TradeDeskWorker:
         self.owner = identity()
         self._stop = threading.Event()
         self._thread = None
-        self._scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trade-discovery")
-        self._scan_future = None
-        self._next_scan = 0.0
         self._last_tick = None
         self._error = None
         self._leader = False
         self._unmonitored_count = 0
+        self._next_quotes = 0.0
         from . import holdings, opportunities, pulse
         # Broker holdings join the watchlist for every live watch and add a
         # "You hold" line to ideas and breakouts.
@@ -68,7 +63,8 @@ class TradeDeskWorker:
                           if holdings.enabled() else None)
         watched = self._watched if self._holdings is not None else pulse.watch_tickers
         held_note = self._held_note if self._holdings is not None else None
-        self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit, tickers=watched)
+        self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit, tickers=watched,
+                                         held=service.holdings.tickers if self._holdings is not None else None)
                        if pulse.enabled() else None)
         self._breakouts = self._opportunities = None
         if opportunities.enabled():
@@ -88,6 +84,27 @@ class TradeDeskWorker:
         except Exception:
             held = []
         return list(dict.fromkeys([*pulse.watch_tickers(), *held]))
+
+    def _shared_quotes(self, session):
+        """Quotes for every live watch, once a minute in the regular session; None otherwise."""
+        import time
+        if session != "regular" or time.monotonic() < self._next_quotes:
+            return None
+        self._next_quotes = time.monotonic() + SHARED_QUOTE_SECONDS
+        codes = set()
+        for part, getter in ((self._pulse, "_tickers"), (self._breakouts, "tickers"), (self._holdings, "codes")):
+            if part is not None:
+                try:
+                    codes.update(getattr(part, getter)())
+                except Exception as exc:
+                    logger.info("Live watch tickers unavailable: %s", type(exc).__name__)
+        if not codes:
+            return {}
+        try:
+            return self.service.provider("live").watchlist_quotes(sorted(codes))
+        except Exception as exc:  # this minute is skipped; the next one retries
+            logger.warning("Live quotes unavailable: %s", type(exc).__name__)
+            return None
 
     def _breakout_history(self):
         new_york = ZoneInfo("America/New_York")
@@ -134,7 +151,6 @@ class TradeDeskWorker:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
-        self._scan_pool.shutdown(wait=False, cancel_futures=True)
         for part in (self._pulse, self._breakouts, self._opportunities, self._holdings):
             if part is not None:
                 part.stop()
@@ -271,155 +287,28 @@ class TradeDeskWorker:
                     "price": price, "level": level, "message": message,
                     "data_mode": plan["data_mode"], "ledger": plan["ledger"]},
                     f"{event_type}:{plan['id']}:{level}")
+        # One OpenD snapshot a minute serves the market pulse, breakouts and holdings.
+        quotes = self._shared_quotes(session_window(now)[0])
         if self._pulse is not None:
             try:
-                self._pulse.tick(now)
+                self._pulse.tick(now, quotes=quotes, shared=True)
             except Exception as exc:  # the watch must never stop plan monitoring
                 logger.warning("Market pulse check failed: %s", type(exc).__name__)
         if self._holdings is not None:
             try:
-                self._holdings.tick(now, session_window(now)[0])
+                self._holdings.tick(now, session_window(now)[0], quotes=quotes, shared=True)
             except Exception as exc:  # optional; plan monitoring continues
                 logger.warning("Holdings monitor failed: %s", type(exc).__name__)
         if self._opportunities is not None:
             try:
-                self._breakouts.tick(now, session_window(now)[0])
+                self._breakouts.tick(now, session_window(now)[0], quotes=quotes, shared=True)
             except Exception as exc:  # optional; plan monitoring continues
                 logger.warning("Breakout watch failed: %s", type(exc).__name__)
             try:
                 self._opportunities.tick(regular_session)
             except Exception as exc:  # optional; plan monitoring continues
                 logger.warning("Trade opportunities failed: %s", type(exc).__name__)
-        self._proactive()
         self._deliver()
-
-    def _proactive(self):
-        from data_provider.us_session import session_window
-        from .quality import candidate_quotes_fresh, quote_age_ok, snapshot_fresh
-        prefs = self.repo.preferences()
-        phase = session_window()[0]
-        # Proactive discovery, model runs and idea delivery are limited to the
-        # regular session: options quotes are live then, and each run costs a model call.
-        if not prefs["proactive_enabled"] or phase != "regular":
-            return
-        now = utcnow()
-        day = now.astimezone(ZoneInfo("America/New_York")).date()
-        start_of_day = datetime.combine(day, datetime.min.time(), ZoneInfo("America/New_York"))
-        events = self.repo.events(limit=5000, newest=True, since=start_of_day.astimezone(timezone.utc).isoformat(),
-                                  types=["opportunity"])
-        opportunities = [e for e in events if e["event_type"] == "opportunity" and
-            datetime.fromisoformat(e["created_at"]).astimezone(ZoneInfo("America/New_York")).date() == day]
-        for job in self.repo.advice_list(50):
-            if job.get("source") != "proactive" or job["status"] != "completed" or job.get("llm_status") != "ready":
-                continue
-            if job.get("assessment") == "wait":
-                continue
-            if any(e["payload"].get("advice_id") == job["id"] for e in opportunities):
-                continue
-            symbol = job["request"]["ticker"]
-            if len(opportunities) >= prefs["opportunity_daily_limit"]:
-                break
-            if any(e["payload"].get("underlying") == symbol and now - datetime.fromisoformat(e["created_at"])
-                   < timedelta(minutes=prefs["cooldown_minutes"]) for e in opportunities):
-                continue
-            candidates = [c for c in job["candidates"] if c["evidence_confidence"] == "high"
-                          and c["entry_conditions"] and c["invalidation"] and c["exit_conditions"]]
-            if not candidates:
-                continue
-            if now - datetime.fromisoformat(job["updated_at"]) > timedelta(seconds=30):
-                continue
-            snapshot = self.service._latest.get(("live", symbol))
-            if not snapshot or not snapshot_fresh(snapshot) or not snapshot.source_verified:
-                continue
-            quotes = {q.contract_id: q for q in snapshot.options}
-            eligible = []
-            for candidate in candidates:
-                from .models import QuoteSnapshot
-                saved = job.get("snapshots", {}).get(candidate["snapshot_id"], job.get("snapshot"))
-                if not saved or not candidate_quotes_fresh(QuoteSnapshot.model_validate(saved), candidate, now):
-                    continue
-                if not candidate_quotes_fresh(snapshot, candidate, now):
-                    continue
-                options = [quotes.get(leg["contract_id"]) for leg in candidate["legs"] if leg["right"] != "stock"]
-                if all(q and q.bid > 0 and q.ask >= q.bid and
-                       (q.ask - q.bid) / ((q.ask + q.bid) / 2) <= 0.10 and
-                       quote_age_ok(q.quoted_at, now) and
-                       ((q.volume or 0) >= 50 or (q.open_interest or 0) >= 100) for q in options):
-                    eligible.append(candidate)
-            # Provider connectivity metadata is provenance, not a thesis catalyst.
-            thesis_evidence = [item for item in snapshot.evidence if item.get("kind") in {"news", "report", "signal", "market_scan"}]
-            if not eligible or not thesis_evidence:
-                continue
-            event = self._emit("opportunity", {"advice_id": job["id"], "underlying": symbol,
-                "message": job["explanation"][:1200], "candidate_ids": [c["id"] for c in eligible],
-                "confidence_meaning": "Strength of evidence; not a measured win probability"}, f"opportunity:{job['id']}")
-            if event:
-                opportunities.append(event)
-        if len(opportunities) >= prefs["opportunity_daily_limit"]:
-            return
-        if self._scan_future is None and time.monotonic() >= self._next_scan:
-            self._next_scan = time.monotonic() + 900
-            self._scan_future = self._scan_pool.submit(self._discover)
-        if self._scan_future and self._scan_future.done():
-            try:
-                symbols = self._scan_future.result()
-                existing = self.repo.advice_list(100)
-                for symbol in symbols[:10]:
-                    # A symbol assessed within the hour waits; after a "wait" verdict it
-                    # rests for four hours, so the same leaders do not repeat all day.
-                    if any(j["request"]["ticker"] == symbol and j.get("source") == "proactive" and
-                           now - datetime.fromisoformat(j["created_at"]) <
-                           (WAIT_COOLDOWN if j.get("assessment") == "wait" and j.get("status") == "completed"
-                            and j.get("llm_status") != "unavailable" else timedelta(hours=1)) for j in existing):
-                        continue
-                    # One symbol's failure must not end the whole discovery cycle.
-                    try:
-                        # One model request per discovery cycle; no calls on every quote update.
-                        request = TradeAdviceRequest(ticker=symbol, data_mode="live", horizon="both",
-                            message="Assess whether a fresh, well-supported opportunity exists. Wait if evidence is weak.")
-                        snapshot = self.service.snapshot(request)
-                    except Exception as exc:
-                        logger.info("Trade Desk discovery skipped %s: %s", symbol, type(exc).__name__)
-                        continue
-                    if snapshot_fresh(snapshot) and snapshot.source_verified:
-                        self.service.submit(request, source="proactive")
-                        break
-            except Exception as exc:
-                logger.warning("Trade Desk proactive discovery unavailable: %s", type(exc).__name__)
-            finally:
-                self._scan_future = None
-
-    def _discover(self):
-        from src.config import get_config
-        from src.services.us_market_scan import collect_us_market_scan
-        watchlist = list(getattr(get_config(), "stock_list", []))
-        scan = collect_us_market_scan(watchlist)
-        rows = [row for key in ("gainers", "losers") for row in scan.get(key, [])]
-        movers = [row["code"] for row in rows]
-        # The scanner is discovery evidence only. Prices for comparisons and
-        # simulated executions still come exclusively from the quote provider.
-        import math
-        now = utcnow()
-        evidence = {}
-        for row in rows:
-            metrics = {}
-            for field in ("price", "change_pct", "amount", "volume"):
-                value = row.get(field)
-                metrics[field] = float(value) if value is not None and math.isfinite(float(value)) else None
-            evidence[row["code"]] = (now, {"kind": "market_scan", "ticker": row["code"],
-                "source": "Existing US market scanner (Yahoo research data; may be delayed)",
-                "as_of": str(row.get("provider_timestamp") or scan.get("as_of") or "unknown"),
-                "session": scan.get("session"), "metrics": metrics,
-                "meaning": "Observed session move; catalyst and continuation unverified. Not an executable quote."})
-        with self.service._lock:
-            self.service._discovery_evidence = evidence
-        # The configured watchlist may include A-share/HK codes; options discovery is US-only.
-        watchlist = [code.strip().upper() for code in watchlist
-                     if re.fullmatch(r"[A-Z]{1,5}(?:[.-][A-Z])?", str(code).strip().upper())]
-        symbols = []
-        for index in range(max(len(watchlist), len(movers))):
-            symbols.extend(group[index] for group in (watchlist, movers) if index < len(group))
-        return list(dict.fromkeys(symbols))
 
     def _deliver(self):
         if not self.repo.preferences()["discord_enabled"]:
@@ -440,7 +329,7 @@ class TradeDeskWorker:
             if event["event_type"] == "discord_delivery":
                 # A crash after the claim leaves the claim newest; parts sent come from deliveries.
                 delivered_parts.setdefault(event["payload"].get("event_id"), set(event["payload"].get("sent_parts", [])))
-        wanted = {"opportunity", "price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
+        wanted = {"price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
                   "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout",
                   "holding_alert", "portfolio_summary"}
         for event in reversed(events):
@@ -492,9 +381,8 @@ class TradeDeskWorker:
                 if event["event_type"] == "market_news":
                     icon, label = "📰", "News"
                 else:
-                    moved_up = (payload.get("change_pct") or 0) >= 0 if payload.get("kind") == "day_move" \
-                        else " moved +" in message or " up " in message
-                    icon, label = ("📈" if moved_up else "📉"), ("Fast move" if payload.get("kind") == "fast_move" else "Big move")
+                    moved_up = (payload.get("change_pct") or 0) >= 0
+                    icon, label = ("📈" if moved_up else "📉"), "Big move"
                 content = f"{icon} **{ticker}** · {label}\n{message}"
             else:
                 label = _EVENT_LABELS.get(event["event_type"], event["event_type"].replace("_", " ").capitalize())

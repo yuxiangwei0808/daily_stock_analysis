@@ -123,19 +123,13 @@ describe('tradeDeskApi', () => {
     });
     patch.mockResolvedValueOnce({
       data: {
-        proactive_enabled: true,
         discord_enabled: false,
-        opportunity_daily_limit: 5,
-        cooldown_minutes: 30,
       },
     });
 
     const position = await tradeDeskApi.reconcilePlan('plan-1', { notes: 'Assignment recorded with broker statement.' });
     const preferences = await tradeDeskApi.updatePreferences({
-      proactiveEnabled: true,
       discordEnabled: false,
-      opportunityDailyLimit: 5,
-      cooldownMinutes: 30,
     });
 
     expect(post).toHaveBeenCalledWith('/api/v1/trade-desk/plans/plan-1/reconcile', {
@@ -143,12 +137,9 @@ describe('tradeDeskApi', () => {
     });
     expect(position.items[0].valuationStatus).toBe('broker_reconciled');
     expect(patch).toHaveBeenCalledWith('/api/v1/trade-desk/preferences', {
-      proactive_enabled: true,
       discord_enabled: false,
-      opportunity_daily_limit: 5,
-      cooldown_minutes: 30,
     });
-    expect(preferences.opportunityDailyLimit).toBe(5);
+    expect(preferences.discordEnabled).toBe(false);
     expect(tradeDeskApi.getEventsUrl('journal-7')).toBe('/api/v1/trade-desk/events?after=journal-7');
   });
   it('keeps server ID keys intact in advice maps while camel-casing their values', async () => {

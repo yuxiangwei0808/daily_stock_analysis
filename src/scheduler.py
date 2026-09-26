@@ -48,6 +48,25 @@ def normalize_schedule_times(
     return sorted(valid)
 
 
+def parse_times(value: Optional[Union[Sequence[str], str]]) -> List[str]:
+    """HH:MM values without a fallback (empty means "not restricted")."""
+    items = value.split(",") if isinstance(value, str) else list(value or [])
+    return sorted({str(item).strip() for item in items
+                   if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(item).strip())})
+
+
+def current_slot(times: Sequence[str], now: Optional["datetime"] = None, window_minutes: int = 60) -> Optional[str]:
+    """The latest scheduled HH:MM at or before ``now`` (local time) within the window, else None."""
+    from datetime import datetime as _datetime, timedelta as _timedelta
+    now = now or _datetime.now()
+    for value in sorted(times, reverse=True):
+        hour, minute = (int(part) for part in value.split(":"))
+        start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if start <= now <= start + _timedelta(minutes=window_minutes):
+            return value
+    return None
+
+
 class GracefulShutdown:
     """
     优雅退出处理器

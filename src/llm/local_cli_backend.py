@@ -2485,6 +2485,8 @@ class LocalCliGenerationBackend(GenerationBackend):
                 "usage_available": False,
                 "usage_source": "unavailable",
                 "backend": self._preset.preset_id,
+                # Token counts are not reported by the CLIs; the model still labels the call.
+                "cli_model": self._cli_model_label(),
             },
             raw=None,
             diagnostics=diagnostics,
@@ -2604,6 +2606,15 @@ class LocalCliGenerationBackend(GenerationBackend):
                 *runtime_argv[insert_at:],
             ]
         return runtime_argv
+
+    def _cli_model_label(self) -> str:
+        if self._preset.preset_id != "claude_code_cli":
+            return self._preset.preset_id
+        try:
+            model = self._get_claude_code_cli_model()
+        except Exception:
+            model = ""
+        return f"claude_code_cli:{model}" if model else "claude_code_cli"
 
     def _claude_setting(self, name: str) -> str:
         """Routine value, or the TARGETED_* value inside a user-requested analysis."""

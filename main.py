@@ -749,6 +749,19 @@ def _save_reused_market_review_report(
         logger.warning("复用大盘上下文保存大盘复盘报告失败: %s", exc)
 
 
+def _market_review_due(config: Config, args) -> bool:
+    """Scheduled runs review the market only in MARKET_REVIEW_TIMES slots (empty = every run)."""
+    times = list(getattr(config, 'market_review_times', None) or [])
+    if not times or not getattr(args, 'schedule', False):
+        return True
+    from src.scheduler import current_slot
+    slot = current_slot(list(getattr(config, 'schedule_times', None) or []))
+    due = slot in times
+    if not due:
+        logger.info("大盘复盘本轮跳过：当前定时 %s 不在 MARKET_REVIEW_TIMES %s 中", slot, times)
+    return due
+
+
 def _run_auto_backtest(config: Config) -> None:
     """Run the independently configured auto-backtest without failing analysis."""
 
@@ -908,6 +921,7 @@ def run_full_analysis(
             config.market_review_enabled
             and not args.no_market_review
             and (market_review_region or '') != ''
+            and _market_review_due(config, args)
         )
         if (
             not getattr(args, "dry_run", False)

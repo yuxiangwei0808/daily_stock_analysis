@@ -364,7 +364,8 @@ _watchlist_groups_lock = threading.Lock()
 def get_watchlist_groups(request: Request) -> WatchlistGroupsResponse:
     with _watchlist_groups_lock:
         cached = _watchlist_groups_cache.get("value")
-        if cached is not None and time.monotonic() - _watchlist_groups_cache["at"] < _WATCHLIST_GROUPS_TTL_SECONDS:
+        ttl = _WATCHLIST_GROUPS_TTL_SECONDS if cached is not None and cached.available else _FAILURE_TTL_SECONDS
+        if cached is not None and time.monotonic() - _watchlist_groups_cache["at"] < ttl:
             return cached
         service = getattr(request.app.state, "trade_desk_service", None)
         try:
@@ -379,6 +380,8 @@ def get_watchlist_groups(request: Request) -> WatchlistGroupsResponse:
 
 
 _WATCHLIST_QUOTES_TTL_SECONDS = 10
+_FAILURE_TTL_SECONDS = 30  # a failed OpenD read is retried soon instead of sticking for the full TTL
+_LAST_GOOD_SECONDS = 300  # a failed poll keeps showing the last good quotes for this long
 _watchlist_quotes_cache: dict = {}
 _watchlist_quotes_lock = threading.Lock()
 _US_TICKER = re.compile(r"^[A-Za-z][A-Za-z.\-]{0,9}$")
@@ -394,21 +397,30 @@ def get_watchlist_quotes(
     request: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> WatchlistQuotesResponse:
+    # Same normalisation as the Home page's bareCode(): "US.AAPL" / "AAPL.US" -> "AAPL".
+    tickers = sorted({code for code in (re.sub(r"^US\.|\.US$", "", str(raw).strip().upper())
+                                        for raw in _read_watchlist_codes(service)) if _US_TICKER.match(code)})
+    key = tuple(tickers)  # a newly added stock is quoted at once, not after the TTL
     with _watchlist_quotes_lock:
         cached = _watchlist_quotes_cache.get("value")
-        if cached is not None and time.monotonic() - _watchlist_quotes_cache["at"] < _WATCHLIST_QUOTES_TTL_SECONDS:
+        if (cached is not None and _watchlist_quotes_cache.get("key") == key
+                and time.monotonic() - _watchlist_quotes_cache["at"] < _WATCHLIST_QUOTES_TTL_SECONDS):
             return cached
         trade_desk = getattr(request.app.state, "trade_desk_service", None)
         try:
             if trade_desk is None or not trade_desk.enabled:
                 raise RuntimeError("Trade Desk (OpenD) is not enabled")
-            tickers = [code for code in _read_watchlist_codes(service) if _US_TICKER.match(code)]
             quotes = trade_desk.provider("live").watchlist_quotes(tickers)
             result = WatchlistQuotesResponse(available=True, quotes=quotes)
+            _watchlist_quotes_cache["good"] = (result, time.monotonic())
         except Exception as exc:  # quotes are optional; rows fall back to report data
             logger.info("Watchlist quotes unavailable: %s", exc)
-            result = WatchlistQuotesResponse(available=False, message=str(exc)[:200])
-        _watchlist_quotes_cache.update(value=result, at=time.monotonic())
+            good = _watchlist_quotes_cache.get("good")
+            if good is not None and time.monotonic() - good[1] < _LAST_GOOD_SECONDS:
+                result = good[0]  # one failed poll does not blank every price
+            else:
+                result = WatchlistQuotesResponse(available=False, message=str(exc)[:200])
+        _watchlist_quotes_cache.update(value=result, at=time.monotonic(), key=key)
         return result
 
 

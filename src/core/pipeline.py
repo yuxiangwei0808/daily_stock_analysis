@@ -2377,6 +2377,9 @@ class StockAnalysisPipeline:
         )
         result.action = fields["action"]
         result.action_label = fields["action_label"]
+        # The model panel's primary entry follows the final (guarded) call.
+        from src.analyzer import sync_model_panel_primary
+        sync_model_panel_primary(result)
         return result
 
     @staticmethod
@@ -3873,6 +3876,13 @@ class StockAnalysisPipeline:
         try:
             logger.info("生成决策仪表盘日报...")
             report = self._generate_aggregate_report(results, report_type)
+            if not skip_push and report_type == ReportType.BRIEF:
+                # Later scheduled runs can push only the calls that changed (BRIEF_CHANGES_ONLY_TIMES).
+                from src.services.brief_changes import changes_only
+                trimmed = changes_only(results, self.db, self.config, self.query_id or "")
+                if trimmed is not None:
+                    changed, header = trimmed
+                    report = header + ("\n\n" + self._generate_aggregate_report(changed, report_type) if changed else "")
             
             # 跳过推送（单股推送模式 / 合并模式：报告已由 _save_local_report 保存）
             if skip_push:

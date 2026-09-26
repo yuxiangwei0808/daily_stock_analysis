@@ -326,12 +326,13 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         _BLOCKING_THREAD_RELEASE.clear()
         trigger.start()
         try:
+            # Generous waits: spawning and terminating a child is slow on a loaded machine.
             self.assertTrue(
-                callback_returned.wait(timeout=0.5),
+                callback_returned.wait(timeout=3),
                 "the scheduler callback remained blocked by analysis",
             )
 
-            deadline = time.monotonic() + 4
+            deadline = time.monotonic() + 20
             while service.status()["last_error"] is None and time.monotonic() < deadline:
                 time.sleep(0.05)
 

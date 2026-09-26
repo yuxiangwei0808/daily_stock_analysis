@@ -357,6 +357,16 @@ def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
     return result
 
 
+def _watchlist_needs_cn_names() -> bool:
+    """AkShare maps A-share/HK names; a US-only watchlist never needs the (slow) warm-up."""
+    try:
+        from src.config import get_config
+        codes = [str(code).strip().lower() for code in (get_config().stock_list or [])]
+    except Exception:
+        return True
+    return not codes or any(re.fullmatch(r"(sh|sz|bj)?\d{6}|hk\d{3,5}|\d{5}(\.hk)?", code) for code in codes)
+
+
 def warmup_akshare_cache() -> None:
     """进程启动预热：后台线程触发一次解析链填充（幂等、非阻塞）。
 
@@ -364,6 +374,10 @@ def warmup_akshare_cache() -> None:
     本 daemon 线程内，不阻塞调用方。重复调用共享同一在途句柄，不会
     触发多次网络拉取。
     """
+
+    if not _watchlist_needs_cn_names():
+        logger.info("[NameResolver] 自选中没有 A 股/港股代码，跳过 AkShare 预热")
+        return
 
     def _warm():
         try:

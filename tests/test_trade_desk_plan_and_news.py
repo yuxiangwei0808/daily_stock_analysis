@@ -110,9 +110,7 @@ def test_user_requests_get_fresh_news_and_an_unpriced_plan_is_explained(repo, mo
     stored = repo.advice(manual["id"])
     assert any(item.get("title") == "TEST guides higher" for item in stored["snapshot"]["evidence"])
     assert "105 call" in stored["plan_error"]
-    scan = repo.create_advice(TradeAdviceRequest(ticker="TEST").model_dump(mode="json"), source="proactive")
-    svc._run_advice(scan["id"], threading.Event())
-    assert fetched == ["TEST"]  # automatic scans do not fetch
+    assert fetched == ["TEST"]
     svc.stop()
 
 
@@ -217,3 +215,24 @@ def test_google_news_retries_long_keyword_queries_with_fewer_terms(monkeypatch):
     response = GoogleNewsSearchProvider().search("Broadcom Inc. risk insider selling lawsuit litigation", 5, 3)
     assert response.success and asked == ["Broadcom Inc. risk insider selling lawsuit litigation",
                                           "Broadcom Inc. risk insider selling", "Broadcom Inc. risk"]
+
+
+def test_short_tickers_need_a_marked_mention_and_outages_are_not_cached(monkeypatch):
+    from src.services import free_news
+    free_news._cache.clear()
+    items = [{"title": "A look at the market today", "url": "1", "source": "X", "published_at": "2026-09-25T12:00:00+00:00",
+              "summary": "", "feed": "google_news"},
+             {"title": "Agilent (A) beats estimates", "url": "2", "source": "Y", "published_at": "2026-09-25T11:00:00+00:00",
+              "summary": "", "feed": "google_news"}]
+    monkeypatch.setattr(free_news, "google_news", lambda *a, **k: [dict(item) for item in items])
+    result = free_news.ticker_news("A", ["google_news"])
+    assert {item["url"]: item["related"] for item in result} == {"1": False, "2": True}
+    calls = []
+
+    def down(*a, **k):
+        calls.append(1)
+        raise RuntimeError("429")
+    monkeypatch.setattr(free_news, "google_news", down)
+    free_news.ticker_news("ZZZZ", ["google_news"])
+    free_news.ticker_news("ZZZZ", ["google_news"])
+    assert len(calls) == 2  # not cached

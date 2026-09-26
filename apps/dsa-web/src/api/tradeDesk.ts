@@ -101,10 +101,7 @@ function toFillPayload(request: TradeFillRequest): Record<string, unknown> {
 
 function toPreferencesPayload(request: TradePreferencesUpdate): Record<string, unknown> {
   return withoutUndefined({
-    proactive_enabled: request.proactiveEnabled,
     discord_enabled: request.discordEnabled,
-    opportunity_daily_limit: request.opportunityDailyLimit,
-    cooldown_minutes: request.cooldownMinutes,
   });
 }
 

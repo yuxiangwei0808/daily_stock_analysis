@@ -130,7 +130,7 @@ def test_analyzer_collects_opinions_on_the_same_data_and_stores_the_panel():
     analyzer._attach_model_panel(result, future, config, "codex_cli")
     panel = result.dashboard["model_panel"]
     assert [item["action"] for item in panel["opinions"]] == ["watch", "hold", "watch"]
-    assert panel["opinions"][0]["role"] == "primary" and panel["agreement"] == "split"
+    assert panel["opinions"][0]["role"] == "primary" and panel["agreement"] == "agree"  # hold and watch are the same verdict
     assert all(prompt.startswith("DATA") and "SECOND OPINION MODE" in prompt
                for backend in backends.values() for prompt in backend.prompts)
 
@@ -148,3 +148,22 @@ def test_brief_shows_the_days_close_and_the_afterhours_print(monkeypatch):
     assert "767.32 (-0.06%) · AH 766.72 (-0.08%)" in brief
     result.market_snapshot = {"quote_session": "regular"}
     assert "766.72 (-0.08%)" in NotificationService().generate_brief_report([result], report_date="2026-09-24")
+
+
+def test_panel_primary_follows_the_final_guarded_call():
+    from types import SimpleNamespace
+    from src.analyzer import sync_model_panel_primary
+    result = SimpleNamespace(action="hold", decision_type="hold", sentiment_score=48, dashboard={"model_panel": {
+        "opinions": [{"role": "primary", "action": "buy", "score": 72, "status": "ok"},
+                     {"role": "second", "action": "buy", "status": "ok"}],
+        "agreement": "agree"}})
+    sync_model_panel_primary(result)
+    primary = result.dashboard["model_panel"]["opinions"][0]
+    assert (primary["action"], primary["score"]) == ("hold", 48)
+    assert result.dashboard["model_panel"]["agreement"] != "agree"
+
+
+def test_hold_and_watch_agree():
+    from src.llm.second_opinion import agreement
+    assert agreement([{"action": "hold", "status": "ok"}, {"action": "watch", "status": "ok"}]) == "agree"
+    assert agreement([{"action": "buy", "status": "ok"}, {"action": "watch", "status": "ok"}]) == "split"

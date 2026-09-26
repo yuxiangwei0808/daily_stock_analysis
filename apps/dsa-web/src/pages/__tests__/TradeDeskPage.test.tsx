@@ -102,10 +102,7 @@ function setDefaultResponses() {
     manualLive: { closedTrades: 0, realizedPnl: 0, winRate: null },
   });
   api.getPreferences.mockResolvedValue({
-    proactiveEnabled: false,
     discordEnabled: false,
-    opportunityDailyLimit: 3,
-    cooldownMinutes: 60,
   });
   api.createAdvice.mockResolvedValue(queuedJob);
   api.createPlan.mockResolvedValue({});
@@ -115,10 +112,7 @@ function setDefaultResponses() {
   api.paperSettle.mockResolvedValue({ items: [] });
   api.createFill.mockResolvedValue({ items: [] });
   api.updatePreferences.mockResolvedValue({
-    proactiveEnabled: false,
     discordEnabled: false,
-    opportunityDailyLimit: 3,
-    cooldownMinutes: 60,
   });
 }
 
@@ -220,7 +214,7 @@ describe('TradeDeskPage', () => {
       unrealizedPnl: null, valuationStatus: 'unavailable' }] });
     renderPage('/trade-desk?planId=saved-plan');
     await waitFor(() => expect(document.getElementById('trade-plan-saved-plan')).toHaveFocus());
-    expect(screen.getByRole('tab', { name: /Positions|持仓/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /^(Positions|持仓)$/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('blocks live submission when OpenD is not configured but allows a degraded provider', async () => {

@@ -288,8 +288,7 @@ class TradeDeskRepository:
             self._event(session, "reconciled", {"plan_id": plan_id, "notes": notes})
 
     def preferences(self):
-        defaults = {"proactive_enabled": False, "discord_enabled": False,
-                    "opportunity_daily_limit": 3, "cooldown_minutes": 60}
+        defaults = {"discord_enabled": False}
         with self.db.get_session() as session:
             row = session.get(SettingsRecord, "preferences")
             if row:

@@ -343,8 +343,11 @@ class Holdings:
         """Held stocks and option underlyings."""
         return [code for code in self.codes() if parse_code(code)["kind"] == "stock"]
 
-    def view(self, *, live: bool = True, now: Optional[datetime] = None) -> Dict[str, Any]:
+    def view(self, *, live: bool = True, now: Optional[datetime] = None,
+             quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
         raw = self.raw()
+        if quotes is not None:  # the worker's shared snapshot
+            return build_view(raw, quotes, _local(now or utcnow()).date())
         quotes = {}
         if live and raw.get("positions"):
             codes = self.codes(raw)
@@ -603,7 +606,13 @@ class HoldingsMonitor:
         tickers = [t for t in self.holdings.tickers() if not self._geared(t)]
         earnings.many(tickers, day, lookup=self._earnings_date)
 
-    def tick(self, now: datetime, session: str) -> None:
+    def codes(self) -> List[str]:
+        """What the monitor needs quoted: held stocks, option contracts and underlyings, alert tickers."""
+        rules = [rule["ticker"] for rule in self.holdings.rules() if rule["status"] == "active"]
+        return list(dict.fromkeys([*self.holdings.codes(), *rules]))
+
+    def tick(self, now: datetime, session: str, quotes: Any = None, shared: bool = False) -> None:
+        """With ``shared``, ``quotes`` is the worker's snapshot this minute (None = not a quote minute)."""
         local = _local(now)
         day = local.date()
         clock = self._clock()
@@ -627,7 +636,7 @@ class HoldingsMonitor:
                 self._next_sync = clock + SYNC_SECONDS
                 self._run("sync", self.holdings.sync)
             return
-        if session != "regular" or clock < self._next_quotes:
+        if session != "regular" or (shared and quotes is None) or (not shared and clock < self._next_quotes):
             return
         if self._levels_day != day:
             if self._levels_for != day:
@@ -635,7 +644,7 @@ class HoldingsMonitor:
             if clock >= self._levels_retry_at and self._run("levels", self._load_levels, day):
                 self._levels_retry_at = clock + LEVELS_RETRY_SECONDS
         self._next_quotes = clock + QUOTE_SECONDS
-        self.check(now)
+        self.check(now, quotes if shared else None)
 
     def _daily_summary(self, now: datetime) -> None:
         summary = self.holdings.summary(now, bars=self._bars, earnings_date=self._earnings_date)
@@ -649,14 +658,17 @@ class HoldingsMonitor:
                                             "message": message + "\nReview in moomoo — nothing is traded automatically."},
                           key)
 
-    def check(self, now: datetime) -> None:
+    def check(self, now: datetime, quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         local = _local(now)
         day = local.date()
-        view = self.holdings.view(now=now)
+        view = self.holdings.view(now=now, quotes=quotes)
         prices = _prices(view)
+        if quotes is not None:
+            prices.update({ticker: quote.get("price") for ticker, quote in quotes.items()
+                           if ticker not in prices and quote.get("price")})
         extra = sorted({rule["ticker"] for rule in self.holdings.rules()
                         if rule["status"] == "active" and rule["ticker"] not in prices})
-        if extra:  # alerts on tickers you do not hold
+        if extra and quotes is None:  # alerts on tickers you do not hold
             try:
                 quotes = self.holdings.service.provider("live").watchlist_quotes(extra)
                 prices.update({ticker: quote.get("price") for ticker, quote in quotes.items()})

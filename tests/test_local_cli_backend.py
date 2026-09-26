@@ -100,6 +100,7 @@ print(json.dumps({"prompt": prompt, "cwd": os.getcwd(), "sentiment_score": 70}, 
         "usage_available": False,
         "usage_source": "unavailable",
         "backend": "codex_cli",
+        "cli_model": "codex_cli",
     }
     assert result.diagnostics["executable"]["basename"] == Path(sys.executable).name
     assert "path" not in result.diagnostics["executable"]

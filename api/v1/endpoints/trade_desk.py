@@ -77,10 +77,7 @@ class PaperSettlementInput(Model):
 
 
 class Preferences(Model):
-    proactive_enabled: Optional[bool] = None
     discord_enabled: Optional[bool] = None
-    opportunity_daily_limit: Optional[int] = Field(default=None, ge=1, le=50)
-    cooldown_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
 
 
 class Reconciliation(Model):

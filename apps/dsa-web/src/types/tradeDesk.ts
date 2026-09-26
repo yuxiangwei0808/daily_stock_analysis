@@ -318,14 +318,11 @@ export interface TradeOutcomes {
 }
 
 export interface TradePreferences {
-  proactiveEnabled: boolean;
   discordEnabled: boolean;
-  opportunityDailyLimit: number;
-  cooldownMinutes: number;
   [key: string]: unknown;
 }
 
-export type TradePreferencesUpdate = Partial<Pick<TradePreferences, 'proactiveEnabled' | 'discordEnabled' | 'opportunityDailyLimit' | 'cooldownMinutes'>>;
+export type TradePreferencesUpdate = Partial<Pick<TradePreferences, 'discordEnabled'>>;
 
 export type HoldingRuleKind = 'price_below' | 'price_above' | 'days_to_expiry' | 'pnl_below' | 'pnl_above';
 

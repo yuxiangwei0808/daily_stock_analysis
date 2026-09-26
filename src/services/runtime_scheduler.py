@@ -152,6 +152,11 @@ def _run_scheduled_analysis_process(
     _setup_child_logging()
     service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
     success = service._run_analysis_locked(stock_codes)
+    # The child marks its own run finished: if the server died meanwhile, a later
+    # restart must not catch up (and re-push) a run that did complete.
+    record = _read_run_record()
+    if record.get("pid") == os.getpid() and record.get("status") == "started":
+        _write_run_record({**record, "status": "finished", "finished_at": datetime.now().isoformat()})
     result_queue.put({"success": success, "error": service._last_error})
 
 

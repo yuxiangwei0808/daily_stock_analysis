@@ -44,13 +44,13 @@ backtest, current market data, or evidence of a profitable strategy. Replay plan
 cannot be recorded in the manual-live ledger.
 
 Configure Discord through existing Settings (`DISCORD_WEBHOOK_URL` or the existing
-bot-token/channel configuration). Enable proactive suggestions and Discord delivery
-in Trade Desk preferences. New-idea delivery defaults to three per New York trading
-day and a 60-minute symbol cooldown. Position and data-outage alerts have separate
-deduplication and do not consume this idea limit. Delivery attempts are persisted;
-failures retry at most three times. Long messages are sent in parts split at
-blank lines (an idea is never cut in half); a retry sends only the parts that
-failed. After a "wait" verdict a proactive symbol rests for four hours. Proactive discovery, its model runs (at most one per 15-minute cycle) and idea delivery happen only during the regular session; pre-market and after-hours produce none. Without Discord configuration the in-app journal
+bot-token/channel configuration), then enable Discord delivery in Trade Desk
+preferences. New trade ideas come from the scheduled "Swing trade opportunities"
+scan below (the earlier 15-minute proactive options discovery was removed: it
+spent a model call per cycle and, in practice, always concluded "wait").
+Delivery attempts are persisted; failures retry at most three times. Long
+messages are sent in parts split at blank lines (an idea is never cut in half);
+a retry sends only the parts that failed. Without Discord configuration the in-app journal
 remains available. `TRADE_DESK_PUBLIC_URL` should be the address accessible on your
 phone; localhost links on another device will not reach this server.
 
@@ -143,7 +143,7 @@ sell the out-of-the-money strike. Monitoring runs in
 a separate worker and continues independently of the model. Follow-up calculations use the existing Codex owned-process runner, with cancellation and deadline cleanup; advice stores the actual tool calls and effective per-candidate requests.
 
 When `TARGETED_GENERATION_BACKEND` is set (see the LLM configuration guide), automatic
-proactive scans are reviewed by the routine `GENERATION_BACKEND` without tools, so
+follow-ups (options comparisons for trade ideas) are reviewed by the routine `GENERATION_BACKEND` without tools, so
 they do not spend the targeted model; they cannot recalculate alternatives. Manual
 comparisons and follow-ups keep the Codex advisor, and each `SECOND_OPINION_BACKENDS`
 model independently answers trade (with one supplied candidate) or wait on the same
@@ -171,12 +171,15 @@ every 15 seconds while the tab is visible.
 With `MARKET_PULSE_ENABLED=true`, the Trade Desk worker (leader only, regular
 session only) watches the US tickers in `STOCK_LIST`:
 
-- Every 60 seconds, one batched OpenD snapshot. A day change crossing a level
-  in `MARKET_PULSE_MOVE_LEVELS` (default `3,5,8` %) emits `market_move` once
-  per level per day, reporting only the highest level crossed; a move of
-  `MARKET_PULSE_FAST_MOVE_PCT` (default 2 %) within 15 minutes emits a fast
-  move at most every 30 minutes per stock. Move alerts cite the latest
-  headline seen for the stock.
+- Every minute, from the worker's single OpenD snapshot that also serves the
+  breakout watch and holdings alerts. A day change crossing a level in
+  `MARKET_PULSE_MOVE_LEVELS` (default `3,5,8` %, scaled for 2x/3x funds) emits
+  `market_move` once per level per day, reporting only the highest level
+  crossed and never again as the move fades. With broker holdings configured,
+  every level applies to what you hold and watchlist names you do not hold alert
+  from 5 %. (The former 15-minute "fast move" alert was removed: at the open it
+  mostly produced contradictory pairs.) Move alerts cite the latest headline
+  seen for the stock.
 - Every 10 minutes, in the background, Google News for the next 11 tickers
   (the whole watchlist every ~30 minutes). New headlines from the last two
   hours are rated 0–3 for materiality by the routine generation backend in one
@@ -382,8 +385,7 @@ advice and positions remain available through data/model outages. Held option
 contracts take priority over nearby strikes within the quote limit; plans sharing
 a stock and expiry share their required quotes. Discord links open the referenced
 saved advice or position, including advice outside the latest list; message text
-cannot mention `@everyone`, `@here` or users. Proactive discovery considers only
-US tickers from the watchlist, and one failing symbol does not end the cycle. A
+cannot mention `@everyone`, `@here` or users. A
 "volatile" view defaults to long straddles/strangles only; iron condors always use
 distinct short strikes; candidates with no possible expiration profit are omitted.
 

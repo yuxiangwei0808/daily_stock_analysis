@@ -41,19 +41,6 @@ def test_day_moves_alert_once_per_level_and_only_the_highest_crossed():
     assert len(day_moves) == 2 and "past +8%" in day_moves[-1]
 
 
-def test_fast_moves_alert_with_a_cooldown():
-    provider, events = Provider(), []
-    pulse = _pulse(provider, events)
-    for minute, price in enumerate([100.0, 100.5, 101.0, 102.3]):
-        provider.quotes = {"NVDA": {"price": price, "change_pct": price - 100}}
-        pulse.check_moves(NOW + timedelta(minutes=minute))
-    fast = [e for e in events if e[1]["kind"] == "fast_move"]
-    assert len(fast) == 1 and "+2.3% within 15 min" in fast[0][1]["message"]
-    provider.quotes = {"NVDA": {"price": 105.0, "change_pct": 1.0}}
-    pulse.check_moves(NOW + timedelta(minutes=10))
-    assert len([e for e in events if e[1]["kind"] == "fast_move"]) == 1  # 30-minute cooldown
-
-
 def test_the_watch_runs_only_in_the_regular_session():
     provider, events = Provider(), []
     provider.quotes = {"AAPL": {"price": 110, "change_pct": 10.0}}
@@ -111,23 +98,6 @@ def test_market_signal_ignores_volatility_indices():
     assert _directional_index_changes(indices) == [-0.02, -0.31]  # VIX rises when stocks fall
 
 
-def test_opening_grace_leverage_scaling_and_daily_cap():
-    provider, events = Provider(), []
-    pulse = MarketPulse(lambda: provider, lambda t, p, k: events.append(p) or p, tickers=lambda: ["SOXL", "NVDA"])
-    opening = datetime(2026, 9, 25, 13, 32, tzinfo=timezone.utc)  # 09:32 ET
-    for minute, (soxl, nvda) in enumerate([(100, 100), (104, 102.5)]):
-        provider.quotes = {"SOXL": {"price": soxl, "change_pct": soxl - 100, "name": "Direxion Daily Semiconductor Bull 3X"},
-                           "NVDA": {"price": nvda, "change_pct": nvda - 100, "name": "NVIDIA Corporation"}}
-        pulse.check_moves(opening + timedelta(minutes=minute))
-    assert [e["kind"] for e in events] == []  # no fast moves in the first 15 minutes; 4% is below 3x SOXL's 9% level
-    later = NOW + timedelta(hours=1)
-    for step in range(8):
-        price = 100 + (step % 2) * 3  # alternating 3% swings on NVDA
-        provider.quotes = {"NVDA": {"price": price, "change_pct": 0.5, "name": "NVIDIA Corporation"}}
-        pulse.check_moves(later + timedelta(minutes=31 * step))
-    assert len([e for e in events if e["kind"] == "fast_move"]) == 3  # capped per stock per day
-
-
 def test_headlines_must_name_the_stock():
     from src.services.trade_desk.pulse import mentions
     assert not mentions("One disappointing White Sox prospect", "SOXS", "Direxion Daily Semiconductor Bear 3X")
@@ -149,7 +119,37 @@ def test_old_days_are_pruned():
     provider, events = Provider(), []
     pulse = _pulse(provider, events)
     pulse._level_high[("2026-09-01", "AAPL", "+")] = 5.0
-    pulse._fast_counts[("2026-09-01", "AAPL")] = 2
     provider.quotes = {"AAPL": {"price": 100.0, "change_pct": 0.1}}
     pulse.check_moves(NOW)
-    assert pulse._level_high == {} and pulse._fast_counts == {}
+    assert pulse._level_high == {}
+
+
+def test_leveraged_funds_scale_the_levels():
+    provider, events = Provider(), []
+    pulse = _pulse(provider, events)
+    provider.quotes = {"AAPL": {"price": 104, "change_pct": 4.0, "name": "Direxion Daily AAPL Bull 2X Shares"}}
+    pulse.check_moves(NOW)
+    assert events == []  # 4% on a 2x fund is below its scaled 6% level
+
+
+def test_small_moves_alert_only_for_what_you_hold():
+    provider, events = Provider(), []
+    pulse = _pulse(provider, events, held=lambda: ["NVDA"])
+    provider.quotes = {"AAPL": {"price": 103.5, "change_pct": 3.5}, "NVDA": {"price": 103.5, "change_pct": 3.5}}
+    pulse.check_moves(NOW)
+    assert [e[1]["underlying"] for e in events] == ["NVDA"]
+    provider.quotes["AAPL"] = {"price": 105.5, "change_pct": 5.5}
+    pulse.check_moves(NOW + timedelta(minutes=1))
+    assert [e[1]["underlying"] for e in events] == ["NVDA", "AAPL"]
+
+
+def test_shared_quotes_replace_the_pulses_own_poll():
+    class Silent(Provider):
+        def watchlist_quotes(self, tickers):
+            raise AssertionError("the shared snapshot should be used")
+    events = []
+    pulse = _pulse(Silent(), events)
+    pulse.tick(NOW, session="regular", quotes=None, shared=True)  # not a quote minute
+    pulse.tick(NOW, session="regular", quotes={"AAPL": {"price": 106, "change_pct": 6.0}, "XYZ": {"price": 1}},
+               shared=True)
+    assert [e[1]["underlying"] for e in events] == ["AAPL"]  # only its own tickers

@@ -51,7 +51,6 @@ class TradeDeskService:
         self._lock = threading.RLock()
         self._jobs = {}
         self._latest = {}
-        self._discovery_evidence = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trade-advice")
         self.worker = None
         self.enabled = os.getenv("TRADE_DESK_ENABLED", "true").lower() == "true"
@@ -72,10 +71,6 @@ class TradeDeskService:
                                      required_contracts=required).model_copy(deep=True)
         if snapshot.underlying != request.ticker or snapshot.mode != request.data_mode:
             raise ValueError("Provider snapshot does not match the requested stock and data mode")
-        with self._lock:
-            scan = self._discovery_evidence.get(request.ticker)
-        if scan and (utcnow() - scan[0]).total_seconds() <= 1800:
-            snapshot.evidence.append(dict(scan[1]))
         # Stored reports/news are context only; their dates remain visible.
         try:
             for news in self.repo.db.get_recent_news(request.ticker, days=3, limit=5):
@@ -213,9 +208,8 @@ class TradeDeskService:
             snapshot = self.snapshot(request)
             if snapshot.mode == "live" and not snapshot_fresh(snapshot):
                 raise ValueError("Live quotes are stale or unverified; no current comparison can be produced")
-            if job.get("source") != "proactive":
-                seen = {item.get("title") for item in snapshot.evidence}
-                snapshot.evidence.extend(item for item in self._fresh_news(request) if item["title"] not in seen)
+            seen = {item.get("title") for item in snapshot.evidence}
+            snapshot.evidence.extend(item for item in self._fresh_news(request) if item["title"] not in seen)
             candidates = build_candidates(snapshot, request)
             plan_error = ""
             if request.plan_legs and not any(c.strategy == PLAN_STRATEGY for c in candidates):
@@ -240,7 +234,7 @@ class TradeDeskService:
             # Model tiers: automatic scans use the routine model; user requests use
             # Codex plus independent second opinions from SECOND_OPINION_BACKENDS.
             # Automatic scans and report-driven ideas are routine work.
-            proactive = job.get("source") in {"proactive", "report", "opportunity"}
+            proactive = job.get("source") in {"report", "opportunity"}  # automatic follow-ups
             advisor = self.routine_advisor if proactive and config.targeted_generation_backend else self.advisor
             panel_backends = [] if proactive else [
                 item for item in config.second_opinion_backends if item != "codex_cli"]
@@ -316,7 +310,7 @@ class TradeDeskService:
                                 "validated explanation; no AI recommendation or high-confidence opportunity was issued.")
             if panel_future is not None:
                 try:
-                    changes["panel"] = build_panel(narrative, pool, panel_future.result(), config)
+                    changes["panel"] = build_panel(narrative, pool, panel_future.result(timeout=180), config)
                 except Exception as exc:  # advisory only
                     logger.warning("Trade Desk second opinions unavailable: %s", type(exc).__name__)
             if request.data_mode == "live" and changes.get("status") == "completed":

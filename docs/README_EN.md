@@ -34,7 +34,7 @@ Forked from [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_
 |---|---|
 | 09:40 / 12:00 / 16:10 | Scheduled stock reports and market review; after the close they use the regular session's moves (after-hours listed apart) |
 | After each report run | 🎯 **Swing trade opportunities**: a rule-based trend scan of the watchlist + S&P 500, model-confirmed long/short ideas (entry, stop, targets, invalidation, earnings note, labelled ways to act; options at high conviction) |
-| Every minute in the session | 📈 big/fast moves and major news, 🚀 volume breakouts of the 20-day high/low, 🛎️ holding alerts (expiry, assignment risk, profit/loss, your rules) |
+| Every minute in the session | 📈 big moves and major news, 🚀 volume breakouts of the 20-day high/low, 🛎️ holding alerts (expiry, assignment risk, profit/loss, your rules) |
 | 16:15 | 📊 **Daily portfolio summary**: day change, SPY exposure and hedges, largest positions, leveraged-ETF share, expiries and earnings |
 
 **Features**
@@ -42,10 +42,10 @@ Forked from [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_
 - **Trade Desk (US options research)**: live moomoo OpenD quotes, strategy comparisons (expiry payoff, model probabilities, scenarios), exact pricing of your own plan legs, paper and manual-live ledgers, plan monitoring. See [trade-desk.md](trade-desk.md).
 - **Swing trade opportunities** (`TRADE_OPPORTUNITIES_ENABLED`): deterministic trend scoring (moving averages, 20-day breakout, momentum, volume) plus one model review; earnings within 14 days cap conviction at medium; leveraged/inverse ETFs are never suggested as shorts or options.
 - **Broker holdings and alerts** (`TRADE_DESK_BROKER_ACCOUNT`): a Holdings tab (spreads grouped, P&L and share of max profit); built-in short-term option alerts, plus your own rules by form or plain words, such as "stop loss if the underlying drops to 145" or "warn me 2 days before expiry"; ideas and breakouts mention what you hold.
-- **Market pulse** (`MARKET_PULSE_ENABLED`): rule-based big/fast move alerts and low-cost model triage of major news.
+- **Market pulse** (`MARKET_PULSE_ENABLED`): day-move alerts (from 3% for what you hold, 5% for other watchlist names) and low-cost model triage of major news; one shared quote snapshot a minute with breakouts and holdings.
 - **Model tiers and second opinions**: routine work and your own requests use different models, and your requests get independent opinions (`TARGETED_GENERATION_BACKEND`, `SECOND_OPINION_BACKENDS`; Codex and Claude Code CLIs with per-tier model and effort).
 - **Free news sources**: Google News RSS, Yahoo Finance, Finnhub (`FREE_NEWS_SOURCES`).
-- **Home and notifications**: watchlist grouped by moomoo groups with live quotes; readable Discord messages split at paragraphs; anything about your holdings shows percentages only.
+- **Home and notifications**: watchlist grouped by moomoo groups with live quotes; readable Discord messages split at paragraphs; anything about your holdings shows percentages only; optionally a market review only after the close (`MARKET_REVIEW_TIMES`) and a midday brief of changed calls only (`BRIEF_CHANGES_ONLY_TIMES`).
 - **Reliability**: a scheduled run interrupted by a restart resumes on its own; Discord deliveries are deduplicated and a failed send retries only the missing parts.
 
 **Minimal setup** (details in [.env.example](../.env.example), [trade-desk.md](trade-desk.md) and [LLM_CONFIG_GUIDE_EN.md](LLM_CONFIG_GUIDE_EN.md)):

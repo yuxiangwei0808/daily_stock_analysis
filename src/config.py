@@ -72,7 +72,7 @@ from src.llm.hermes import (
     route_deployment_origins,
     route_has_hermes,
 )
-from src.scheduler import normalize_schedule_times
+from src.scheduler import normalize_schedule_times, parse_times
 from src.utils.market_review_region import normalize_market_review_region_lenient
 
 logger = logging.getLogger(__name__)
@@ -1210,6 +1210,10 @@ class Config:
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
+    # Scheduled slots that run the market review (empty = every run) and slots whose
+    # pushed brief lists only calls that changed since the day's earlier run.
+    market_review_times: List[str] = field(default_factory=list)
+    brief_changes_only_times: List[str] = field(default_factory=list)
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
@@ -2208,6 +2212,8 @@ class Config:
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            market_review_times=parse_times(os.getenv('MARKET_REVIEW_TIMES', '')),
+            brief_changes_only_times=parse_times(os.getenv('BRIEF_CHANGES_ONLY_TIMES', '')),
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')

@@ -4,10 +4,11 @@ Enabled with ``MARKET_PULSE_ENABLED=true``; runs inside the Trade Desk worker
 (leader only, regular session only) and emits ``market_move`` /
 ``market_news`` events that the worker delivers to Discord.
 
-- Moves (every 60 s, one batched OpenD snapshot): the day change crossing a
-  level in ``MARKET_PULSE_MOVE_LEVELS`` (default 3,5,8 %) alerts once per level
-  per day; a move of ``MARKET_PULSE_FAST_MOVE_PCT`` (default 2 %) within 15
-  minutes alerts at most every 30 minutes per stock.
+- Moves (every minute, from the worker's shared OpenD snapshot): the day change
+  crossing a level in ``MARKET_PULSE_MOVE_LEVELS`` (default 3,5,8 %, scaled for
+  leveraged funds) alerts once per level per day for what you hold; other
+  watchlist names alert from 5 % up. A move fading back below a level does not
+  alert again.
 - News (every 10 minutes, in the background): Google News for a rotating third
   of the watchlist; new headlines are rated for materiality by the routine
   generation backend in one call, with a keyword rule as fallback. Only
@@ -22,7 +23,6 @@ import os
 import re
 import threading
 import time
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -40,13 +40,10 @@ _MATERIAL_WORDS = re.compile(
     re.IGNORECASE)
 QUOTE_SECONDS = 60
 NEWS_SECONDS = 600
-FAST_WINDOW = timedelta(minutes=15)
-FAST_COOLDOWN = timedelta(minutes=30)
 NEWS_TICKERS_PER_SWEEP = 11
 NEWS_MAX_AGE = timedelta(hours=2)
 NEWS_DAILY_LIMIT = 20
-OPENING_GRACE = timedelta(minutes=15)  # opening prints swing widely; day levels still alert
-FAST_DAILY_LIMIT = 3
+WATCH_MIN_LEVEL = 5.0  # names you do not hold alert only on larger moves
 _LEVERAGE = [(re.compile(r"\b3x\b|ultrapro", re.I), 3.0),
              (re.compile(r"\b2x\b|\bproshares ultra(short)?\b", re.I), 2.0)]
 _NAME_STOPWORDS = {"the", "inc", "corp", "corporation", "company", "group", "holdings", "trust", "fund",
@@ -80,13 +77,6 @@ def _levels() -> List[float]:
     except ValueError:
         values = [3.0, 5.0, 8.0]
     return [value for value in values if value > 0] or [3.0, 5.0, 8.0]
-
-
-def _fast_pct() -> float:
-    try:
-        return abs(float(os.getenv("MARKET_PULSE_FAST_MOVE_PCT", "2")))
-    except ValueError:
-        return 2.0
 
 
 def watch_tickers() -> List[str]:
@@ -123,7 +113,9 @@ class MarketPulse:
                  tickers: Callable[[], List[str]] = watch_tickers,
                  fetch_news: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
                  rate_news: Callable[[List[Dict[str, Any]]], Optional[Dict[str, Dict[str, Any]]]] = _rate_with_llm,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 held: Optional[Callable[[], List[str]]] = None):
+        self._held = held  # tickers you hold: every level alerts for them
         self._provider = provider
         self._emit = emit
         self._tickers = tickers
@@ -132,9 +124,6 @@ class MarketPulse:
         self._clock = clock
         self._next_quotes = 0.0
         self._next_news = 0.0
-        self._history: Dict[str, deque] = {}
-        self._fast_alerted: Dict[str, datetime] = {}
-        self._fast_counts: Dict[tuple, int] = {}
         self._level_high: Dict[tuple, float] = {}  # (day, ticker, sign) -> highest level alerted
         self._names: Dict[str, str] = {}
         self._headlines: Dict[str, List[Dict[str, Any]]] = {}
@@ -154,13 +143,19 @@ class MarketPulse:
         from src.services.free_news import google_news
         return google_news(f"{ticker} stock", days=1, limit=8)
 
-    def tick(self, now: Optional[datetime] = None, session: Optional[str] = None) -> None:
+    def tick(self, now: Optional[datetime] = None, session: Optional[str] = None,
+             quotes: Optional[Dict[str, Dict[str, Any]]] = None, shared: bool = False) -> None:
+        """With ``shared``, ``quotes`` is the worker's snapshot this minute (None = not a quote
+        minute); otherwise the pulse polls OpenD on its own schedule."""
         from data_provider.us_session import session_window
         now = now or datetime.now(timezone.utc)
         if (session or session_window(now)[0]) != "regular":
             return
         clock = self._clock()
-        if clock >= self._next_quotes:
+        if shared:
+            if quotes is not None:
+                self.check_moves(now, quotes)
+        elif clock >= self._next_quotes:
             self._next_quotes = clock + QUOTE_SECONDS
             self.check_moves(now)
         if clock >= self._next_news and (self._news_future is None or self._news_future.done()):
@@ -168,17 +163,22 @@ class MarketPulse:
             self._news_future = self._pool.submit(self._safe_news_sweep, now)
 
     # -- moves ---------------------------------------------------------
-    def check_moves(self, now: datetime) -> None:
+    def check_moves(self, now: datetime, quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         tickers = self._tickers()
         if not tickers:
             return
-        quotes = self._provider().watchlist_quotes(tickers)
+        if quotes is None:
+            quotes = self._provider().watchlist_quotes(tickers)
+        wanted = set(tickers)
+        quotes = {ticker: quote for ticker, quote in quotes.items() if ticker in wanted}
         local = now.astimezone(_NEW_YORK)
         day = local.date().isoformat()
         self._prune(day)
-        opening = datetime.combine(local.date(), datetime.min.time().replace(hour=9, minute=30), _NEW_YORK)
-        in_grace = local < opening + OPENING_GRACE
-        levels, fast_pct = _levels(), _fast_pct()
+        try:
+            held = set(self._held()) if self._held is not None else None
+        except Exception:
+            held = None
+        all_levels = _levels()
         for ticker, quote in quotes.items():
             price, change = quote.get("price"), quote.get("change_pct")
             if not price:
@@ -186,6 +186,9 @@ class MarketPulse:
             if quote.get("name"):
                 self._names[ticker] = quote["name"]
             factor = leverage(self._names.get(ticker, ""))
+            # Everything alerts when holdings are unknown; otherwise small moves only for what you hold.
+            levels = all_levels if held is None or ticker in held else [
+                level for level in all_levels if level >= WATCH_MIN_LEVEL] or all_levels[-1:]
             if change is not None:
                 crossed = [level for level in levels if abs(change) >= level * factor]
                 sign = "+" if change > 0 else "-"
@@ -198,25 +201,6 @@ class MarketPulse:
                         "message": f"{ticker} {'up' if change > 0 else 'down'} {abs(change):.1f}% today "
                                    f"(past {sign}{level:g}%) at {price:.2f}.{self._reason(ticker)}"},
                         f"pulse-move:{day}:{ticker}:{sign}{level:g}")
-            history = self._history.setdefault(ticker, deque())
-            history.append((now, price))
-            while history and now - history[0][0] > FAST_WINDOW:
-                history.popleft()
-            low = min(value for _, value in history)
-            high = max(value for _, value in history)
-            rise, fall = (price / low - 1) * 100, (price / high - 1) * 100
-            move = rise if rise >= -fall else fall
-            last = self._fast_alerted.get(ticker)
-            count = self._fast_counts.get((day, ticker), 0)
-            if (abs(move) >= fast_pct * factor and not in_grace and count < FAST_DAILY_LIMIT
-                    and (last is None or now - last >= FAST_COOLDOWN)):
-                self._fast_alerted[ticker] = now
-                self._fast_counts[(day, ticker)] = count + 1
-                self._emit("market_move", {
-                    "underlying": ticker, "kind": "fast_move", "price": price, "change_pct": change,
-                    "message": f"{ticker} moved {move:+.1f}% within 15 min to {price:.2f}"
-                               + (f" (day {change:+.1f}%)" if change is not None else "") + f".{self._reason(ticker)}"},
-                    f"pulse-fast:{ticker}:{now.strftime('%Y%m%d%H%M')}")
 
     def _prune(self, day: str) -> None:
         """Day-keyed state from earlier days and old headline hashes are dropped (weeks of uptime)."""
@@ -224,7 +208,6 @@ class MarketPulse:
             return
         self._pruned_day = day
         self._level_high = {k: v for k, v in self._level_high.items() if k[0] == day}
-        self._fast_counts = {k: v for k, v in self._fast_counts.items() if k[0] == day}
         self._news_alerts = {k: v for k, v in self._news_alerts.items() if k == day}
         if len(self._seen) > 20000:
             self._seen = set(list(self._seen)[-10000:])

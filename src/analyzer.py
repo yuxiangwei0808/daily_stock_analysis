@@ -997,6 +997,27 @@ def fill_price_position_if_needed(
         logger.warning("[price_position] Fill failed, skipping: %s", e)
 
 
+PANEL_WAIT_SECONDS = 180  # a second opinion never holds up the primary analysis longer than this
+
+
+def sync_model_panel_primary(result: "AnalysisResult") -> None:
+    """Point the panel's primary entry at the final call (after the decision guardrails)."""
+    from src.llm.second_opinion import OPINION_ACTIONS, agreement
+    dashboard = getattr(result, "dashboard", None)
+    panel = dashboard.get("model_panel") if isinstance(dashboard, dict) else None
+    if not isinstance(panel, dict) or not panel.get("opinions"):
+        return
+    primary = next((item for item in panel["opinions"] if item.get("role") == "primary"), None)
+    if primary is None:
+        return
+    action = str(getattr(result, "action", "") or "").lower()
+    if action not in OPINION_ACTIONS:
+        action = str(getattr(result, "decision_type", "") or "").lower()
+    primary["action"] = action if action in OPINION_ACTIONS else "watch"
+    primary["score"] = getattr(result, "sentiment_score", primary.get("score"))
+    panel["agreement"] = agreement(panel["opinions"])
+
+
 def stabilize_decision_with_structure(
     result: "AnalysisResult",
     trend_result: Any = None,
@@ -1817,7 +1838,8 @@ class AnalysisResult:
                 "change_pct", "quote_session", "provider_timestamp", "is_stale", "pre_close",
                 "regular_close", "regular_change_pct",
             )})
-            snapshot["price"] = f"{self.current_price:.2f}" if self.current_price is not None else "N/A"
+            price = self.current_price
+            snapshot["price"] = ("N/A" if price is None else f"{price:.2f}" if abs(price) >= 1 else f"{price:.4g}")
             self.market_snapshot = snapshot
 
     def to_dict(self) -> Dict[str, Any]:
@@ -2695,8 +2717,8 @@ class GeminiAnalyzer:
         from src.llm.second_opinion import OPINION_ACTIONS, agreement, model_label
 
         try:
-            opinions = panel_future.result()
-        except Exception as exc:  # the report stands without the panel
+            opinions = panel_future.result(timeout=PANEL_WAIT_SECONDS)
+        except Exception as exc:  # the report stands without the panel (also on a slow second opinion)
             logger.warning("Second opinions unavailable: %s", type(exc).__name__)
             opinions = []
         action = str(getattr(result, "action", "") or "").lower()
@@ -3745,6 +3767,8 @@ class GeminiAnalyzer:
                 raise TypeError("generation backend returned an invalid result")
             if should_persist_usage_telemetry(result.usage):
                 persist_llm_usage(result.usage, result.model, call_type="market_review")
+            elif isinstance(result.usage, dict) and result.usage.get("cli_model"):
+                persist_llm_usage({}, result.usage["cli_model"], call_type="market_review")
             return result
         except GenerationError:
             raise
@@ -4087,6 +4111,9 @@ class GeminiAnalyzer:
 
             if should_persist_usage_telemetry(llm_usage):
                 persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
+            elif isinstance(llm_usage, dict) and llm_usage.get("cli_model"):
+                # Subscription CLIs report no tokens: record the call so usage pages count it.
+                persist_llm_usage({}, llm_usage["cli_model"], call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
 
