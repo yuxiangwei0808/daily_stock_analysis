@@ -561,10 +561,12 @@ def _resolve_contract_expiry(
     symbol: str,
     underlying_is_fund: Optional[bool] = None,
 ) -> Optional[datetime]:
-    """Resolve a valid contract cutoff, refusing ambiguous ETF date-only rows.
+    """Resolve a contract's trading cutoff.
 
-    ``underlying_is_fund`` is None when the underlying type is unknown; a
-    date-only row is then as ambiguous as an unlisted ETF and fails closed.
+    Options stop trading at the session close except the classes on NYSE
+    Arca's late-close list (16:15 ET on a normal session). A date-only row for
+    any other underlying, an ETF such as SOXS or TQQQ included, gets the
+    session close; the caller flags that assumption for funds and unknown types.
     """
 
     session_close = _resolve_session_close(contract.expiry_date)
@@ -587,9 +589,14 @@ def _resolve_contract_expiry(
         if local_session.hour == 16 and local_session.minute == 0:
             return session_close + timedelta(minutes=15)
         return None
-    if underlying_is_fund is not False or _contract_is_etf_like(contract, symbol):
-        return None
     return session_close
+
+
+def _cutoff_assumed(contract: _Contract, symbol: str, underlying_is_fund: Optional[bool]) -> bool:
+    """A fund (or unknown type) off the late-close list with no explicit cutoff: 16:00 ET is assumed."""
+    if _explicit_contract_cutoff(contract.row, contract.expiry_date) is not None or _is_known_late_close_etf(contract, symbol):
+        return False
+    return underlying_is_fund is not False or _contract_is_etf_like(contract, symbol)
 
 
 def _replay_session_close(expiry_date: date) -> Optional[datetime]:
@@ -2008,6 +2015,8 @@ class MoomooProvider:
                     item.row, item.expiry_date
                 ) is None:
                     self._warn("expiry_cutoff_nyse_arca_late_close_1615_et")
+                elif _cutoff_assumed(item, symbol, underlying_is_fund):
+                    self._warn("expiry_cutoff_assumed_1600_et")
                 verified_contracts.append(replace(item, expiry=expiry_close))
         contracts = verified_contracts
         if expired_count:

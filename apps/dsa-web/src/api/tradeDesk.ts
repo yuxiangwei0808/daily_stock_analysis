@@ -12,6 +12,7 @@ import type {
   PaperFillRequest,
   TradeAdviceJob,
   TradeAdviceListResponse,
+  TradeAdviceScope,
   TradeAdviceRequest,
   TradeDeskCatalogItem,
   TradeDeskHealth,
@@ -175,9 +176,9 @@ export const tradeDeskApi = {
     return unwrapJob(response.data);
   },
 
-  async listAdvice(): Promise<TradeAdviceListResponse> {
-    const response = await apiClient.get<{ items?: unknown[] }>(`${BASE_PATH}/advice`);
-    return { items: (response.data?.items ?? []).map(adviceJobToCamelCase) } as TradeAdviceListResponse;
+  async listAdvice(scope: TradeAdviceScope = 'active'): Promise<TradeAdviceListResponse> {
+    const response = await apiClient.get<{ items?: unknown[]; counts?: { active: number; archive: number } }>(`${BASE_PATH}/advice`, { params: { scope } });
+    return { items: (response.data?.items ?? []).map(adviceJobToCamelCase), counts: response.data?.counts } as TradeAdviceListResponse;
   },
 
   async getAdvice(adviceId: string): Promise<TradeAdviceJob> {

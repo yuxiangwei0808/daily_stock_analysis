@@ -38,6 +38,65 @@ _NARRATIVE_FIELDS = ("evidence_confidence", "reasons", "entry_conditions", "inva
                      "exit_conditions", "warnings")
 
 
+def _no_candidates_reason(snapshot, request):
+    """Say why nothing could be compared instead of a generic message."""
+    ticker = request.ticker
+    notes = [w for w in snapshot.warnings if w.split(":")[0] in {
+        "expiration_dates_unavailable", "expiry_unverified_or_unavailable", "option_quotes_unavailable",
+        "expired_contracts_excluded"}]
+    if not snapshot.options:
+        reason = f"The broker returned no quotable {ticker} options"
+        if request.expiry:
+            reason += f" for the {request.expiry} expiry"
+        reason += "."
+    else:
+        reason = (f"{len(snapshot.options)} {ticker} option quotes came back, but none passed the "
+                  "strategy, expiry, liquidity and quote-quality filters.")
+    if notes:
+        reason += " Provider notes: " + ", ".join(sorted(set(notes))) + "."
+    if request.message:
+        reason += " The model was not asked because there was nothing to compare; try again or change the expiry/strategies."
+    return reason
+
+
+ARCHIVE_AFTER_DAYS = 7
+_ACTIVE_STATUSES = {"queued", "running"}
+
+
+def archive_reason(job, now=None):
+    """Why an advice job belongs in the archive, or "" while it is current.
+
+    Archived jobs stay in the database (the track record and backtests can use
+    them); only the default list hides them.
+    """
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    if job.get("status") in _ACTIVE_STATUSES:
+        return ""
+    now = now or utcnow()
+    try:
+        created = datetime.fromisoformat(str(job.get("created_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if job.get("status") == "stale":
+        return "stale"
+    expiries = []
+    for candidate in job.get("candidates") or []:
+        for leg in candidate.get("legs") or []:
+            try:
+                expiries.append(datetime.fromisoformat(str(leg["expiry"]).replace("Z", "+00:00")))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if expiries and max(expiries) <= now:
+        return "expired"
+    new_york = ZoneInfo("America/New_York")
+    if not job.get("candidates") and created.astimezone(new_york).date() < now.astimezone(new_york).date():
+        return "no_result"
+    if now - created > timedelta(days=ARCHIVE_AFTER_DAYS):
+        return "old"
+    return ""
+
+
 class TradeDeskService:
     def __init__(self, repo=None, provider_factory=None, advisor=None, routine_advisor=None):
         if provider_factory is None:
@@ -220,8 +279,7 @@ class TradeDeskService:
                        "snapshots": {snapshot.id: snapshot.model_dump(mode="json")},
                        "assessment": "wait", "llm_status": "unavailable", "triggers": {}}
             if not candidates:
-                changes.update(status="completed", explanation="No eligible contracts match this request. "
-                               "Check expiry, strategy filters, quote quality and available data.")
+                changes.update(status="completed", explanation=_no_candidates_reason(snapshot, request))
                 self.repo.update_advice(advice_id, changes)
                 return
             def compare(effective, required_contracts=()):

@@ -822,12 +822,17 @@ def test_date_only_cutoff_uses_underlying_fund_type(monkeypatch):
         assert equity.options
         assert all(o.expiry.astimezone(providers.US_EASTERN).hour == 16
                    and o.expiry.astimezone(providers.US_EASTERN).minute == 0 for o in equity.options)
-        # An ETF outside the late-close list has an ambiguous cutoff.
+        assert "expiry_cutoff_assumed_1600_et" not in equity.warnings
+        # An ETF outside the late-close list (e.g. SOXS) closes with the session, like equities.
         unlisted_etf = provider.snapshot("ARKK", now=NOW_UTC)
-        assert unlisted_etf.options == []
-        assert "expiry_unverified_or_unavailable" in unlisted_etf.warnings
-        # Unknown underlying type also fails closed.
-        assert provider.snapshot("MSFT", now=NOW_UTC).options == []
+        assert unlisted_etf.options
+        assert all(o.expiry.astimezone(providers.US_EASTERN).hour == 16
+                   and o.expiry.astimezone(providers.US_EASTERN).minute == 0 for o in unlisted_etf.options)
+        assert "expiry_cutoff_assumed_1600_et" in unlisted_etf.warnings
+        assert "expiry_unverified_or_unavailable" not in unlisted_etf.warnings
+        # Unknown underlying type: the same assumption, flagged.
+        unknown = provider.snapshot("MSFT", now=NOW_UTC)
+        assert unknown.options and "expiry_cutoff_assumed_1600_et" in unknown.warnings
     finally:
         provider.close()
 

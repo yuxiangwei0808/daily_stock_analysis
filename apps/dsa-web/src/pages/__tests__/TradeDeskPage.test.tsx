@@ -25,6 +25,7 @@ const api = vi.hoisted(() => ({
   getPreferences: vi.fn(),
   updatePreferences: vi.fn(),
   getEventsUrl: vi.fn(() => '/api/v1/trade-desk/events'),
+  getTrackRecord: vi.fn(),
 }));
 
 vi.mock('../../api/tradeDesk', () => ({ tradeDeskApi: api }));
@@ -92,6 +93,7 @@ function setDefaultResponses() {
   api.getHealth.mockResolvedValue(health);
   api.getCatalog.mockResolvedValue({ items: [{ id: 'long_put', title: 'Long put' }] });
   api.listAdvice.mockResolvedValue({ items: [] });
+  api.getTrackRecord.mockResolvedValue({ windowDays: 90, groups: {}, recent: [] });
   api.getAdvice.mockResolvedValue(queuedJob);
   api.cancelAdvice.mockResolvedValue(cancelledJob);
   api.listPlans.mockResolvedValue({ items: [] });
@@ -197,6 +199,25 @@ describe('TradeDeskPage', () => {
       message: 'Explain this choice further',
     })));
     expect(job.request.allocation).toBe(1500);
+  });
+
+  it('lists current requests first and loads the archive on demand', async () => {
+    api.listAdvice.mockImplementation(async (scope?: string) => scope === 'archive'
+      ? { items: [{ ...queuedJob, id: 'old-advice', status: 'completed', archived: 'expired', explanation: 'Expired advice' }], counts: { active: 1, archive: 1 } }
+      : { items: [{ ...queuedJob, status: 'completed', explanation: 'Current advice' }], counts: { active: 1, archive: 1 } });
+    renderPage();
+    expect((await screen.findAllByText('Current advice')).length).toBeGreaterThan(0);
+    expect(api.listAdvice).toHaveBeenCalledWith();
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive (1)' }));
+    expect(await screen.findByText('options expired')).toBeInTheDocument();
+    expect(api.listAdvice).toHaveBeenCalledWith('archive');
+  });
+
+  it('opens the merged ask tab for old ?view=ask links', async () => {
+    renderPage('/trade-desk?view=ask');
+    const tab = await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ });
+    expect(tab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getAllByRole('tab')).toHaveLength(4);
   });
 
   it('loads linked advice even when it is outside the latest advice list', async () => {

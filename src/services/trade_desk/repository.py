@@ -181,11 +181,16 @@ class TradeDeskRepository:
             row = session.get(AdviceRecord, advice_id)
             return json.loads(row.payload) if row else None
 
-    def advice_list(self, limit=100):
+    def advice_list(self, limit=100, offset=0):
         with self.db.get_session() as session:
             rows = session.execute(select(AdviceRecord).order_by(
-                AdviceRecord.created_at.desc()).limit(limit)).scalars().all()
+                AdviceRecord.created_at.desc()).offset(offset).limit(limit)).scalars().all()
             return [json.loads(row.payload) for row in rows]
+
+    def advice_count(self):
+        from sqlalchemy import func
+        with self.db.get_session() as session:
+            return session.execute(select(func.count()).select_from(AdviceRecord)).scalar_one()
 
     def update_advice(self, advice_id, changes, unless_cancelled=True, only_statuses=None):
         with self.db.session_scope() as session:

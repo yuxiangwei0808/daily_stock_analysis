@@ -217,12 +217,17 @@ def test_google_news_retries_long_keyword_queries_with_fewer_terms(monkeypatch):
                                           "Broadcom Inc. risk insider selling", "Broadcom Inc. risk"]
 
 
+def _hours_ago(hours):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
 def test_short_tickers_need_a_marked_mention_and_outages_are_not_cached(monkeypatch):
     from src.services import free_news
     free_news._cache.clear()
-    items = [{"title": "A look at the market today", "url": "1", "source": "X", "published_at": "2026-09-25T12:00:00+00:00",
+    items = [{"title": "A look at the market today", "url": "1", "source": "X", "published_at": _hours_ago(1),
               "summary": "", "feed": "google_news"},
-             {"title": "Agilent (A) beats estimates", "url": "2", "source": "Y", "published_at": "2026-09-25T11:00:00+00:00",
+             {"title": "Agilent (A) beats estimates", "url": "2", "source": "Y", "published_at": _hours_ago(2),
               "summary": "", "feed": "google_news"}]
     monkeypatch.setattr(free_news, "google_news", lambda *a, **k: [dict(item) for item in items])
     result = free_news.ticker_news("A", ["google_news"])
@@ -242,9 +247,9 @@ def test_a_remembered_company_name_makes_short_ticker_news_relevant(monkeypatch)
     from src.services import free_news
     free_news._cache.clear()
     free_news.remember_name("F", "Ford Motor Company")
-    items = [{"title": "Ford recalls 100,000 trucks", "url": "1", "source": "X", "published_at": "2026-09-25T12:00:00+00:00",
+    items = [{"title": "Ford recalls 100,000 trucks", "url": "1", "source": "X", "published_at": _hours_ago(1),
               "summary": "", "feed": "google_news"},
-             {"title": "Update: A market wrap", "url": "2", "source": "Y", "published_at": "2026-09-25T11:00:00+00:00",
+             {"title": "Update: A market wrap", "url": "2", "source": "Y", "published_at": _hours_ago(2),
               "summary": "", "feed": "google_news"}]
     monkeypatch.setattr(free_news, "google_news", lambda *a, **k: [dict(item) for item in items])
     result = {item["url"]: item["related"] for item in free_news.ticker_news("F", ["google_news"])}

@@ -56,6 +56,14 @@ phone; localhost links on another device will not reach this server.
 
 ## Using it
 
+The **Ask about a stock** tab holds the request form, the selected answer and the
+request history. The history shows current requests; **Archive** lists requests
+whose options have expired, that were marked stale, that found nothing (after
+their day) or that are over a week old. Nothing is deleted: archived requests stay
+in `trade_desk_advice` for the track record and backtests (`GET /advice?scope=archive`).
+When no contracts can be compared, the answer says why (no quotable options, or
+none passing the filters, with the provider's notes) instead of a generic message.
+
 1. Open Trade Desk directly or use **Explore trade strategies** from a report or
    screening result. Choose live or clearly labeled replay data.
 2. Enter a ticker, optional allocation, direction, horizon, and question. Advanced
@@ -98,10 +106,12 @@ It is not a calibrated forecast, an option delta, an LLM confidence score, or a
 historical win rate. Contract timing uses the exchange calendar and explicit provider cutoff metadata.
 For normal sessions, a finite list of late-close ETF classes uses the
 [NYSE Arca published schedule](https://www.nyse.com/publicdocs/nyse/markets/arca-options/Options_Late_Close_ARCO.csv)
-(reviewed September 22, 2026). Ambiguous ETF cutoffs and late-close ETF early-close
-contracts remain unavailable without verified timing; no cutoff is guessed. Whether
-an underlying is a fund comes from its OpenD market snapshot (fund/equity markers);
-when the type is unknown, date-only contracts are treated as unavailable. A live
+(reviewed September 22, 2026) and closes at 16:15 ET; late-close ETF contracts on an
+early-close date remain unavailable without verified timing. Every other contract,
+including ETFs off that list (SOXS, TQQQ, SQQQ, ARKK …), stops trading at the session
+close like equity options; for a fund or an underlying of unknown type the snapshot
+carries `expiry_cutoff_assumed_1600_et`. (Until 2026-09-28 these ETFs were dropped as
+"ambiguous", which left their chains empty.) A live
 snapshot is source-verified only with a two-sided, non-crossed underlying bid/ask;
 otherwise it is marked stale with `underlying_bid_ask_unavailable`. Contracts past
 their cutoff are excluded and do not consume quote subscriptions.
@@ -415,7 +425,9 @@ distinct short strikes; candidates with no possible expiration profit are omitte
 All `/api/v1/trade-desk/*` routes inherit the existing administrator session guard.
 The API supports health, catalog, advice submission/status/cancellation, plans,
 paper fills, manual fills, positions, journal, outcomes, preferences and SSE events.
-`POST /advice` accepts `parent_advice_id` for a follow-up version. `POST
+`POST /advice` accepts `parent_advice_id` for a follow-up version. `GET /advice`
+takes `scope=active|archive|all` (default `active`), marks archived items with
+`archived` (`expired`, `stale`, `no_result`, `old`) and returns `counts`. `POST
 /plans/{id}/reconcile` records reconciliation notes after actual fills are entered. `POST
 /plans/{id}/paper-settle` (`underlying_price`) settles expired paper option legs.
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.

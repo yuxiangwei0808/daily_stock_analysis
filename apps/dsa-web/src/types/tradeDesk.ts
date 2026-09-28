@@ -175,6 +175,8 @@ export interface TradeModelPanel {
 export interface TradeAdviceJob {
   id: string;
   status: TradeAdviceStatus;
+  /** Why the job is archived (expired, stale, no_result, old); absent while it is current. */
+  archived?: string | null;
   request: TradeAdviceRequest;
   candidates: StrategyCandidate[];
   assessment?: string | Record<string, unknown> | null;
@@ -193,8 +195,11 @@ export interface TradeAdviceJob {
   [key: string]: unknown;
 }
 
+export type TradeAdviceScope = 'active' | 'archive' | 'all';
+
 export interface TradeAdviceListResponse {
   items: TradeAdviceJob[];
+  counts?: { active: number; archive: number };
 }
 
 export interface TradeDeskPlan {

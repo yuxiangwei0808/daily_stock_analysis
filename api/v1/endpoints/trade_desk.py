@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import AwareDatetime, ConfigDict, Field
 
-from src.services.trade_desk.models import Model, TradeAdviceRequest
+from src.services.trade_desk.models import Model, TradeAdviceRequest, utcnow
 
 router = APIRouter()
 
@@ -103,8 +103,36 @@ async def create_advice(body: TradeAdviceRequest, request: Request):
 
 
 @router.get("/advice")
-async def advice_list(request: Request, limit: int = Query(default=100, ge=1, le=250)):
-    return {"items": await invoke(get_service(request).repo.advice_list, limit)}
+async def advice_list(request: Request, limit: int = Query(default=100, ge=1, le=250),
+                      scope: Literal["active", "archive", "all"] = "active"):
+    """Active jobs by default; expired, stale, empty or week-old ones are under ``scope=archive``.
+
+    Nothing is deleted: archived jobs remain for the track record and backtests.
+    """
+    return await invoke(_advice_page, get_service(request).repo, limit, scope)
+
+
+def _advice_page(repo, limit, scope, batch=200):
+    from datetime import timedelta
+
+    from src.services.trade_desk.service import ARCHIVE_AFTER_DAYS, archive_reason
+    now = utcnow()
+    horizon = now - timedelta(days=ARCHIVE_AFTER_DAYS + 1)
+    selected, active, offset = [], 0, 0
+    while True:
+        rows = repo.advice_list(batch, offset)
+        offset += len(rows)
+        for item in rows:
+            reason = archive_reason(item, now)
+            active += not reason
+            if scope == "all" or (scope == "archive") == bool(reason):
+                selected.append({**item, "archived": reason or None})
+        # Older rows are all archived: stop once the page is full and the active ones are counted.
+        past_active = not rows or str(rows[-1].get("created_at", "")) < horizon.isoformat()
+        if len(rows) < batch or (past_active and (scope == "active" or len(selected) >= limit)):
+            break
+    total = repo.advice_count()
+    return {"items": selected[:limit], "counts": {"active": active, "archive": total - active}}
 
 
 @router.get("/advice/{advice_id}")
