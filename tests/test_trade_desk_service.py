@@ -103,6 +103,36 @@ def fill(code='TEST_CALL', side='buy', quantity=1, price=2.1, intent='open'):
             'fees': 0.65, 'filled_at': utcnow(), 'intent': intent}
 
 
+def test_manual_requests_carry_your_position_and_automatic_ones_do_not(repo, monkeypatch):
+    svc = service(repo)
+
+    class Holdings:
+        def view(self, live=True):
+            return {}
+
+        def position_context(self, ticker, view):
+            return {"ticker": ticker, "shares": 300, "options": [], "alerts": [], "side": "long"}
+
+    svc.holdings = Holdings()
+    monkeypatch.setattr('src.services.trade_desk.holdings.enabled', lambda: True)
+    results = {}
+    for source in ('manual', 'opportunity'):
+        job = repo.create_advice(TradeAdviceRequest(ticker='TEST').model_dump(mode='json'), source=source)
+        svc._run_advice(job['id'], threading.Event())
+        results[source] = repo.advice(job['id'])
+    manual, automatic = results['manual'], results['opportunity']
+    assert manual['position']['shares'] == 300
+    assert manual['position_inputs'] == {'existing_shares': 300, 'plan_from_position': False}
+    assert any(item.get('kind') == 'position' for item in manual['snapshot']['evidence'])
+    assert manual['request']['existing_shares'] == 0  # the saved request stays as you sent it
+    assert automatic.get('position') is None
+    assert not any(item.get('kind') == 'position' for item in automatic['snapshot']['evidence'])
+    # Switched off by the user.
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', use_holdings=False).model_dump(mode='json'))
+    svc._run_advice(job['id'], threading.Event())
+    assert repo.advice(job['id']).get('position') is None
+
+
 def test_cancelled_advice_cannot_be_resurrected(repo):
     job = repo.create_advice({'ticker': 'TEST'})
     repo.update_advice(job['id'], {'status': 'cancelled'})

@@ -405,6 +405,36 @@ class Holdings:
         rows = [row for row in view["stocks"] if row["ticker"] == ticker]
         return rows[0]["weight_pct"] if rows else None
 
+    def position_context(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """What you hold in ``ticker`` for a Trade Desk question, or None when nothing is held.
+
+        Sizes, unit costs and marks are included (the dashboard and your own model see
+        them); account totals and cash are not. Expired option rows are left out.
+        """
+        view = view or self.view(live=False)
+        stock = next((row for row in view["stocks"] if row["ticker"] == ticker), None)
+        options = []
+        for row in view["options"]:
+            if row["underlying"] != ticker or row.get("expired"):
+                continue
+            options.append({"expiry": row["expiry"], "label": row["label"], "days_left": row["days_left"],
+                            "pnl_pct": row.get("pnl_pct"), "pct_of_max": row.get("pct_of_max"),
+                            "legs": [{"contract": leg["code"], "right": leg["right"], "strike": leg["strike"],
+                                      "qty": leg["qty"], "average_cost": leg.get("average_cost"),
+                                      "mark": leg.get("mark")} for leg in row["legs"]]})
+        if stock is None and not options:
+            return None
+        rules = [{"kind": rule["kind"], "value": rule["value"], "status": rule["status"], "note": rule.get("note", "")}
+                 for rule in self.rules() if rule.get("ticker") == ticker and rule.get("status") != "triggered"]
+        return {"ticker": ticker, "synced_at": view.get("synced_at"), "side": self.side(ticker, view),
+                "shares": stock["qty"] if stock else 0,
+                "average_cost": stock.get("average_cost") if stock else None,
+                "price": stock.get("price") if stock else next(
+                    (row.get("underlying_price") for row in view["options"] if row["underlying"] == ticker), None),
+                "stock_pnl_pct": stock.get("pnl_pct") if stock else None,
+                "weight_pct": stock.get("weight_pct") if stock else None,
+                "options": options, "alerts": rules}
+
     def summary(self, now: Optional[datetime] = None, *,
                 bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
                 earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings) -> Dict[str, Any]:

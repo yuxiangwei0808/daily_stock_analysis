@@ -11,7 +11,7 @@ import { TrackRecordCard } from '../components/tradeDesk/TrackRecordCard';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type {
   CreateTradePlanRequest,
-
+  HoldingsView,
   StrategyCandidate,
   TradeAdviceJob,
   TradeAdviceRequest,
@@ -49,6 +49,7 @@ type AdviceFormState = {
   riskFreeRate: string;
   dividendYield: string;
   message: string;
+  useHoldings: boolean;
 };
 
 type ManualFillState = {
@@ -76,6 +77,7 @@ const DEFAULT_FORM: AdviceFormState = {
   riskFreeRate: '0',
   dividendYield: '0',
   message: '',
+  useHoldings: true,
 };
 
 const DEFAULT_PREFERENCES: TradePreferences = {
@@ -118,10 +120,43 @@ const formatPercent = (value: number | null | undefined): string => (
   value == null || !Number.isFinite(Number(value)) ? '—' : `${(Number(value) * 100).toFixed(1)}%`
 );
 
+const signedPct =(value: number | null | undefined): string => (
+  value == null || !Number.isFinite(Number(value)) ? '' : ` (${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%)`
+);
+
+/** What you hold in a ticker, from the broker sync: "200 shares (+4.2%); 35C 2026-10-02 (-18.0%)". */
+const heldSummary = (view: HoldingsView | null | undefined, ticker: string): string => {
+  const symbol = ticker.trim().toUpperCase();
+  if (!view || !symbol) return '';
+  return [
+    ...view.stocks.filter((row) => row.ticker === symbol).map((row) => `${row.qty} shares${signedPct(row.pnlPct)}`),
+    ...view.options.filter((row) => row.underlying === symbol && !row.expired).map((row) => `${row.label} ${row.expiry}${signedPct(row.pnlPct)}`),
+  ].join('; ');
+};
+
+function PositionUsed({ job }: { job: TradeAdviceJob }) {
+  const position = job.position;
+  if (!position) return null;
+  const parts = [
+    position.shares ? `${position.shares} shares${signedPct(position.stockPnlPct)}` : '',
+    ...position.options.map((row) => `${row.label} ${row.expiry}${signedPct(row.pnlPct)} · ${row.daysLeft} trading days left`),
+  ].filter(Boolean);
+  const inputs = job.positionInputs;
+  return (
+    <section className="mt-4 rounded-xl border border-border/40 bg-card/30 p-3 text-sm" data-testid="position-used">
+      <h3 className="text-sm font-semibold text-foreground">Your position (read-only)</h3>
+      <p className="mt-1 text-secondary-text">{parts.join('; ')}</p>
+      {inputs?.planFromPosition ? <p className="mt-1 text-xs text-muted-text">The "custom" candidate is your held options priced from the current mid (holding from here).</p> : null}
+      {inputs?.existingShares ? <p className="mt-1 text-xs text-muted-text">Covered/collar candidates use your {inputs.existingShares} owned shares.</p> : null}
+      {position.alerts.length ? <p className="mt-1 text-xs text-muted-text">Your alerts: {position.alerts.map((alert) => `${alert.kind.replace(/_/g, ' ')} ${alert.value}`).join(', ')}</p> : null}
+    </section>
+  );
+}
+
 // An unavailable live provider blocks submission (no OpenD host/SDK, connection,
 // login, permissions, quota) unless it is only "degraded", e.g. rights_unknown,
 // where an authenticated quote attempt is still the way to verify access.
-const liveIsBlocked = (health: TradeDeskHealth | null): boolean => {
+const liveIsBlocked =(health: TradeDeskHealth | null): boolean => {
   if (!health || health.live.available) return false;
   return health.live.status !== 'degraded';
 };
@@ -219,6 +254,7 @@ function AdviceForm({
   onSubmit,
   isSubmitting,
   sourceReportId,
+  heldNote,
 }: {
   form: AdviceFormState;
   setForm: React.Dispatch<React.SetStateAction<AdviceFormState>>;
@@ -229,6 +265,7 @@ function AdviceForm({
   onSubmit: () => void;
   isSubmitting: boolean;
   sourceReportId?: number;
+  heldNote?: string;
 }) {
   const { t } = useUiLanguage();
   const disabled = !health?.enabled || isSubmitting;
@@ -268,6 +305,7 @@ function AdviceForm({
         <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.direction')}</span><select aria-label={t('tradeDesk.direction')} value={form.direction} onChange={(event) => update('direction', event.target.value as AdviceFormState['direction'])} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground"><option value="auto">{t('tradeDesk.direction.auto')}</option><option value="bullish">{t('tradeDesk.direction.bullish')}</option><option value="bearish">{t('tradeDesk.direction.bearish')}</option><option value="neutral">{t('tradeDesk.direction.neutral')}</option><option value="volatile">{t('tradeDesk.direction.volatile')}</option></select></label>
         <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.horizon')}</span><select aria-label={t('tradeDesk.horizon')} value={form.horizon} onChange={(event) => update('horizon', event.target.value as AdviceFormState['horizon'])} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground"><option value="both">{t('tradeDesk.horizon.both')}</option><option value="intraday">{t('tradeDesk.horizon.intraday')}</option><option value="swing">{t('tradeDesk.horizon.swing')}</option></select></label>
       </div>
+      {heldNote && form.dataMode === 'live' ? <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-cyan/25 bg-cyan/5 p-3 text-sm" data-testid="use-holdings"><input type="checkbox" className="mt-1" checked={form.useHoldings} onChange={(event) => update('useHoldings', event.target.checked)} /><span><strong className="text-foreground">Use my position</strong><span className="block text-secondary-text">You hold {heldNote}. The answer weighs holding, closing, hedging or rolling it; owned shares count for covered calls.</span></span></label> : null}
 
       <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.expiry')}</span><input aria-label={t('tradeDesk.expiry')} type="date" value={form.expiry} onChange={(event) => update('expiry', event.target.value)} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
@@ -526,6 +564,13 @@ const TradeDeskPage: React.FC = () => {
   const [adviceScope, setAdviceScope] = useState<'active' | 'archive'>('active');
   const [adviceCounts, setAdviceCounts] = useState<{ active: number; archive: number } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ job: TradeAdviceJob } | { archive: number } | null>(null);
+  // Broker holdings (read-only) for the "Use my position" hint; absent when no account is set.
+  const [heldView, setHeldView] = useState<HoldingsView | null>(null);
+  useEffect(() => {
+    let active = true;
+    tradeDeskApi.getHoldings().then((result) => { if (active) setHeldView(result.view); }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
   const [plans, setPlans] = useState<TradeDeskPlan[]>([]);
   const [positions, setPositions] = useState<TradePosition[]>([]);
   const [journal, setJournal] = useState<TradeJournalEvent[]>([]);
@@ -655,6 +700,7 @@ const TradeDeskPage: React.FC = () => {
   }, [view]);
 
   const selectedAdvice = useMemo(() => advice.find((item) => item.id === selectedAdviceId) || archive?.find((item) => item.id === selectedAdviceId) || null, [advice, archive, selectedAdviceId]);
+  const heldNote = heldSummary(heldView, form.ticker);
   const showScope = async (scope: 'active' | 'archive') => {
     setAdviceScope(scope);
     if (scope !== 'archive') return;
@@ -679,6 +725,7 @@ const TradeDeskPage: React.FC = () => {
     dividendYield: parseNumber(form.dividendYield) ?? 0,
     marginPerUnit: parseNumber(form.marginPerUnit),
     planLegs: form.planLegs.trim() || undefined,
+    useHoldings: form.useHoldings,
   });
 
   const submitAdvice = async () => {
@@ -803,7 +850,7 @@ const TradeDeskPage: React.FC = () => {
   const setActiveView = (nextView: TradeDeskView) => { setView(nextView); };
   const listedAdvice = adviceScope === 'archive' ? archive || [] : advice;
   const renderJobList = () => <div className="space-y-3">{listedAdvice.length ? listedAdvice.slice(0, adviceScope === 'archive' ? 100 : 20).map((job) => <AdviceJobCard key={job.id} job={job} selected={job.id === selectedAdviceId} onSelect={() => setSelectedAdviceId(job.id)} onCancel={() => void cancelAdvice(job)} onDelete={() => setPendingDelete({ job })} onFollowUp={(content) => void followUp(job, content)} isCancelling={busyAdviceId === job.id} />) : <EmptyState icon={<FileQuestion className="h-8 w-8" />} title={t('tradeDesk.noCandidates')} description={t('tradeDesk.description')} />}</div>;
-  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} />{selectedAdvice ? <Card variant="bordered" padding="md"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold text-foreground">{selectedAdvice.request.ticker} opportunities</h2><ModeBadge mode={selectedAdvice.request.dataMode} /><Badge variant={statusVariant(selectedAdvice.status)}>{statusLabel(selectedAdvice.status)}</Badge></div><p className="mt-1 text-xs text-secondary-text">{formatDate(selectedAdvice.updatedAt)} · snapshot {textValue(selectedAdvice.snapshot && (selectedAdvice.snapshot as { id?: unknown }).id) || 'pending'}</p></div><Button size="sm" variant="ghost" onClick={() => void refreshData(false)}><RefreshCw className="h-3.5 w-3.5" />{t('tradeDesk.refresh')}</Button></div>{selectedAdvice.request.dataMode === 'replay' ? <InlineAlert className="mt-4" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}{selectedAdvice.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={selectedAdvice.planError} /> : null}{selectedAdvice.panel?.opinions?.length ? <ModelPanel panel={selectedAdvice.panel} /> : null}{selectedAdvice.explanation ? <AdviceVerdict job={selectedAdvice} /> : null}{selectedAdvice.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(selectedAdvice, selectedAdvice.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}<div className="mt-5 space-y-5">{intradayCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.intraday')}</h3><div className="space-y-4">{intradayCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={selectedAdvice} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === selectedAdvice.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div></section> : null}{swingCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.swing')}</h3><div className="space-y-4">{swingCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={selectedAdvice} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === selectedAdvice.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div></section> : null}{selectedAdvice.status === 'completed' && selectedAdvice.candidates.length === 0 ? <EmptyState title={t('tradeDesk.noCandidates')} description={textValue(selectedAdvice.explanation)} /> : null}</div></Card> : null}<div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)]"><div><div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.researchVersion')}</h2><div className="flex gap-1 text-xs" role="group" aria-label="Advice history">{(['active', 'archive'] as const).map((scope) => <button key={scope} type="button" aria-pressed={adviceScope === scope} onClick={() => void showScope(scope)} className={`rounded-lg px-2 py-1 ${adviceScope === scope ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{scope === 'active' ? 'Current' : 'Archive'} ({scope === 'active' ? adviceCounts?.active ?? advice.length : adviceCounts?.archive ?? archive?.length ?? 0})</button>)}</div></div>{adviceScope === 'archive' ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-secondary-text">Expired, stale, empty or week-old requests, kept until you delete them.</p>{archive?.length ? <Button size="xsm" variant="ghost" onClick={() => setPendingDelete({ archive: adviceCounts?.archive ?? archive.length })}><Trash2 className="h-3.5 w-3.5" />Delete all archived</Button> : null}</div> : null}{renderJobList()}</div><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><LineChartIcon className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.followUp')}</h2></div><p className="mt-2 text-sm leading-6 text-secondary-text">{t('tradeDesk.followUpPlaceholder')}</p><textarea value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} rows={5} disabled={!selectedAdvice} placeholder={selectedAdvice ? t('tradeDesk.followUpPlaceholder') : t('tradeDesk.noCandidates')} className="input-surface mt-4 w-full rounded-xl border px-3 py-2 text-sm text-foreground" /><Button className="mt-3 w-full" variant="outline" disabled={!selectedAdvice || !followUpForm.trim()} isLoading={isSubmitting} onClick={() => selectedAdvice && void followUp(selectedAdvice)}><Sparkles className="h-4 w-4" />{t('tradeDesk.followUp')}</Button></Card></div></div>;
+  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} />{selectedAdvice ? <Card variant="bordered" padding="md"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold text-foreground">{selectedAdvice.request.ticker} opportunities</h2><ModeBadge mode={selectedAdvice.request.dataMode} /><Badge variant={statusVariant(selectedAdvice.status)}>{statusLabel(selectedAdvice.status)}</Badge></div><p className="mt-1 text-xs text-secondary-text">{formatDate(selectedAdvice.updatedAt)} · snapshot {textValue(selectedAdvice.snapshot && (selectedAdvice.snapshot as { id?: unknown }).id) || 'pending'}</p></div><Button size="sm" variant="ghost" onClick={() => void refreshData(false)}><RefreshCw className="h-3.5 w-3.5" />{t('tradeDesk.refresh')}</Button></div>{selectedAdvice.request.dataMode === 'replay' ? <InlineAlert className="mt-4" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}{selectedAdvice.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={selectedAdvice.planError} /> : null}<PositionUsed job={selectedAdvice} />{selectedAdvice.panel?.opinions?.length ? <ModelPanel panel={selectedAdvice.panel} /> : null}{selectedAdvice.explanation ? <AdviceVerdict job={selectedAdvice} /> : null}{selectedAdvice.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(selectedAdvice, selectedAdvice.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}<div className="mt-5 space-y-5">{intradayCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.intraday')}</h3><div className="space-y-4">{intradayCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={selectedAdvice} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === selectedAdvice.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div></section> : null}{swingCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.swing')}</h3><div className="space-y-4">{swingCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={selectedAdvice} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === selectedAdvice.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div></section> : null}{selectedAdvice.status === 'completed' && selectedAdvice.candidates.length === 0 ? <EmptyState title={t('tradeDesk.noCandidates')} description={textValue(selectedAdvice.explanation)} /> : null}</div></Card> : null}<div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)]"><div><div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.researchVersion')}</h2><div className="flex gap-1 text-xs" role="group" aria-label="Advice history">{(['active', 'archive'] as const).map((scope) => <button key={scope} type="button" aria-pressed={adviceScope === scope} onClick={() => void showScope(scope)} className={`rounded-lg px-2 py-1 ${adviceScope === scope ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{scope === 'active' ? 'Current' : 'Archive'} ({scope === 'active' ? adviceCounts?.active ?? advice.length : adviceCounts?.archive ?? archive?.length ?? 0})</button>)}</div></div>{adviceScope === 'archive' ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-secondary-text">Expired, stale, empty or week-old requests, kept until you delete them.</p>{archive?.length ? <Button size="xsm" variant="ghost" onClick={() => setPendingDelete({ archive: adviceCounts?.archive ?? archive.length })}><Trash2 className="h-3.5 w-3.5" />Delete all archived</Button> : null}</div> : null}{renderJobList()}</div><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><LineChartIcon className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.followUp')}</h2></div><p className="mt-2 text-sm leading-6 text-secondary-text">{t('tradeDesk.followUpPlaceholder')}</p><textarea value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} rows={5} disabled={!selectedAdvice} placeholder={selectedAdvice ? t('tradeDesk.followUpPlaceholder') : t('tradeDesk.noCandidates')} className="input-surface mt-4 w-full rounded-xl border px-3 py-2 text-sm text-foreground" /><Button className="mt-3 w-full" variant="outline" disabled={!selectedAdvice || !followUpForm.trim()} isLoading={isSubmitting} onClick={() => selectedAdvice && void followUp(selectedAdvice)}><Sparkles className="h-4 w-4" />{t('tradeDesk.followUp')}</Button></Card></div></div>;
   const manualFillContracts = manualFillPosition ? (() => {
     const plan = plans.find((item) => item.id === manualFillPosition.planId) || manualFillPosition.plan;
     const candidateContracts = plan?.candidate.legs.map((leg) => leg.contractId) || [];

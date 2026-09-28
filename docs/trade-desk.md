@@ -65,6 +65,18 @@ until you delete them. The bin icon on a request, or **Delete all archived** in 
 archive, removes requests permanently after a confirmation; queued/running requests
 (cancel first) and requests a monitored plan was created from are kept. Journal
 entries stay as the log, plus an `advice_deleted` entry.
+**Your position.** With broker holdings set up, typing a ticker you hold shows
+"Use my position" (on by default; live data only). The request then carries your
+shares, open option legs (quantity, unit cost, current mid, P&L on cost, trading days
+left) and your alerts for that ticker, read-only from the last sync with fresh quotes.
+Owned shares prefill the share count, so covered calls and collars use them. A single
+held option position (no plan or expiry of your own) becomes the `custom` candidate,
+priced from the current mid as "holding from here", and the model answers for it first:
+hold, take profit or close, reduce, hedge or roll (a roll shows as closing it plus one of
+the other candidates; it is not priced as one trade). Account totals and cash are not
+sent. Only requests you make get the position; automatic follow-ups, which can reach
+Discord, never do. The answer shows a "Your position" panel with what was used.
+
 When no contracts can be compared, the answer says why (no quotable options, or
 none passing the filters, with the provider's notes) instead of a generic message.
 

@@ -28,6 +28,7 @@ const api = vi.hoisted(() => ({
   getTrackRecord: vi.fn(),
   deleteAdvice: vi.fn(),
   deleteArchivedAdvice: vi.fn(),
+  getHoldings: vi.fn(),
 }));
 
 vi.mock('../../api/tradeDesk', () => ({ tradeDeskApi: api }));
@@ -96,6 +97,7 @@ function setDefaultResponses() {
   api.getCatalog.mockResolvedValue({ items: [{ id: 'long_put', title: 'Long put' }] });
   api.listAdvice.mockResolvedValue({ items: [] });
   api.getTrackRecord.mockResolvedValue({ windowDays: 90, groups: {}, recent: [] });
+  api.getHoldings.mockResolvedValue({ enabled: false, view: null, rules: [] });
   api.getAdvice.mockResolvedValue(queuedJob);
   api.cancelAdvice.mockResolvedValue(cancelledJob);
   api.listPlans.mockResolvedValue({ items: [] });
@@ -238,6 +240,38 @@ describe('TradeDeskPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     expect(await screen.findByText(/Deleted 1 archived requests; kept 1/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Archive (1)' })).toBeInTheDocument();
+  });
+
+  it('offers your broker position for a held ticker and sends the choice', async () => {
+    api.getHoldings.mockResolvedValue({ enabled: true, rules: [], view: { stocks: [{ key: 'SOXS', ticker: 'SOXS', name: '', qty: 200, pnlPct: 4.2 }],
+      options: [{ key: 'SOXS 2026-10-02', underlying: 'SOXS', expiry: '2026-10-02', daysLeft: 4, label: '35C', legs: [], cost: 100, pnlPct: -18 },
+        { key: 'SOXS 2026-09-18', underlying: 'SOXS', expiry: '2026-09-18', daysLeft: 0, expired: true, label: '30C', legs: [], cost: 50 }] } });
+    renderPage();
+    const ticker = await screen.findByLabelText(/Ticker|股票代码|代码/);
+    fireEvent.change(ticker, { target: { value: 'soxs' } });
+    const hint = await screen.findByTestId('use-holdings');
+    expect(hint).toHaveTextContent('You hold 200 shares (+4.2%); 35C 2026-10-02 (-18.0%).');
+    expect(hint).not.toHaveTextContent('30C');
+    fireEvent.click(screen.getByRole('checkbox', { name: /Use my position/ }));
+    // Live is unavailable in this fixture; the choice is still sent with a replay request.
+    fireEvent.click(screen.getByRole('radio', { name: /Replay/ }));
+    expect(screen.queryByTestId('use-holdings')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Generate opportunities|生成机会/ }));
+    await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({ ticker: 'SOXS', useHoldings: false })));
+    fireEvent.change(ticker, { target: { value: 'AAPL' } });
+    expect(screen.queryByTestId('use-holdings')).not.toBeInTheDocument();
+  });
+
+  it('shows the position an answer used', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Hold or close',
+      position: { ticker: 'SOXS', shares: 0, options: [{ expiry: '2026-10-02', label: '35C', daysLeft: 4, pnlPct: -18, legs: [] }],
+        alerts: [{ kind: 'price_below', value: 30, status: 'active' }] },
+      positionInputs: { existingShares: 0, planFromPosition: true } }] });
+    renderPage();
+    const panel = await screen.findByTestId('position-used');
+    expect(panel).toHaveTextContent('35C 2026-10-02 (-18.0%) · 4 trading days left');
+    expect(panel).toHaveTextContent('holding from here');
+    expect(panel).toHaveTextContent('price below 30');
   });
 
   it('opens the merged ask tab for old ?view=ask links', async () => {

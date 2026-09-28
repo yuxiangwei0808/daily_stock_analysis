@@ -51,6 +51,7 @@ function toAdvicePayload(request: TradeAdviceRequest): Record<string, unknown> {
     dividend_yield: request.dividendYield,
     margin_per_unit: request.marginPerUnit,
     plan_legs: request.planLegs,
+    use_holdings: request.useHoldings,
   });
 }
 

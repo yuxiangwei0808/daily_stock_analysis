@@ -483,3 +483,35 @@ def test_notes_and_expiry_alerts_stay_discord_safe_and_say_where_the_legs_are(st
     [expiry] = [e[1]["message"] for e in events if e[1]["kind"] == "expiry"]
     assert "USO 150.00: long 160C out of the money, short 170C out of the money" in expiry
     assert "trading days left" not in expiry.split("\n")[0]
+
+
+def test_position_context_for_a_question(store):
+    uso = store.position_context("USO", store.view())  # live marks, as the advice run uses
+    assert uso["shares"] == 0 and uso["price"] == 150.0 and uso["side"] == "long"
+    (spread,) = uso["options"]
+    assert spread["expiry"] == "2026-10-16" and spread["label"] == "160/170C spread"
+    assert [(leg["strike"], leg["qty"]) for leg in spread["legs"]] == [(160.0, 3.0), (170.0, -3.0)]
+    nvda = store.position_context("NVDA")
+    assert nvda["shares"] == 5.0 and nvda["options"] == [] and nvda["average_cost"] == 120.0
+    assert store.position_context("AAPL") is None
+    assert "total_assets" not in uso and "cash" not in uso  # no account totals
+
+
+def test_questions_use_held_shares_and_price_a_held_spread_as_the_plan(store):
+    from src.services.trade_desk.models import TradeAdviceRequest
+    from src.services.trade_desk.service import TradeDeskService
+    svc = TradeDeskService.__new__(TradeDeskService)
+    svc.holdings = store
+    context, request = svc._with_position(TradeAdviceRequest(ticker="USO"))
+    assert context["options"] and request.plan_source == "position"
+    assert [(leg.side, leg.quantity, leg.right, leg.strike) for leg in request.plan_legs] == [
+        ("buy", 3, "call", 160.0), ("sell", 3, "call", 170.0)]
+    assert request.expiry == date(2026, 10, 16)
+    _, request = svc._with_position(TradeAdviceRequest(ticker="SOXS"))
+    assert request.existing_shares == 10 and not request.plan_legs
+    # Your own plan, expiry or share count wins.
+    _, request = svc._with_position(TradeAdviceRequest(ticker="USO", expiry="2026-10-09"))
+    assert not request.plan_legs and request.plan_source == "user"
+    _, request = svc._with_position(TradeAdviceRequest(ticker="NVDA", existing_shares=2))
+    assert request.existing_shares == 2
+    assert svc._with_position(TradeAdviceRequest(ticker="AAPL"))[0] is None

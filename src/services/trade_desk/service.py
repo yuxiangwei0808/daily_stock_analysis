@@ -201,6 +201,46 @@ class TradeDeskService:
         return (self.repo.update_advice(advice_id, {"status": "cancelled"}, only_statuses={"queued", "running"})
                 or self.repo.advice(advice_id))
 
+    def _with_position(self, request):
+        """Your broker position in the ticker, and the request with it filled in.
+
+        Owned shares prefill ``existing_shares`` (covered calls, collars); a single held
+        option position with no plan or expiry of your own becomes the plan, priced as
+        "hold from here" so the answer compares holding it with the alternatives.
+        """
+        from .holdings import enabled
+        if not enabled():
+            return None, request
+        try:
+            try:
+                view = self.holdings.view()  # current marks
+            except Exception:
+                view = self.holdings.view(live=False)  # marks from the last sync
+            context = self.holdings.position_context(request.ticker, view)
+        except Exception as exc:  # the question is still answered, without the position
+            logger.info("Trade Desk position context unavailable: %s", type(exc).__name__)
+            return None, request
+        if not context:
+            return None, request
+        updates = {}
+        if not request.existing_shares and context["shares"] >= 1:
+            updates["existing_shares"] = int(context["shares"])
+        groups = context["options"]
+        if not request.plan_legs and request.expiry is None and len(groups) == 1 and len(groups[0]["legs"]) <= 4:
+            updates["plan_legs"] = [{"side": "buy" if leg["qty"] > 0 else "sell", "quantity": int(abs(leg["qty"])),
+                                     "right": leg["right"], "strike": leg["strike"], "expiry": groups[0]["expiry"]}
+                                    for leg in groups[0]["legs"]]
+            updates["plan_source"] = "position"
+        base = request.model_dump(mode="json")
+        for attempt in (updates, {k: v for k, v in updates.items() if k == "existing_shares"}):
+            if not attempt:
+                break
+            try:  # an unpriceable leg shape keeps the shares and drops the plan
+                return context, TradeAdviceRequest.model_validate({**base, **attempt})
+            except ValueError:
+                continue
+        return context, request
+
     def _fresh_news(self, request):
         """Latest headlines from FREE_NEWS_SOURCES, fetched when the user asks (not for automatic scans)."""
         from src.config import get_config
@@ -264,16 +304,27 @@ class TradeDeskService:
             return
         request = TradeAdviceRequest.model_validate(job["request"])
         try:
+            position = None
+            # Your own questions only: automatic follow-ups can reach Discord, which never gets sizes.
+            if job.get("source") == "manual" and request.use_holdings and request.data_mode == "live":
+                position, request = self._with_position(request)
             snapshot = self.snapshot(request)
             if snapshot.mode == "live" and not snapshot_fresh(snapshot):
                 raise ValueError("Live quotes are stale or unverified; no current comparison can be produced")
             seen = {item.get("title") for item in snapshot.evidence}
             snapshot.evidence.extend(item for item in self._fresh_news(request) if item["title"] not in seen)
+            if position:
+                snapshot.evidence.append({"kind": "position", "title": f"Your broker position in {request.ticker}",
+                                          "read_only": True, **position})
             candidates = build_candidates(snapshot, request)
             plan_error = ""
             if request.plan_legs and not any(c.strategy == PLAN_STRATEGY for c in candidates):
-                plan_error = price_plan(snapshot, request)[1] or "Your plan could not be priced."
-            changes = {"plan_error": plan_error,
+                plan_error = price_plan(snapshot, request)[1] or (
+                    "Your held position could not be priced." if request.plan_source == "position"
+                    else "Your plan could not be priced.")
+            changes = {"plan_error": plan_error, "position": position,
+                       "position_inputs": {"existing_shares": request.existing_shares,
+                                           "plan_from_position": request.plan_source == "position"} if position else None,
                        "candidates": [c.model_dump(mode="json") for c in candidates],
                        "snapshot": snapshot.model_dump(mode="json"), "provider": snapshot.provider,
                        "snapshots": {snapshot.id: snapshot.model_dump(mode="json")},

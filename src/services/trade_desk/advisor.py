@@ -74,6 +74,13 @@ _RULES = (
     "say plainly whether its risk, break-even and timing fit the evidence, and compare it with the "
     "alternatives. News items are dated headlines, not verified catalysts; about_ticker=false items are "
     "general market context. "
+    "An evidence item with kind 'position' is the user's current broker position (read-only): shares, "
+    "held option legs (negative qty = short), unit costs, marks, P&L on cost and their alerts. When present, "
+    "answer for that position first: hold, take profit or close, reduce, hedge, or roll. When "
+    "request.plan_source is 'position', the 'custom' candidate is the held legs priced from the current mid "
+    "(holding from here; the cost already paid does not change the forward payoff). A roll is closing the "
+    "held legs and opening one of the other candidates; say so, since it is not priced as one trade. "
+    "existing_shares filled from the position means covered or collared candidates use shares already owned. "
 )
 
 

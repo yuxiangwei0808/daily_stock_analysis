@@ -185,6 +185,10 @@ class TradeAdviceRequest(Model):
     dividend_yield: float = Field(default=0.0, ge=0, le=1)
     margin_per_unit: Optional[float] = Field(default=None, gt=0)
     plan_legs: list[PlanLeg] = Field(default_factory=list, max_length=4)
+    # Attach your broker position in this ticker (manual requests only; read-only).
+    use_holdings: bool = True
+    # "position": plan_legs are your held option legs, priced as "hold from here".
+    plan_source: Literal["user", "position"] = "user"
 
     @field_validator("plan_legs", mode="before")
     @classmethod

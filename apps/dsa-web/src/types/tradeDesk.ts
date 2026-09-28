@@ -130,6 +130,10 @@ export interface TradeAdviceRequest {
   marginPerUnit?: number;
   /** Lines like "buy 1 call 230 2026-10-16", or legs returned by the server. */
   planLegs?: string | TradePlanLeg[];
+  /** Attach your broker position in this ticker (default true). */
+  useHoldings?: boolean;
+  /** Set by the server: "position" when plan legs are your held options. */
+  planSource?: 'user' | 'position';
 }
 
 export interface TradeCandidateTrigger {
@@ -192,7 +196,30 @@ export interface TradeAdviceJob {
   effectiveRequests?: Record<string, TradeAdviceRequest> | null;
   panel?: TradeModelPanel | null;
   planError?: string | null;
+  /** Your broker position in the ticker, attached to manual requests (read-only). */
+  position?: TradeHeldPosition | null;
+  positionInputs?: { existingShares: number; planFromPosition: boolean } | null;
   [key: string]: unknown;
+}
+
+export interface TradeHeldPosition {
+  ticker: string;
+  syncedAt?: string | null;
+  side?: string;
+  shares: number;
+  averageCost?: number | null;
+  price?: number | null;
+  stockPnlPct?: number | null;
+  weightPct?: number | null;
+  options: {
+    expiry: string;
+    label: string;
+    daysLeft: number;
+    pnlPct?: number | null;
+    pctOfMax?: number | null;
+    legs: { contract: string; right: string; strike: number; qty: number; averageCost?: number | null; mark?: number | null }[];
+  }[];
+  alerts: { kind: string; value: number; status: string; note?: string }[];
 }
 
 export type TradeAdviceScope = 'active' | 'archive' | 'all';
