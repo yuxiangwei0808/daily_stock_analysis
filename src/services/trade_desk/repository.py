@@ -192,6 +192,43 @@ class TradeDeskRepository:
         with self.db.get_session() as session:
             return session.execute(select(func.count()).select_from(AdviceRecord)).scalar_one()
 
+    def delete_advice(self, advice_ids):
+        """Delete finished advice jobs; returns (deleted ids, {id: reason not deleted}).
+
+        Queued/running jobs must be cancelled first, and a job a plan was created
+        from stays (the plan links to it). Journal events are kept as the audit trail.
+        """
+        wanted = list(dict.fromkeys(advice_ids))
+        planned = {plan.get("advice_id") for plan in self.plans(limit=100000)}
+        deleted, blocked = [], {}
+        with self.db.session_scope() as session:
+            rows = session.execute(select(AdviceRecord).where(AdviceRecord.id.in_(wanted))).scalars().all()
+            found = {row.id: row for row in rows}
+            conversations = set()
+            for advice_id in wanted:
+                row = found.get(advice_id)
+                if row is None:
+                    blocked[advice_id] = "not_found"
+                elif row.status in {"queued", "running"}:
+                    blocked[advice_id] = "in_progress"
+                elif advice_id in planned:
+                    blocked[advice_id] = "has_plan"
+                else:
+                    conversations.add(row.conversation_id)
+                    session.delete(row)
+                    deleted.append(advice_id)
+            session.flush()
+            for conversation_id in conversations:
+                remaining = session.execute(select(AdviceRecord.id).where(
+                    AdviceRecord.conversation_id == conversation_id).limit(1)).first()
+                if remaining is None:
+                    conversation = session.get(ConversationRecord, conversation_id)
+                    if conversation is not None:
+                        session.delete(conversation)
+            if deleted:
+                self._event(session, "advice_deleted", {"advice_ids": deleted})
+        return deleted, blocked
+
     def update_advice(self, advice_id, changes, unless_cancelled=True, only_statuses=None):
         with self.db.session_scope() as session:
             # Acquire the write lock before reading to serialize cancel/completion.

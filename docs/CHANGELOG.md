@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] 波段交易机会（`TRADE_OPPORTUNITIES_ENABLED`，默认关闭；取代 `TRADE_DESK_REPORT_IDEAS`）：每轮定时报告后按趋势规则扫描自选与标普 500，强趋势经常规模型确认后推送做多/做空机会（入场、止损、目标、论点、失效条件及分标签的操作方式：买入 / 持有则卖出 / 融券做空 / 反向 ETF，高信心附看涨/看跌期权及 Trade Desk 期权方案对比）；交易时段内对自选与接近突破的股票做放量突破 20 日高低点提醒。
 - [新功能] 想法跟踪记录：每个交易机会（含被模型复核否决的候选）与突破提醒按提醒价格、止损/目标和 15 个交易日上限向前跟踪并与 SPY 对比，每周最后一个交易日推送“📒 想法跟踪记录”，Trade Desk 日志页显示汇总与最近记录，用于衡量模型复核是否有价值。
+- [新功能] Trade Desk：可删除单个请求或一键删除全部归档请求（需确认；运行中或已建监控计划的请求保留，日志条目保留），`DELETE /advice/{id}`、`DELETE /advice?scope=archive`。
 - [修复] Trade Desk：不在 NYSE Arca 延迟收盘名单内的 ETF（如 SOXS、TQQQ、SQQQ）期权此前被当作到期时间不明而全部丢弃，导致期权链为空；现按常规 16:00 ET 收盘处理并标注 `expiry_cutoff_assumed_1600_et`。无可比较合约时说明具体原因。
 - [改进] Trade Desk：合并“问问股票”与“机会”标签页（提问、结果与历史在同一页）；历史默认只显示当前请求，期权已到期、已过期（stale）、无结果或超过一周的请求移入“Archive”，数据保留用于跟踪与回测（`GET /advice?scope=archive`）。
 - [新功能] 日内交易回测（`scripts/backtest_day_trades.py`，说明见 `docs/strategy-backtest.md`）：在 5 分钟与小时 K 线上检验开盘区间突破、跳空顺势/回补、大幅波动跟随/反转、盘中突破提醒与日内动量，对照为同股票同方向同时刻的其他交易日随机入场，按交易日聚类计算显著性。

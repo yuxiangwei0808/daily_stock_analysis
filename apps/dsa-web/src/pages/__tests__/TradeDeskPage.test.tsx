@@ -26,6 +26,8 @@ const api = vi.hoisted(() => ({
   updatePreferences: vi.fn(),
   getEventsUrl: vi.fn(() => '/api/v1/trade-desk/events'),
   getTrackRecord: vi.fn(),
+  deleteAdvice: vi.fn(),
+  deleteArchivedAdvice: vi.fn(),
 }));
 
 vi.mock('../../api/tradeDesk', () => ({ tradeDeskApi: api }));
@@ -211,6 +213,31 @@ describe('TradeDeskPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Archive (1)' }));
     expect(await screen.findByText('options expired')).toBeInTheDocument();
     expect(api.listAdvice).toHaveBeenCalledWith('archive');
+  });
+
+  it('deletes one request after confirmation', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Delete me' }], counts: { active: 1, archive: 0 } });
+    api.deleteAdvice.mockResolvedValue({ deleted: [queuedJob.id] });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: `Delete ${queuedJob.request.ticker} request` }));
+    expect(api.deleteAdvice).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(api.deleteAdvice).toHaveBeenCalledWith(queuedJob.id));
+    await waitFor(() => expect(screen.queryByText('Delete me')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Current (0)' })).toBeInTheDocument();
+  });
+
+  it('deletes the whole archive and reports kept requests', async () => {
+    api.listAdvice.mockImplementation(async (scope?: string) => scope === 'archive'
+      ? { items: [{ ...queuedJob, id: 'old-1', status: 'completed', archived: 'expired' }, { ...queuedJob, id: 'old-2', status: 'completed', archived: 'old' }], counts: { active: 0, archive: 2 } }
+      : { items: [], counts: { active: 0, archive: 2 } });
+    api.deleteArchivedAdvice.mockResolvedValue({ deleted: ['old-1'], kept: { 'old-2': 'has_plan' } });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive (2)' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Delete all archived/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(await screen.findByText(/Deleted 1 archived requests; kept 1/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Archive (1)' })).toBeInTheDocument();
   });
 
   it('opens the merged ask tab for old ?view=ask links', async () => {

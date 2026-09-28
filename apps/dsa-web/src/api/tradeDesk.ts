@@ -181,6 +181,17 @@ export const tradeDeskApi = {
     return { items: (response.data?.items ?? []).map(adviceJobToCamelCase), counts: response.data?.counts } as TradeAdviceListResponse;
   },
 
+  async deleteAdvice(adviceId: string): Promise<{ deleted: string[] }> {
+    const response = await apiClient.delete<{ deleted: string[] }>(`${BASE_PATH}/advice/${encodeURIComponent(adviceId)}`);
+    return response.data;
+  },
+
+  /** Deletes every archived request; `kept` lists ids the server refused (running or linked to a plan). */
+  async deleteArchivedAdvice(): Promise<{ deleted: string[]; kept: Record<string, string> }> {
+    const response = await apiClient.delete<{ deleted: string[]; kept: Record<string, string> }>(`${BASE_PATH}/advice`, { params: { scope: 'archive' } });
+    return response.data;
+  },
+
   async getAdvice(adviceId: string): Promise<TradeAdviceJob> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/advice/${encodeURIComponent(adviceId)}`);
     return unwrapJob(response.data);

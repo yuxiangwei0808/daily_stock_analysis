@@ -135,6 +135,39 @@ def _advice_page(repo, limit, scope, batch=200):
     return {"items": selected[:limit], "counts": {"active": active, "archive": total - active}}
 
 
+_DELETE_REFUSALS = {"in_progress": "Cancel the running request before deleting it.",
+                    "has_plan": "A monitored plan was created from this request; archive the plan instead.",
+                    "not_found": "Advice not found"}
+
+
+@router.delete("/advice")
+async def delete_archived_advice(request: Request, scope: Literal["archive"] = "archive"):
+    """Delete every archived request (expired, stale, empty or week-old); current ones stay."""
+    return await invoke(_delete_archived, get_service(request).repo)
+
+
+def _delete_archived(repo, batch=200):
+    from src.services.trade_desk.service import archive_reason
+    now, ids, offset = utcnow(), [], 0
+    while True:
+        rows = repo.advice_list(batch, offset)
+        offset += len(rows)
+        ids.extend(item["id"] for item in rows if archive_reason(item, now))
+        if len(rows) < batch:
+            break
+    deleted, blocked = repo.delete_advice(ids) if ids else ([], {})
+    return {"deleted": deleted, "kept": blocked}
+
+
+@router.delete("/advice/{advice_id}")
+async def delete_advice(advice_id: str, request: Request):
+    deleted, blocked = await invoke(get_service(request).repo.delete_advice, [advice_id])
+    if not deleted:
+        reason = blocked.get(advice_id, "not_found")
+        raise HTTPException(404 if reason == "not_found" else 409, detail=_DELETE_REFUSALS[reason])
+    return {"deleted": deleted}
+
+
 @router.get("/advice/{advice_id}")
 async def advice_detail(advice_id: str, request: Request):
     job = await invoke(get_service(request).repo.advice, advice_id)

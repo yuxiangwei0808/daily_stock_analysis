@@ -60,7 +60,11 @@ The **Ask about a stock** tab holds the request form, the selected answer and th
 request history. The history shows current requests; **Archive** lists requests
 whose options have expired, that were marked stale, that found nothing (after
 their day) or that are over a week old. Nothing is deleted: archived requests stay
-in `trade_desk_advice` for the track record and backtests (`GET /advice?scope=archive`).
+in `trade_desk_advice` for the track record and backtests (`GET /advice?scope=archive`)
+until you delete them. The bin icon on a request, or **Delete all archived** in the
+archive, removes requests permanently after a confirmation; queued/running requests
+(cancel first) and requests a monitored plan was created from are kept. Journal
+entries stay as the log, plus an `advice_deleted` entry.
 When no contracts can be compared, the answer says why (no quotable options, or
 none passing the filters, with the provider's notes) instead of a generic message.
 
@@ -427,7 +431,10 @@ The API supports health, catalog, advice submission/status/cancellation, plans,
 paper fills, manual fills, positions, journal, outcomes, preferences and SSE events.
 `POST /advice` accepts `parent_advice_id` for a follow-up version. `GET /advice`
 takes `scope=active|archive|all` (default `active`), marks archived items with
-`archived` (`expired`, `stale`, `no_result`, `old`) and returns `counts`. `POST
+`archived` (`expired`, `stale`, `no_result`, `old`) and returns `counts`. `DELETE
+/advice/{id}` deletes one finished request (409 while queued/running or linked to a
+plan); `DELETE /advice?scope=archive` deletes every archived one and returns `deleted`
+and `kept` (id → reason). `POST
 /plans/{id}/reconcile` records reconciliation notes after actual fills are entered. `POST
 /plans/{id}/paper-settle` (`underlying_price`) settles expired paper option legs.
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.
