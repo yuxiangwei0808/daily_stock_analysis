@@ -1,5 +1,7 @@
 # DecisionSignal 决策信号专题
 
+> 本 fork 已移除 Web 的 `/decision-signals`（AI 建议）页面与其展示组件，旧链接跳转到报告页。信号数据、`/api/v1/decision-signals/*` API、告警联动和 Trade Desk 证据读取保持不变；Trade Desk 提问面板会显示所输入代码的最新报告结论（`GET /api/v1/decision-signals/latest/{code}`）。下文描述的 Web 页面仅适用于上游。
+
 本页收口 #1390 P7，说明 DSA 如何把个股分析、Agent、告警和组合风险中的 AI 建议沉淀为可查询、可反馈、可后验评估的 `DecisionSignal` 资产。它是报告之上的结构化索引，不替代 Markdown 报告、`operation_advice`、三态 `decision_type`、告警规则或真实交易系统。
 
 ## 能力边界

@@ -33,6 +33,9 @@ const api = vi.hoisted(() => ({
 
 vi.mock('../../api/tradeDesk', () => ({ tradeDeskApi: api }));
 
+const signals = vi.hoisted(() => ({ getLatest: vi.fn() }));
+vi.mock('../../api/decisionSignals', () => ({ decisionSignalsApi: signals }));
+
 vi.mock('recharts', () => {
   const Container = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   const Leaf = () => null;
@@ -98,6 +101,7 @@ function setDefaultResponses() {
   api.listAdvice.mockResolvedValue({ items: [] });
   api.getTrackRecord.mockResolvedValue({ windowDays: 90, groups: {}, recent: [] });
   api.getHoldings.mockResolvedValue({ enabled: false, view: null, rules: [] });
+  signals.getLatest.mockResolvedValue({ items: [] });
   api.getAdvice.mockResolvedValue(queuedJob);
   api.cancelAdvice.mockResolvedValue(cancelledJob);
   api.listPlans.mockResolvedValue({ items: [] });
@@ -307,6 +311,22 @@ describe('TradeDeskPage', () => {
     expect(screen.getByRole('tab', { name: /Ask about a stock|问问股票/ })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByLabelText(/Ticker|股票代码/)).toHaveValue('SOXS');
     expect(await screen.findByTestId('use-holdings')).toHaveTextContent('You hold 200 shares');
+  });
+
+  it('shows the latest report verdict for the typed ticker', async () => {
+    signals.getLatest.mockImplementation(async (ticker: string) => ticker === 'SOXS'
+      ? { items: [{ id: 1, stockCode: 'SOXS', action: 'reduce', score: 32, stopLoss: 31.2, targetPrice: null,
+        createdAt: '2026-09-29T13:45:00Z', reason: 'Semis rebounding; the inverse ETF loses its tailwind.' }] }
+      : { items: [] });
+    renderPage();
+    const ticker = await screen.findByLabelText(/Ticker|股票代码/);
+    fireEvent.change(ticker, { target: { value: 'soxs' } });
+    const verdict = await screen.findByTestId('report-verdict', {}, { timeout: 2000 });
+    expect(verdict).toHaveTextContent('Latest report: Reduce · score 32 · stop 31.20');
+    expect(verdict).toHaveTextContent('Semis rebounding');
+    expect(signals.getLatest).toHaveBeenCalledWith('SOXS', { market: 'us', limit: 1 });
+    fireEvent.change(ticker, { target: { value: 'AAPL' } });
+    await waitFor(() => expect(screen.queryByTestId('report-verdict')).not.toBeInTheDocument());
   });
 
   it('opens the merged ask tab for old ?view=ask links', async () => {

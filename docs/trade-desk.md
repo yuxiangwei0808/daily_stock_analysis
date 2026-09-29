@@ -59,7 +59,8 @@ phone; localhost links on another device will not reach this server.
 The **Ask about a stock** tab has three parts. The ask panel at the top folds away
 like a dropdown (it opens by itself when there is no history or when a link brings a
 ticker); its quick row is the ticker (suggestions: what you hold, then what you asked
-recently), your question (Ctrl/Cmd+Enter sends) and **Ask**, with data mode, direction
+recently), your question (Ctrl/Cmd+Enter sends) and **Ask**; under it, the ticker's latest active report
+verdict (action, score, stop/target, date and the reason; from the AI-signal store), with data mode, direction
 and horizon beside it and everything else under **More options**. Sending folds the
 panel so the answer is in view. **Your questions** lists your requests grouped by
 stock (newest group first, a filter once there are more than three); the answer to the

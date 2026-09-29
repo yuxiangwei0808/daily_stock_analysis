@@ -1,8 +1,9 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, CircleDollarSign, FileQuestion, Pause, Play, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, CircleDollarSign, FileQuestion, FileText, Pause, Play, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { decisionSignalsApi } from '../api/decisionSignals';
 import { tradeDeskApi } from '../api/tradeDesk';
 import { focusPayoffPoints } from '../utils/payoff';
 import { AppPage, Badge, Button, Card, ConfirmDialog, EmptyState, InlineAlert, Loading, PageHeader } from '../components/common';
@@ -31,6 +32,7 @@ import type {
   TradePosition,
   TradePreferences,
 } from '../types/tradeDesk';
+import type { DecisionSignalItem } from '../types/decisionSignals';
 
 type TradeDeskView = 'opportunities' | 'holdings' | 'positions' | 'journal';
 const ARCHIVE_REASONS: Record<string, string> = { expired: 'options expired', stale: 'quotes stale', no_result: 'no result', old: 'over a week old' };
@@ -132,6 +134,20 @@ const heldSummary = (view: HoldingsView | null | undefined, ticker: string): str
     ...view.stocks.filter((row) => row.ticker === symbol).map((row) => `${row.qty} shares${signedPct(row.pnlPct)}`),
     ...view.options.filter((row) => row.underlying === symbol && !row.expired).map((row) => `${row.label} ${row.expiry}${signedPct(row.pnlPct)}`),
   ].join('; ');
+};
+
+const VERDICT_LABELS: Record<string, string> = { buy: 'Buy', add: 'Add', hold: 'Hold', reduce: 'Reduce', sell: 'Sell', watch: 'Watch', avoid: 'Avoid', alert: 'Alert' };
+
+/** The latest report's verdict on a stock: "Watch · score 45 · stop 31.20 · target 38.00 · Sep 29". */
+const verdictSummary = (item: DecisionSignalItem): string => {
+  const created = item.createdAt ? new Date(item.createdAt) : null;
+  return [
+    VERDICT_LABELS[item.action] || item.action,
+    item.score != null ? `score ${Math.round(item.score)}` : '',
+    item.stopLoss ? `stop ${item.stopLoss.toFixed(2)}` : '',
+    item.targetPrice ? `target ${item.targetPrice.toFixed(2)}` : '',
+    created && !Number.isNaN(created.getTime()) ? created.toLocaleDateString([], { month: 'short', day: 'numeric' }) : '',
+  ].filter(Boolean).join(' · ');
 };
 
 function PositionUsed({ job }: { job: TradeAdviceJob }) {
@@ -255,6 +271,7 @@ function AdviceForm({
   isSubmitting,
   sourceReportId,
   heldNote,
+  reportVerdict,
   open,
   onToggle,
   tickerOptions,
@@ -269,6 +286,7 @@ function AdviceForm({
   isSubmitting: boolean;
   sourceReportId?: number;
   heldNote?: string;
+  reportVerdict?: DecisionSignalItem | null;
   open: boolean;
   onToggle: () => void;
   tickerOptions: string[];
@@ -306,6 +324,8 @@ function AdviceForm({
           <label><span className={caption}>{t('tradeDesk.ticker')}</span><input aria-label={t('tradeDesk.ticker')} list="trade-desk-tickers" value={form.ticker} onChange={(event) => update('ticker', event.target.value.toUpperCase())} placeholder={t('tradeDesk.tickerPlaceholder')} className="input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 font-mono text-sm text-foreground" /><datalist id="trade-desk-tickers">{tickerOptions.map((ticker) => <option key={ticker} value={ticker} />)}</datalist></label>
           <label><span className={caption}>{t('tradeDesk.message')}</span><textarea aria-label={t('tradeDesk.message')} value={form.message} onChange={(event) => update('message', event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !disabled && !liveUnavailable && form.ticker.trim()) onSubmit(); }} placeholder={t('tradeDesk.questionPlaceholder')} rows={2} className="input-surface input-focus-glow w-full rounded-xl border px-4 py-2.5 text-sm text-foreground" /></label>
         </div>
+
+        {reportVerdict ? <p className="flex items-start gap-2 text-xs text-secondary-text" data-testid="report-verdict" title={reportVerdict.reason || undefined}><FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan" /><span><strong className="text-foreground">Latest report:</strong> {verdictSummary(reportVerdict)}{reportVerdict.reason ? <span className="block text-muted-text">{reportVerdict.reason.length > 160 ? `${reportVerdict.reason.slice(0, 157)}…` : reportVerdict.reason}</span> : null}</span></p> : null}
 
         {heldNote && form.dataMode === 'live' ? <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-cyan/25 bg-cyan/5 p-3 text-sm" data-testid="use-holdings"><input type="checkbox" className="mt-1" checked={form.useHoldings} onChange={(event) => update('useHoldings', event.target.checked)} /><span><strong className="text-foreground">Use my position</strong><span className="block text-secondary-text">You hold {heldNote}. The answer weighs holding, closing, hedging or rolling it; owned shares count for covered calls.</span></span></label> : null}
 
@@ -789,6 +809,20 @@ const TradeDeskPage: React.FC = () => {
 
   const selectedAdvice = useMemo(() => advice.find((item) => item.id === selectedAdviceId) || archive?.find((item) => item.id === selectedAdviceId) || null, [advice, archive, selectedAdviceId]);
   const heldNote = heldSummary(heldView, form.ticker);
+  // The newest active report verdict for the typed ticker (US), shown in the ask panel.
+  const [reportVerdict, setReportVerdict] = useState<{ ticker: string; item: DecisionSignalItem | null } | null>(null);
+  const verdictTicker = form.ticker.trim().toUpperCase();
+  useEffect(() => {
+    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(verdictTicker)) return undefined;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      decisionSignalsApi.getLatest(verdictTicker, { market: 'us', limit: 1 })
+        .then((result) => { if (active) setReportVerdict({ ticker: verdictTicker, item: result.items[0] ?? null }); })
+        .catch(() => { if (active) setReportVerdict({ ticker: verdictTicker, item: null }); });
+    }, 400);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [verdictTicker]);
+  const currentVerdict = reportVerdict?.ticker === verdictTicker ? reportVerdict.item : null;
   const heldTickers = useMemo(() => new Set([...(heldView?.stocks || []).map((row) => row.ticker),
     ...(heldView?.options || []).filter((row) => !row.expired).map((row) => row.underlying)]), [heldView]);
   // Ticker suggestions: what you hold, then what you asked about recently.
@@ -999,7 +1033,7 @@ const TradeDeskPage: React.FC = () => {
       </div> : null}
     </div></Card>;
   };
-  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
+  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
   const manualFillContracts = manualFillPosition ? (() => {
     const plan = plans.find((item) => item.id === manualFillPosition.planId) || manualFillPosition.plan;
     const candidateContracts = plan?.candidate.legs.map((leg) => leg.contractId) || [];

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -40,8 +40,12 @@ vi.mock('./pages/ChatPage', () => ({
   },
 }));
 
-vi.mock('./pages/DecisionSignalsPage', () => ({
-  default: () => <div data-testid="decision-signals-page">Decision signals</div>,
+vi.mock('./pages/ReportsPage', () => ({
+  default: () => <div data-testid="reports-page">Reports</div>,
+}));
+
+vi.mock('./pages/TradeDeskPage', () => ({
+  default: () => <div data-testid="trade-desk-page">Trade Desk</div>,
 }));
 
 vi.mock('./pages/BacktestPage', () => ({
@@ -138,14 +142,15 @@ describe('App routing behavior', () => {
     expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
   });
 
-  it('routes /decision-signals to the AI signals page after auth is ready', async () => {
+  it('redirects the removed /decision-signals and /portfolio pages', async () => {
     window.history.pushState({}, '', '/decision-signals');
-
+    const { unmount } = render(<App />);
+    await waitFor(() => expect(window.location.pathname).toBe('/reports'));
+    unmount();
+    window.history.pushState({}, '', '/portfolio');
     render(<App />);
-
-    expect(await screen.findByTestId('decision-signals-page')).toBeInTheDocument();
-    expect(setCurrentRoute).toHaveBeenCalledWith('/decision-signals');
-    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe('/trade-desk'));
+    expect(window.location.search).toBe('?view=holdings');
   });
 
   it('redirects authenticated login visits back to the home page', async () => {
