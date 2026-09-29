@@ -44,7 +44,8 @@
 - **模型分层与第二意见**：常规任务与用户请求使用不同模型，用户请求附带其他模型的独立意见（`TARGETED_GENERATION_BACKEND`、`SECOND_OPINION_BACKENDS`；Codex / Claude Code CLI 可按层设置模型与推理强度）。
 - **免费新闻源**：Google News RSS、Yahoo Finance、Finnhub（`FREE_NEWS_SOURCES`）。
 - **首页与推送**：自选按 moomoo 分组并显示实时行情；Discord 消息分组清晰、按段落分片，持仓相关内容只显示百分比；可设置大盘复盘只在收盘后推送（`MARKET_REVIEW_TIMES`）、午间简报只列出结论变化的股票（`BRIEF_CHANGES_ONLY_TIMES`）。
-- **回测与跟踪**：交易计划回测（`scripts/backtest_trade_plans.py`，见 [docs/strategy-backtest.md](docs/strategy-backtest.md)）；每个交易想法与突破提醒向前跟踪并每周汇报（含被模型否决的候选，用于检验模型复核的价值）。
+- **NX 通道（你的 moomoo 指标）**：美股个股报告的数据透视中列出价格相对 NX 快通道（EMA 最高/最低价 26）与慢通道（89）的位置、通道边沿与当日位置变化，模型只将其作为图表背景与止损参考位，不据此改变评分（回测无独立优势）。
+- **回测与跟踪**：交易计划与 NX/CD 指标回测（`scripts/backtest_trade_plans.py`、`scripts/backtest_indicators.py`，对照为同日随机股票，见 [docs/strategy-backtest.md](docs/strategy-backtest.md)）；每个交易想法与突破提醒向前跟踪并每周汇报（含被模型否决的候选，用于检验模型复核的价值）。
 - **稳定性**：服务重启打断的定时运行会自动续跑；Discord 推送去重、失败只补发缺失分片。
 
 **最小配置示例**（完整说明见 [.env.example](.env.example)、[docs/trade-desk.md](docs/trade-desk.md) 与 [docs/LLM_CONFIG_GUIDE.md](docs/LLM_CONFIG_GUIDE.md)）：

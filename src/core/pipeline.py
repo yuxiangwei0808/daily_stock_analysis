@@ -659,6 +659,15 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
 
+            # The user's NX tunnel (moomoo indicator): context and reference levels only.
+            nx_context = None
+            try:
+                if get_market_for_stock(normalize_stock_code(code)) == "us":
+                    from src.services.nx_tunnel import for_ticker
+                    nx_context = for_ticker(normalize_stock_code(code))
+            except Exception as e:
+                logger.info(f"{stock_name}({code}) NX 通道不可用: {type(e).__name__}")
+
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
                 self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路")
@@ -677,6 +686,7 @@ class StockAnalysisPipeline:
                     portfolio_context=portfolio_context,
                     market_structure_context=market_structure_context,
                     analysis_target=analysis_target,
+                    nx_context=nx_context,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -796,6 +806,8 @@ class StockAnalysisPipeline:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
             if isinstance(market_structure_context, dict):
                 enhanced_context["market_structure_context"] = market_structure_context
+            if nx_context:
+                enhanced_context["nx_tunnel"] = nx_context
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
@@ -902,6 +914,8 @@ class StockAnalysisPipeline:
             # Step 7.7: price_position fallback
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                from src.services.nx_tunnel import attach as attach_nx
+                attach_nx(result, nx_context)
                 action_source_advice = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
                 adjustments = apply_phase_decision_guardrails(
@@ -1515,6 +1529,7 @@ class StockAnalysisPipeline:
         portfolio_context: Optional[Dict[str, Any]] = None,
         market_structure_context: Optional[Dict[str, Any]] = None,
         analysis_target: Optional[AnalysisTarget] = None,
+        nx_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1569,6 +1584,8 @@ class StockAnalysisPipeline:
                 initial_context["chip_distribution"] = self._safe_to_dict(chip_data)
             if trend_result:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
+            if nx_context:
+                initial_context["nx_tunnel"] = nx_context
 
             # Agent path: inject social sentiment as news_context so both
             # executor (_build_user_message) and orchestrator (ctx.set_data)
@@ -1750,6 +1767,8 @@ class StockAnalysisPipeline:
                 )
                 action_chain_valid = pipeline_start_action is not None
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                from src.services.nx_tunnel import attach as attach_nx
+                attach_nx(result, nx_context)
                 realtime_data = initial_context.get("realtime_quote", {})
                 if isinstance(realtime_data, dict):
                     AnalysisResult.set_realtime_quote(result, realtime_data)

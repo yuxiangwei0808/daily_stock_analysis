@@ -4514,6 +4514,11 @@ Unavailable changes must not be inferred. Extended-hours prices are not regular 
 {chr(10).join('- ' + note for note in consistency_notes)}
 """
         
+        # The user's NX tunnel: chart context and reference levels, never a scoring input.
+        if context.get('nx_tunnel'):
+            from src.services.nx_tunnel import prompt_section
+            prompt += prompt_section(context['nx_tunnel'])
+
         # 添加昨日对比数据
         if 'yesterday' in context:
             volume_change = context.get('volume_change_ratio', 'N/A')
