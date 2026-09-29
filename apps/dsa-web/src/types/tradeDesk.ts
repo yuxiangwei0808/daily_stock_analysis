@@ -374,11 +374,21 @@ export interface TrackRecordNxGroup {
   avgReturnPct?: number | null;
 }
 
+export interface TrackRecordVerdictCell {
+  closed: number;
+  open: number;
+  avg5dPct?: number | null;
+  avg10dPct?: number | null;
+  avg10dVsSpyPct?: number | null;
+}
+
 export interface TrackRecord {
   windowDays: number;
   groups: Record<string, TrackRecordGroup>;
   /** Closed ideas and breakouts split by the NX slow tunnel at the signal: agree / neutral / against. */
   byNx?: Record<string, TrackRecordNxGroup>;
+  /** The stock reports' calls (bullish / watch / bearish) by the NX slow tunnel at the report. */
+  verdicts?: Record<string, { label: string; byNx: Record<string, TrackRecordVerdictCell> }>;
   recent: Array<{ ticker: string; direction: string; verdict: string; signalDay: string; status: string;
     reason?: string | null; returnPct?: number | null; kind?: string; nxAlignment?: string | null }>;
 }

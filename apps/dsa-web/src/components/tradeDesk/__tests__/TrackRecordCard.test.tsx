@@ -27,6 +27,23 @@ describe('TrackRecordCard', () => {
     expect(screen.getByText(/NX against/, { selector: 'span' })).toBeInTheDocument();
   });
 
+  it('shows report calls by NX state', async () => {
+    api.getTrackRecord.mockResolvedValue({
+      windowDays: 90, groups: {}, recent: [],
+      verdicts: {
+        bullish: { label: 'Bullish calls', byNx: { all: { closed: 0, open: 0 } } },
+        watch: { label: 'Watch', byNx: { above: { closed: 4, open: 0, avg10dVsSpyPct: 1.5 }, below: { closed: 3, open: 0, avg10dVsSpyPct: -2 }, all: { closed: 7, open: 5 } } },
+      },
+    });
+    render(<TrackRecordCard />);
+    const table = await screen.findByTestId('track-record-verdicts');
+    expect(table).toHaveTextContent('Watch');
+    expect(table).toHaveTextContent('+1.50%');
+    expect(table).toHaveTextContent('-2.00%');
+    expect(table).not.toHaveTextContent('Bullish calls');
+    expect(table).toHaveTextContent('few have closed so far');
+  });
+
   it('hides the NX split when no record has an NX state yet', async () => {
     api.getTrackRecord.mockResolvedValue({ windowDays: 90, groups: {}, byNx: { agree: { label: 'NX agrees', closed: 0, open: 0 } }, recent: [] });
     render(<TrackRecordCard />);

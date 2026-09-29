@@ -330,6 +330,14 @@ opposite is *against*, inside it is *neutral*. The weekly summary and the Journa
 card split closed ideas and breakouts by alignment; with under 20 closed records
 they say it is too early to judge.
 
+The stock reports' own calls are tracked the same way (`kind: verdict`): one per US
+stock and day (the first report of the day, at its price), grouped as bullish
+(buy/add/hold), watch, or bearish (reduce/sell/avoid). They settle on the close 5 and
+10 sessions later against SPY and are split by the NX slow tunnel at the report
+(above / inside / below). The after-close job reads the last 45 days of report
+history, so reports made before this existed are included. The weekly summary adds
+"Report calls, 10 sessions later vs SPY" and the Journal card a table of the same.
+
 ## Broker holdings and your alerts
 
 With `TRADE_DESK_BROKER_ACCOUNT` set (a real moomoo account id or its last

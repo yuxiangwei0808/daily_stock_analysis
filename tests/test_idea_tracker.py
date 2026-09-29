@@ -176,3 +176,66 @@ def test_nx_download_failure_does_not_stop_settling(repo):
 
     it.settle_open(repo, date(2026, 9, 30), bars=lambda tickers: {"SPY": [], "AAA": []}, nx_bars=broken)
     assert "nx" not in repo.tracked_ideas()[0]
+
+
+def _report(code, action, price, created, report_id=1, report_type="full"):
+    import json
+    raw = {"action": action, "current_price": price + 0.5,
+           "dashboard": {"data_perspective": {"price_position": {"current_price": price}}}}
+    return SimpleNamespace(id=report_id, code=code, report_type=report_type, raw_result=json.dumps(raw),
+                           created_at=created, sentiment_score=40)
+
+
+def test_verdict_records_group_calls_and_keep_the_first_report_of_a_day(repo):
+    day = datetime(2026, 9, 21, 9, 45)
+    made = it.verdict_record(_report("NVDA", "reduce", 180.0, day))
+    assert made[0] == "verdict:2026-09-21:NVDA"
+    assert made[1] | {} == {**made[1], "group": "bearish", "direction": "short", "entry": 180.0, "verdict": "reduce"}
+    assert it.verdict_record(_report("NVDA", "watch", 180.0, day))[1]["direction"] == "none"
+    assert it.verdict_record(_report("600519", "buy", 1500.0, day)) is None  # not a US ticker
+    assert it.verdict_record(_report("MARKET", "watch", 1.0, day, report_type="market_review")) is None
+    assert it.verdict_record(_report("NVDA", "unknown", 180.0, day)) is None
+    reports = [_report("NVDA", "watch", 182.0, day.replace(hour=16), 3), _report("NVDA", "reduce", 180.0, day, 1),
+               _report("NVDA", "watch", 181.0, day.replace(hour=12), 2)]
+    assert it.sync_verdicts(repo, reports) == 1
+    (record,) = repo.tracked_ideas()
+    assert record["verdict"] == "reduce" and record["report_id"] == 1  # 09:45 wins
+    assert it.sync_verdicts(repo, reports) == 0
+
+
+def test_verdicts_settle_on_fixed_horizons_and_split_by_nx(repo):
+    long_history = _rising("2025-06-01", 400)
+    signal_day = long_history[-1]["date"]
+    price = long_history[-2]["close"]
+    created = datetime.fromisoformat(signal_day + "T09:45:00")
+    it.sync_verdicts(repo, [_report("AAA", "reduce", price, created, 1), _report("BBB", "watch", price, created, 2)])
+    later = _bars(signal_day, [(price, price * 1.01, price * 0.99, price * (1 + 0.01 * (i + 1))) for i in range(12)])
+    spy = _bars(signal_day, [(100, 101, 99, 100 + 0.5 * (i + 1)) for i in range(12)])
+    spy = [{"date": signal_day, "open": 100, "high": 100, "low": 100, "close": 100.0, "volume": 1}] + spy
+    daily = {"SPY": spy, "AAA": later, "BBB": later}
+    part = it.settle_verdict({"signal_day": signal_day, "entry": price}, later[:6], spy, date.fromisoformat(later[5]["date"]))
+    assert "status" not in part and part["return_5d_pct"] == pytest.approx(5.0) and "return_10d_pct" not in part
+    it.settle_open(repo, date.fromisoformat(later[-1]["date"]), bars=lambda tickers: daily,
+                   nx_bars=lambda tickers: {t: long_history for t in tickers})
+    records = {r["ticker"]: r for r in repo.tracked_ideas()}
+    aaa, bbb = records["AAA"], records["BBB"]
+    assert aaa["status"] == "closed" and aaa["return_10d_pct"] == pytest.approx(10.0) and aaa["spy_10d_pct"] == pytest.approx(5.0)
+    assert aaa["nx"]["slow"] == "above" and aaa["nx"]["alignment"] == "against"  # a bearish call above the tunnel
+    assert bbb["nx"]["alignment"] is None  # watch takes no side
+    stats = it.track_record(repo, now=datetime.now(timezone.utc))
+    assert stats["recent"] == [] and not any(g["closed"] for g in stats["groups"].values())  # kept apart from ideas
+    cell = stats["verdicts"]["bearish"]["by_nx"]["above"]
+    assert cell["closed"] == 1 and cell["avg_10d_vs_spy_pct"] == pytest.approx(5.0)
+    assert stats["verdicts"]["watch"]["by_nx"]["all"]["closed"] == 1
+    text = it.format_track_record(stats)
+    assert "Report calls, 10 sessions later vs SPY" in text and "• Bearish calls: above 1 · +5.00%" in text
+
+
+def test_tracker_job_reads_report_calls_before_settling(repo, monkeypatch):
+    created = datetime(2026, 9, 29, 9, 45)
+    monkeypatch.setattr(it, "_trading_day", lambda day: True)
+    job = it.TrackerJob(repo, lambda *a: None, bars=lambda tickers: {"SPY": [], "NVDA": []},
+                        nx_bars=lambda tickers: {}, reports=lambda: [_report("NVDA", "reduce", 180.0, created)])
+    job._run(date(2026, 9, 29), datetime(2026, 9, 29, 20, 45, tzinfo=timezone.utc))
+    job.stop()
+    assert [r["kind"] for r in repo.tracked_ideas()] == ["verdict"]

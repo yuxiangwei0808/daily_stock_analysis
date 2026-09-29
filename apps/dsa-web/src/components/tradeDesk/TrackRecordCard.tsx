@@ -5,6 +5,8 @@ import { Card } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { TrackRecord } from '../../types/tradeDesk';
 
+const NX_STATES = ['above', 'inside', 'below'] as const;
+
 function pct(value?: number | null, signed = true): string {
   if (value == null || !Number.isFinite(value)) return '–';
   return signed ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : `${value.toFixed(0)}%`;
@@ -27,6 +29,8 @@ export function TrackRecordCard() {
   const groups = record ? Object.entries(record.groups).filter(([, group]) => group.closed || group.open) : [];
   const nxGroups = record?.byNx ? Object.entries(record.byNx).filter(([, group]) => group.closed || group.open) : [];
   const nxClosed = nxGroups.reduce((sum, [, group]) => sum + group.closed, 0);
+  const verdictRows = record?.verdicts ? Object.entries(record.verdicts).filter(([, group]) => (group.byNx.all?.closed ?? 0) + (group.byNx.all?.open ?? 0) > 0) : [];
+  const verdictClosed = verdictRows.reduce((sum, [, group]) => sum + (group.byNx.all?.closed ?? 0), 0);
   return (
     <Card variant="bordered" padding="md">
       <div className="flex items-center gap-2">
@@ -77,6 +81,31 @@ export function TrackRecordCard() {
             ))}
           </div>
           {nxClosed < 20 ? <p className="mt-1 text-xs text-muted-text">Too few closed ideas to judge NX yet; this fills in over the coming weeks.</p> : null}
+        </div>
+      ) : null}
+      {verdictRows.length ? (
+        <div className="mt-4" data-testid="track-record-verdicts">
+          <p className="text-xs font-semibold uppercase tracking-wide text-secondary-text">Report calls by your NX slow tunnel · 10 sessions later vs SPY</p>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[480px] text-xs">
+              <thead className="text-muted-text">
+                <tr><th className="py-1 text-left font-normal">Call</th>{NX_STATES.map((state) => <th key={state} className="text-right font-normal">{state === 'above' ? 'Above NX' : state === 'inside' ? 'Inside NX' : 'Below NX'}</th>)}<th className="text-right font-normal">Open</th></tr>
+              </thead>
+              <tbody className="divide-y divide-border/40">
+                {verdictRows.map(([key, group]) => (
+                  <tr key={key}>
+                    <td className="py-1.5 text-foreground">{group.label}</td>
+                    {NX_STATES.map((state) => {
+                      const cell = group.byNx[state];
+                      return <td key={state} className="text-right">{cell?.closed ? <><span className={(cell.avg10dVsSpyPct ?? 0) >= 0 ? 'text-success' : 'text-danger'}>{pct(cell.avg10dVsSpyPct)}</span> <span className="text-muted-text">({cell.closed})</span></> : '–'}</td>;
+                    })}
+                    <td className="text-right text-secondary-text">{group.byNx.all?.open ?? 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {verdictClosed < 60 ? <p className="mt-1 text-xs text-muted-text">Calls settle 10 sessions after the report; few have closed so far.</p> : null}
         </div>
       ) : null}
       {record?.recent?.length ? (
