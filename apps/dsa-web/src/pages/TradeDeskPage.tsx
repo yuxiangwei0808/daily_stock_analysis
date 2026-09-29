@@ -588,7 +588,7 @@ function QuestionList({ jobs, selectedId, heldTickers, busyId, onSelect, onCance
                 <span className="text-xs text-secondary-text">{items.length}</span>
                 {heldTickers.has(ticker) ? <Badge variant="info">{t('tradeDesk.held')}</Badge> : null}
               </span>
-              <span className="flex shrink-0 items-center gap-2 text-xs text-secondary-text">{shortDate(latest.createdAt)}<Badge variant={statusVariant(latest.status)}>{statusLabel(latest.status)}</Badge></span>
+              <Badge variant={statusVariant(latest.status)}>{statusLabel(latest.status)}</Badge>
             </button>
             {open ? <ul className="space-y-1 border-t border-border/40 p-1.5">
               {items.map((job) => {
@@ -958,8 +958,8 @@ const TradeDeskPage: React.FC = () => {
   const listedAdvice = adviceScope === 'archive' ? archive || [] : advice;
   const renderQuestions = () => <Card variant="bordered" padding="sm" className="lg:sticky lg:top-4">
     <div className="mb-2 flex items-center justify-between gap-2 px-1">
-      <h2 className="text-sm font-semibold text-foreground">{t('tradeDesk.yourQuestions')}</h2>
-      <div className="flex gap-1 text-xs" role="group" aria-label="Question history">{(['active', 'archive'] as const).map((scope) => <button key={scope} type="button" aria-pressed={adviceScope === scope} onClick={() => void showScope(scope)} className={`rounded-lg px-2 py-1 ${adviceScope === scope ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{scope === 'active' ? 'Current' : 'Archive'} ({scope === 'active' ? adviceCounts?.active ?? advice.length : adviceCounts?.archive ?? archive?.length ?? 0})</button>)}</div>
+      <h2 className="whitespace-nowrap text-sm font-semibold text-foreground">{t('tradeDesk.yourQuestions')}</h2>
+      <div className="flex shrink-0 gap-1 whitespace-nowrap text-xs" role="group" aria-label="Question history">{(['active', 'archive'] as const).map((scope) => <button key={scope} type="button" aria-pressed={adviceScope === scope} onClick={() => void showScope(scope)} className={`rounded-lg px-2 py-1 ${adviceScope === scope ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{scope === 'active' ? 'Current' : 'Archive'} ({scope === 'active' ? adviceCounts?.active ?? advice.length : adviceCounts?.archive ?? archive?.length ?? 0})</button>)}</div>
     </div>
     {adviceScope === 'archive' ? <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1"><p className="text-xs text-secondary-text">Expired, stale, empty or week-old questions, kept until you delete them.</p>{archive?.length ? <Button size="xsm" variant="ghost" onClick={() => setPendingDelete({ archive: adviceCounts?.archive ?? archive.length })}><Trash2 className="h-3.5 w-3.5" />Delete all archived</Button> : null}</div> : null}
     {listedAdvice.length
