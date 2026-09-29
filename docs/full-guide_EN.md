@@ -1684,6 +1684,8 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 
 ## Portfolio Web Notes
 
+> This fork removed the manual `/portfolio` page from the Web app (sidebar entry, page, and the portfolio holdings/account scopes in the alert form); old links redirect to Trade Desk → Holdings, which syncs the moomoo account read-only. The backend `/api/v1/portfolio/*` API, its tables, `--portfolio futu` and the agent's position tool are unchanged. The notes below describe the upstream page.
+
 ### Portfolio account archive on `/portfolio`
 
 - The `/portfolio` account toolbar can delete a selected single account through the existing `DELETE /api/v1/portfolio/accounts/{account_id}` endpoint.

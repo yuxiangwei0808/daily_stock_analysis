@@ -202,36 +202,15 @@ describe('AlertRuleForm', () => {
     });
   });
 
-  it('loads accounts and submits portfolio stop-loss mode', async () => {
-    render(<AlertRuleForm onSubmit={onSubmit} />);
-
-    fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'portfolio_account' } });
-    await waitFor(() => expect(getAccounts).toHaveBeenCalledWith(false));
-    expect(screen.queryByText('价格突破')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('账户'), { target: { value: '9' } });
-    fireEvent.change(screen.getByLabelText('止损模式'), { target: { value: 'breach' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
-
-    await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-        targetScope: 'portfolio_account',
-        target: '9',
-        alertType: 'portfolio_stop_loss',
-        parameters: { mode: 'breach' },
-      }));
-    });
-  });
-
-  it('renders portfolio alert type options in English UI mode', async () => {
+  it('no longer offers portfolio scopes (the manual portfolio book was removed)', () => {
+    const { unmount } = render(<AlertRuleForm onSubmit={onSubmit} />);
+    const zhValues = Array.from((screen.getByLabelText('目标范围') as HTMLSelectElement).options).map((option) => option.value);
+    expect(zhValues).toEqual(expect.arrayContaining(['single_symbol', 'watchlist', 'market']));
+    expect(zhValues.some((value) => value.startsWith('portfolio_'))).toBe(false);
+    unmount();
     renderEnglishForm();
-
-    fireEvent.change(screen.getByLabelText('Target scope'), { target: { value: 'portfolio_account' } });
-
-    await waitFor(() => expect(getAccounts).toHaveBeenCalledWith(false));
-    expect(screen.getByRole('option', { name: 'Portfolio drawdown' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Portfolio stop loss' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Info' })).toBeInTheDocument();
-    expect(screen.queryByText('组合回撤')).not.toBeInTheDocument();
+    const enValues = Array.from((screen.getByLabelText('Target scope') as HTMLSelectElement).options).map((option) => option.value);
+    expect(enValues.some((value) => value.startsWith('portfolio_'))).toBe(false);
   });
 
   it('shows JP/KR options for market region in Chinese UI mode', () => {
@@ -297,15 +276,6 @@ describe('AlertRuleForm', () => {
         parameters: { minDrop: 12 },
       }));
     });
-  });
-
-  it('keeps all account option when account loading fails', async () => {
-    getAccounts.mockRejectedValueOnce(new Error('boom'));
-    render(<AlertRuleForm onSubmit={onSubmit} />);
-
-    fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'portfolio_holdings' } });
-    expect(await screen.findByRole('alert')).toHaveTextContent('boom');
-    expect(screen.getByLabelText('账户')).toHaveValue('all');
   });
 
   it('keeps form values when submit reports failure', async () => {

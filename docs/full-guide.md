@@ -1913,6 +1913,8 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 
 ## 持仓管理说明
 
+> 本 fork 已从 Web 移除 `/portfolio` 手工持仓页（侧栏入口、页面与告警表单中的“持仓标的 / 持仓账户”范围），旧链接会跳转到 Trade Desk → 券商持仓（自动只读同步 moomoo 账户）。后端 `/api/v1/portfolio/*`、数据表、`--portfolio futu` 与 Agent 持仓工具保持不变。以下内容描述上游页面，仅供参考。
+
 ### `/portfolio` 页面可做什么
 
 - 查看全量持仓或切换到单个账户视角。

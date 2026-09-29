@@ -482,7 +482,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           <Select
             label={text.targetScope}
             value={targetScope}
-            options={language === 'zh' ? TARGET_SCOPE_OPTIONS : ALERT_TARGET_SCOPE_OPTIONS[language]}
+            options={(language === 'zh' ? TARGET_SCOPE_OPTIONS : ALERT_TARGET_SCOPE_OPTIONS[language]).filter((option) => !isPortfolioScope(option.value as AlertTargetScope))}
             disabled={isSubmitting}
             onChange={handleScopeChange}
           />
