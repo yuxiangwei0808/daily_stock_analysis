@@ -73,3 +73,15 @@ def test_random_walks_show_no_edge_beyond_the_known_fill_bias():
     stats = bt.summarize([t for t in trades if t.plan == "swing_trend"])
     assert stats["trades"] > 300
     assert -0.6 < stats["avg_return_pct"] < 0.1  # costs and stop-first fills only; a big profit means look-ahead
+
+
+def test_same_date_twins_remove_the_same_ticker_bias_on_random_walks():
+    walks = bt.random_walk_bars(80, 800, seed=5)
+    trades = bt.run_plans(walks, member=lambda ticker, day: True)
+    longs = [t for t in trades if t.plan == "swing_trend" and t.direction == "long"]
+    dated = bt.date_baseline(longs, walks, member=lambda ticker, day: True)
+    assert dated and all(t.plan == "date:swing_trend" and t.direction == "long" for t in dated)
+    by_day = {t.signal_date for t in longs}
+    assert all(t.signal_date in by_day for t in dated)
+    mean = lambda items: sum(t.return_pct for t in items) / len(items)  # noqa: E731
+    assert abs(mean(longs) - mean(dated)) < 0.5

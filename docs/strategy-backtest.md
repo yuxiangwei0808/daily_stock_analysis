@@ -25,12 +25,18 @@ ATR, target 3 ATR, exit at the close after 15 sessions — and pays 5 bps per si
 
 ## How to read it
 
-- **Random twin**: each trade is re-entered on random days of the same ticker,
-  year and direction with the same exits. A plan has an edge only if it beats
-  its twin; the market's drift and the fill rules affect both alike.
-- **Random-walk control**: the plans on synthetic prices with no edge. It loses
-  about −0.25% per trade — 0.1% costs plus the conservative "stop first when a
-  day touches both" fill. A clear profit here would reveal look-ahead.
+- **Same-date twin** (the control since 2026-09-29): each trade is re-entered on
+  the same signal date in three other member stocks, same direction and exits
+  (an event-study control). A plan has an edge only if it beats these twins.
+- **Same-ticker twin** (used until 2026-09-29, still printed): random days of the
+  same stock, year and direction. It is biased: signals select on the stock's own
+  path (a dip-buy fires in a year that fell, a trend-long in a year that rose), and
+  random days of that year inherit it. On random walks it shows fake edges of
+  ±0.3–2.7% with t up to 9, so its verdicts are withdrawn.
+- **Random-walk control**: the plans and their twins on synthetic prices with no
+  edge. Plans should match their same-date twins; they do within about ±0.3%
+  (short rules and ATR exits keep a residual of up to −0.5%), which is the
+  method's noise floor.
 - **Periods**: results before and after `--split` are reported separately; a
   finding that holds in only one is not a finding.
 - **Universe**: S&P 500 membership is rebuilt point-in-time from Wikipedia's
@@ -43,20 +49,52 @@ ATR, target 3 ATR, exit at the close after 15 sessions — and pays 5 bps per si
 - **Not tested**: the model review of trade ideas (it cannot be replayed without
   look-ahead). Its value can only be measured going forward.
 
-## Findings (run of 2026-09-26, 557 of 613 S&P names, 53 of 91 removed names with data)
+## Findings (rerun 2026-09-29 with same-date twins; 557 of 613 S&P names)
 
-- Long trend and breakout entries underperform their random twins by about
-  0.5% per trade in both periods (e.g. S&P `swing_trend` long +0.07% vs +0.64%
-  after 2024); ETFs are close to their twins.
-- Short trend and breakdown entries are clearly harmful: 0.5–1.6% per trade
-  worse than random shorts in every period and universe (t between −3 and −15).
-- ATM calls/puts and debit spreads on the same trades average −6% to −14% of
-  premium with a median near −40%.
-- `pullback_long` shows no edge. `fade_short` beats its twin by ~0.8% per trade in
-  both periods, both universes and both fill rules (short-term reversal), but
-  its equal-risk portfolio still drew down 45% in 2022 because signals cluster
-  in selloffs, survivorship flatters it, and it was defined after seeing the
-  short side lose — a hypothesis for forward tracking, not a strategy.
+Rule average vs same-date twins, S&P 500, 2021-10 → 2026-09 (both periods agree
+unless noted):
+
+| Rule | Rule avg | Twin avg | Difference |
+|---|---|---|---|
+| `swing_trend` long | +0.02% | +0.10% | −0.08% |
+| `swing_trend` short | −0.96% | −0.76% | −0.20% |
+| `breakout` long / short | +0.14% / −0.84% | +0.19% / −0.74% | −0.05% / −0.10% |
+| `pullback_long` | −0.07% | −0.08% | 0.00% |
+| `fade_short` (a long after drops) | +0.61% | +0.40% | +0.21% (+0.21% in each period) |
+
+- None of the rules picks better or worse stocks than random ones on the same
+  day, within the ±0.3% noise floor. Shorts lose because shorting lost money in
+  this period (same-date random shorts lost −0.76% per trade too), not because the
+  rule picks bad shorts.
+- The earlier verdicts (longs 0.5% worse than random, shorts 0.5–1.6% worse,
+  `fade_short` +0.8%) came from the biased same-ticker twin and are withdrawn.
+- ATM calls/puts and debit spreads on the trend trades average −6% to −14% of
+  premium with a median near −40% (absolute results, unaffected by the baseline).
+- `fade_short`'s +0.21% is consistent but small, defined after an earlier look,
+  and flattered by survivorship; forward tracking decides.
+
+## Your moomoo indicators NX and CD (`scripts/backtest_indicators.py`)
+
+NX and CD are the user's own MyLang scripts, read from the moomoo account with
+`get_indicator_list` and rebuilt in `src/services/trade_desk/moomoo_indicators.py`.
+NX matches moomoo's own calculation (`request_indicator_calc_async`) exactly on 10
+tickers over two years; moomoo returns CD's 抄底/卖出 text marks as zeros, so CD was
+checked against synthetic divergences and the report lists recent marks to compare
+with the chart. Rules (fixed before the run), entry at the next open, three exits
+(1.5/3 ATR over 15 sessions, a 10-session hold, the indicator's own exit up to 60
+sessions): CD 抄底 long, the same only above NX's slow tunnel, CD 卖出 short, NX
+fast-tunnel breakout long above the slow tunnel, and the mirror short.
+
+Findings (2026-09-29, same-date twins, t clustered by signal month):
+
+- CD 抄底: +0.2–0.3% vs same-date stocks (t 0.7–1.3): no edge shown.
+- CD 抄底 above NX's slow tunnel: +0.5–1.0% in both periods with the short
+  exits (t 1.4–1.8, 480 trades): suggestive, not established; worth tracking.
+- CD 卖出: shorting it loses; as a "reduce" signal the stock lags other stocks by
+  about 0.1% over ten sessions: negligible.
+- NX tunnel entries (long or short): about zero vs same-date stocks.
+- With the biased same-ticker twin CD 抄底 had looked like +1–4% (t up to 4.7) and
+  NX longs −0.5%; the random-walk control reproduced both, which exposed the bias.
 
 ## Day trading (`scripts/backtest_day_trades.py`)
 
@@ -85,6 +123,10 @@ close; rules were fixed before the run:
   momentum rule only). 5 bps per side; real fills on fast moves are worse.
 
 ### Findings (run of 2026-09-27; 5-min 2026-07-02 → 09-25, 141 tickers)
+
+These twins are other days of the same stock (one session each), not the same-date
+control above; the path bias is smaller over a single session but was not measured.
+
 
 - Nothing beats its twin with a day-clustered |t| ≥ 2 except in the losing direction.
   The round trip's 0.1% is larger than almost every gross effect (±0.03–0.25%).

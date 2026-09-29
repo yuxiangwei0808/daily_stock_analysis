@@ -235,6 +235,39 @@ def random_baseline(trades: Sequence[Trade], bars_by_ticker: Dict[str, List[Dict
     return twins
 
 
+def date_baseline(trades: Sequence[Trade], bars_by_ticker: Dict[str, List[Dict[str, Any]]], *,
+                  member: Callable[[str, str], bool], seed: int = 7, draws: int = 3) -> List[Trade]:
+    """Each trade re-entered on the same signal date in other member tickers, same direction and exits.
+
+    The primary control: ``random_baseline`` (same ticker, random days of the same year)
+    inherits the stock-year's realised path, which the signals select on, so it shows
+    fake edges even on random walks. Same-date twins in other stocks do not.
+    """
+    rng = random.Random(seed)
+    index_of = {ticker: {bar["date"]: i for i, bar in enumerate(bars)} for ticker, bars in bars_by_ticker.items()}
+    cache: Dict[str, List[str]] = {}
+    twins: List[Trade] = []
+    for trade in trades:
+        day = trade.signal_date
+        if day not in cache:
+            cache[day] = [ticker for ticker, positions in index_of.items()
+                          if WINDOW <= positions.get(day, -1) < len(bars_by_ticker[ticker]) - 1 and member(ticker, day)]
+        others = [ticker for ticker in cache[day] if ticker != trade.ticker]
+        for _ in range(draws):
+            if not others:
+                break
+            other = rng.choice(others)
+            bars, index = bars_by_ticker[other], index_of[other][day]
+            window = bars[max(0, index - 14):index + 1]
+            ranges = [max(float(b["high"]) - float(b["low"]), abs(float(b["high"]) - float(a["close"])),
+                          abs(float(b["low"]) - float(a["close"]))) for a, b in zip(window, window[1:])]
+            atr = sum(ranges) / len(ranges) if ranges else 0
+            twin = simulate(bars, index, trade.direction, atr, plan=f"date:{trade.plan}", ticker=other)
+            if twin:
+                twins.append(twin)
+    return twins
+
+
 # -- statistics --------------------------------------------------------------------------
 def summarize(trades: Sequence[Trade]) -> Dict[str, Any]:
     if not trades:

@@ -144,6 +144,7 @@ def main():
         trades = bt.run_plans(universe_bars, member=is_member, market=market, start_date=args.start,
                               end_date=args.end, progress=lambda msg, n=universe_name: logger.info("  %s %s", n, msg))
         twins = bt.random_baseline(trades, universe_bars, member=is_member)
+        twins += bt.date_baseline(trades, universe_bars, member=is_member)  # primary control ("date:")
         universes[universe_name] = (universe_bars, trades, twins)
         logger.info("%s: %d trades, %d random twins", universe_name, len(trades), len(twins))
     for label, lo, hi in (("before_split", args.start, args.split), ("after_split", args.split, args.end),
@@ -158,6 +159,11 @@ def main():
                 entry = {"all": bt.summarize(plan_trades),
                          "long": bt.summarize([t for t in plan_trades if t.direction == "long"]),
                          "short": bt.summarize([t for t in plan_trades if t.direction == "short"]),
+                         "date_twin": bt.summarize([t for t in twins if t.plan == f"date:{plan}"]),
+                         "date_twin_long": bt.summarize([t for t in twins if t.plan == f"date:{plan}"
+                                                         and t.direction == "long"]),
+                         "date_twin_short": bt.summarize([t for t in twins if t.plan == f"date:{plan}"
+                                                          and t.direction == "short"]),
                          "random_twin": bt.summarize([t for t in twins if t.plan == f"random:{plan}"]),
                          "random_twin_long": bt.summarize([t for t in twins if t.plan == f"random:{plan}"
                                                            and t.direction == "long"]),
@@ -192,8 +198,19 @@ def main():
     # Control: the same plans on random walks, where no edge exists (checks for look-ahead/fill bugs).
     walks = bt.random_walk_bars(150, 1300)
     control_trades = bt.run_plans(walks, member=always)
-    results["random_walk_control"] = {plan: bt.summarize([t for t in control_trades if t.plan == plan])
-                                      for plan in ("swing_trend", "breakout")}
+    control_dated = bt.date_baseline(control_trades, walks, member=always)
+    control_same = bt.random_baseline(control_trades, walks, member=always)
+    results["random_walk_control"] = {}
+    for plan in ("swing_trend", "breakout", "fade_short", "pullback_long"):
+        for direction in ("long", "short"):
+            chosen = [t for t in control_trades if t.plan == plan and t.direction == direction]
+            if not chosen:
+                continue
+            results["random_walk_control"][f"{plan} {direction}"] = {
+                "plan": bt.summarize(chosen),
+                "date_twin": bt.summarize([t for t in control_dated if t.plan == f"date:{plan}" and t.direction == direction]),
+                "random_twin": bt.summarize([t for t in control_same if t.plan == f"random:{plan}"
+                                             and t.direction == direction])}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     stem = out / f"trade_plans_{date.today().isoformat()}_{args.ambiguous}"
@@ -206,7 +223,10 @@ def main():
             for plan, entry in section[universe_name].items():  # noqa: B007
                 lines.append(f"- **{universe_name} / {plan}**: {fmt(entry['all'])}")
                 lines.append(f"  - long: {fmt(entry['long'])}; short: {fmt(entry['short'])}")
-                lines.append(f"  - random twin: {fmt(entry['random_twin'])}")
+                lines.append(f"  - same-date twin (primary control): {fmt(entry['date_twin'])}")
+                lines.append(f"  - same-date twin long: {fmt(entry['date_twin_long'])}; "
+                             f"short: {fmt(entry['date_twin_short'])}")
+                lines.append(f"  - same-ticker random twin (biased, kept for comparison): {fmt(entry['random_twin'])}")
                 lines.append(f"  - random twin long: {fmt(entry['random_twin_long'])}; "
                              f"short: {fmt(entry['random_twin_short'])}")
                 p = entry["portfolio"]
@@ -215,10 +235,12 @@ def main():
                 if entry.get("options"):
                     lines.append(f"  - options: {entry['options']}")
         lines.append("")
-    lines.append("## Random-walk control (no edge exists: costs plus the conservative same-day stop-first fill; "
-                 "compare each plan with its random twin, which carries the same bias)")
+    lines.append("## Random-walk control (no edge exists: a plan should match its same-date twin; "
+                 "the same-ticker twin shows the bias that made it unusable)")
     for plan, stats in results["random_walk_control"].items():
-        lines.append(f"- {plan}: {fmt(stats)}")
+        lines.append(f"- {plan}: plan {fmt(stats['plan'])}")
+        lines.append(f"  - same-date twin: {fmt(stats['date_twin'])}")
+        lines.append(f"  - same-ticker twin: {fmt(stats['random_twin'])}")
     stem.with_suffix(".md").write_text("\n".join(lines))
     print("\n".join(lines))
     print(f"\nWritten {stem}.json/.md")
