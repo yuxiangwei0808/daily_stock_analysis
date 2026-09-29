@@ -322,6 +322,14 @@ week's last trading day it posts "📒 Idea track record" (last 90 days per grou
 and approved vs rejected once each has 10 closed ideas). `GET /track-record?days=`
 and the Journal tab show the same. Nothing is traded.
 
+Each record also carries your NX tunnel state at the signal (`nx`), filled by the
+same after-close job (older open records get it on the next run): the tunnels come
+from the daily bars before the signal day, read at the alert price. The slow (89)
+tunnel sets the alignment: a long above it or a short below it *agrees*, the
+opposite is *against*, inside it is *neutral*. The weekly summary and the Journal
+card split closed ideas and breakouts by alignment; with under 20 closed records
+they say it is too early to judge.
+
 ## Broker holdings and your alerts
 
 With `TRADE_DESK_BROKER_ACCOUNT` set (a real moomoo account id or its last

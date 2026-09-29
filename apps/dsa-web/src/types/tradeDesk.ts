@@ -366,11 +366,21 @@ export interface TrackRecordGroup {
   avgVsSpyPct?: number | null;
 }
 
+export interface TrackRecordNxGroup {
+  label: string;
+  closed: number;
+  open: number;
+  winRate?: number | null;
+  avgReturnPct?: number | null;
+}
+
 export interface TrackRecord {
   windowDays: number;
   groups: Record<string, TrackRecordGroup>;
+  /** Closed ideas and breakouts split by the NX slow tunnel at the signal: agree / neutral / against. */
+  byNx?: Record<string, TrackRecordNxGroup>;
   recent: Array<{ ticker: string; direction: string; verdict: string; signalDay: string; status: string;
-    reason?: string | null; returnPct?: number | null; kind?: string }>;
+    reason?: string | null; returnPct?: number | null; kind?: string; nxAlignment?: string | null }>;
 }
 
 export type HoldingRuleKind = 'price_below' | 'price_above' | 'days_to_expiry' | 'pnl_below' | 'pnl_above';

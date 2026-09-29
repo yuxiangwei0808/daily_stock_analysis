@@ -25,6 +25,8 @@ export function TrackRecordCard() {
   }, []);
 
   const groups = record ? Object.entries(record.groups).filter(([, group]) => group.closed || group.open) : [];
+  const nxGroups = record?.byNx ? Object.entries(record.byNx).filter(([, group]) => group.closed || group.open) : [];
+  const nxClosed = nxGroups.reduce((sum, [, group]) => sum + group.closed, 0);
   return (
     <Card variant="bordered" padding="md">
       <div className="flex items-center gap-2">
@@ -62,13 +64,28 @@ export function TrackRecordCard() {
           </table>
         </div>
       ) : null}
+      {nxGroups.length ? (
+        <div className="mt-4" data-testid="track-record-nx">
+          <p className="text-xs font-semibold uppercase tracking-wide text-secondary-text">By your NX slow tunnel at the signal</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            {nxGroups.map(([key, group]) => (
+              <div key={key} className="rounded-lg bg-elevated/40 px-3 py-2 text-xs">
+                <p className="font-semibold text-foreground">{group.label}</p>
+                <p className="mt-1 text-secondary-text">{group.closed} closed · {group.open} open</p>
+                <p className="text-secondary-text">win {pct(group.winRate, false)} · avg <span className={(group.avgReturnPct ?? 0) >= 0 ? 'text-success' : 'text-danger'}>{pct(group.avgReturnPct)}</span></p>
+              </div>
+            ))}
+          </div>
+          {nxClosed < 20 ? <p className="mt-1 text-xs text-muted-text">Too few closed ideas to judge NX yet; this fills in over the coming weeks.</p> : null}
+        </div>
+      ) : null}
       {record?.recent?.length ? (
         <div className="mt-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.trackRecent')}</p>
           <ul className="mt-2 grid gap-1 text-xs text-secondary-text sm:grid-cols-2">
             {record.recent.slice(0, 20).map((item, index) => (
               <li key={`${item.ticker}-${item.signalDay}-${index}`} className="flex justify-between gap-2 rounded bg-elevated/40 px-2 py-1">
-                <span><span className="font-mono text-foreground">{item.ticker}</span> {item.direction} · {item.verdict} · {item.signalDay}</span>
+                <span><span className="font-mono text-foreground">{item.ticker}</span> {item.direction} · {item.verdict} · {item.signalDay}{item.nxAlignment ? ` · NX ${item.nxAlignment}` : ''}</span>
                 <span className={item.status === 'closed' ? ((item.returnPct ?? 0) >= 0 ? 'text-success' : 'text-danger') : ''}>
                   {item.status === 'closed' ? `${pct(item.returnPct)} (${item.reason})` : `${t('tradeDesk.trackOpenNow')} ${pct(item.returnPct)}`}
                 </span>

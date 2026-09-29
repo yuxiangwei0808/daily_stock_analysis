@@ -15,6 +15,12 @@ both counts as the stop, a gap fills at the open), otherwise the close after
 ``MAX_DAYS`` sessions; 5 bps per side. SPY over the same days is the benchmark.
 After the close each trading day open records are settled; on the week's last
 trading day a summary goes to Discord (``track_record``).
+
+Each record also gets the user's NX tunnel state at the signal (``nx``): tunnels
+from the daily bars before the signal day (no look-ahead) against the alert price.
+The slow (89) tunnel sets ``alignment``: a long above it or a short below it
+"agrees", the opposite is "against", inside it is "neutral". The summary splits
+closed records by it, to see whether ideas that agree with NX do better.
 """
 from __future__ import annotations
 
@@ -31,6 +37,8 @@ _NEW_YORK = ZoneInfo("America/New_York")
 MAX_DAYS = 15
 COST_BPS = 5.0
 WINDOW_DAYS = 90
+NX_MIN_BARS = 250
+NX_GROUPS = (("agree", "NX agrees"), ("neutral", "NX neutral"), ("against", "NX against"))
 GROUPS = (("high", "Approved · high"), ("medium", "Approved · medium"), ("rejected", "Rejected by the review"),
           ("breakout", "Breakout alerts"))
 
@@ -97,18 +105,63 @@ def settle(record: Dict[str, Any], bars: List[Dict[str, Any]], market: List[Dict
     return update
 
 
+def _tunnel_state(price: float, top: float, bottom: float) -> str:
+    return "above" if price > top else "below" if price < bottom else "inside"
+
+
+def nx_snapshot(bars: List[Dict[str, Any]], signal_day: str, price: float, direction: str) -> Optional[Dict[str, Any]]:
+    """NX tunnels from the bars before ``signal_day``, read at the alert price; None without enough history."""
+    from .moomoo_indicators import nx
+    history = [bar for bar in bars if str(bar["date"])[:10] < signal_day]
+    if len(history) < NX_MIN_BARS or not price:
+        return None
+    lines = nx(history)
+    fast = _tunnel_state(price, lines["A"][-1], lines["B"][-1])
+    slow = _tunnel_state(price, lines["A1"][-1], lines["B1"][-1])
+    if lines["B"][-1] > lines["A1"][-1]:
+        structure = "fast_above_slow"
+    elif lines["A"][-1] < lines["B1"][-1]:
+        structure = "fast_below_slow"
+    else:
+        structure = "overlapping"
+    alignment = "neutral" if slow == "inside" else (
+        "agree" if (slow == "above") == (direction == "long") else "against")
+    return {"fast": fast, "slow": slow, "structure": structure, "alignment": alignment,
+            "fast_bottom": round(lines["B"][-1], 4), "slow_bottom": round(lines["B1"][-1], 4),
+            "slow_top": round(lines["A1"][-1], 4)}
+
+
 def settle_open(repo: Any, today: date,
-                bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars) -> int:
-    """Settle every open record from daily bars; returns how many closed."""
+                bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
+                nx_bars: Optional[Callable[[List[str]], Dict[str, List[Dict[str, Any]]]]] = None) -> int:
+    """Settle every open record from daily bars (and fill its NX state once); returns how many closed."""
     open_records = repo.tracked_ideas(status="open")
     if not open_records:
         return 0
     history = bars(list(dict.fromkeys(["SPY", *(record["ticker"] for record in open_records)])))
     market, closed = history.get("SPY") or [], 0
+    missing_nx = list(dict.fromkeys(record["ticker"] for record in open_records if "nx" not in record))
+    long_history: Dict[str, List[Dict[str, Any]]] = {}
+    if missing_nx:
+        try:
+            # Live: two years (the 89-bar tunnel needs it); an injected ``bars`` (tests) is reused.
+            fetch = nx_bars or ((lambda tickers: trend.download_bars(tickers, period="2y"))
+                                if bars is trend.download_bars else bars)
+            long_history = fetch(missing_nx)
+        except Exception as exc:  # NX is filled on a later day; settling goes on
+            logger.info("Idea tracker NX bars unavailable: %s", type(exc).__name__)
     for record in open_records:
+        nx_update = {}
+        if "nx" not in record and record["ticker"] in long_history:
+            nx_update["nx"] = nx_snapshot(long_history[record["ticker"]], record["signal_day"],
+                                          float(record.get("entry") or 0), record["direction"])
         update = settle(record, history.get(record["ticker"]) or [], market, today)
         if update is None:
+            if nx_update:
+                payload = {key: value for key, value in record.items() if key not in {"id", "status", "created_at"}}
+                repo.update_tracked_idea(record["id"], {**payload, **nx_update}, record["status"])
             continue
+        update.update(nx_update)
         status = update.pop("status", "open")
         payload = {key: value for key, value in record.items() if key not in {"id", "status", "created_at"}}
         repo.update_tracked_idea(record["id"], {**payload, **update}, status)
@@ -135,9 +188,19 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
                                    for r in closed if r.get("spy_return_pct") is not None) / len(spy)) if spy else None,
             "long": sum(1 for r in rows if r["direction"] == "long"), "short": sum(1 for r in rows if r["direction"] == "short"),
         }
-    recent = [{key: r.get(key) for key in ("ticker", "direction", "verdict", "signal_day", "status", "reason",
-                                           "return_pct", "r", "spy_return_pct", "days", "kind")} for r in records[:60]]
-    return {"window_days": window_days, "groups": groups, "recent": recent}
+    by_nx = {}
+    closed_all = [r for r in records if r["status"] == "closed" and r.get("return_pct") is not None]
+    for key, label in NX_GROUPS:
+        rows = [r for r in closed_all if (r.get("nx") or {}).get("alignment") == key]
+        returns = [r["return_pct"] for r in rows]
+        by_nx[key] = {"label": label, "closed": len(rows),
+                      "open": sum(1 for r in records if r["status"] == "open" and (r.get("nx") or {}).get("alignment") == key),
+                      "win_rate": sum(1 for x in returns if x > 0) / len(returns) * 100 if returns else None,
+                      "avg_return_pct": sum(returns) / len(returns) if returns else None}
+    recent = [{**{key: r.get(key) for key in ("ticker", "direction", "verdict", "signal_day", "status", "reason",
+                                              "return_pct", "r", "spy_return_pct", "days", "kind")},
+               "nx_alignment": (r.get("nx") or {}).get("alignment")} for r in records[:60]]
+    return {"window_days": window_days, "groups": groups, "by_nx": by_nx, "recent": recent}
 
 
 def _pct(value: Optional[float], sign: bool = True) -> str:
@@ -163,6 +226,12 @@ def format_track_record(stats: Dict[str, Any]) -> str:
         lines.append(f"Review value so far: approved {mean:+.2f}% vs rejected {rejected['avg_return_pct']:+.2f}% per idea.")
     else:
         lines.append("Too few closed ideas yet to judge the review; this fills in over the coming weeks.")
+    by_nx = stats.get("by_nx") or {}
+    if any(group["closed"] for group in by_nx.values()):
+        parts = [f"{group['label']} {group['closed']} · avg {_pct(group['avg_return_pct'])}"
+                 for key, group in by_nx.items() if group["closed"]]
+        lines.append("By your NX slow tunnel (closed ideas and breakouts): " + " | ".join(parts)
+                     + ("" if sum(group["closed"] for group in by_nx.values()) >= 20 else " — too few to judge yet"))
     return "\n".join(lines)
 
 
@@ -172,11 +241,13 @@ class TrackerJob:
     SETTLE_AFTER = (16, 30)
 
     def __init__(self, repo: Any, emit: Callable[[str, Dict[str, Any], str], Any], *,
-                 bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars):
+                 bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
+                 nx_bars: Optional[Callable[[List[str]], Dict[str, List[Dict[str, Any]]]]] = None):
         from concurrent.futures import ThreadPoolExecutor
         self.repo = repo
         self._emit = emit
         self._bars = bars
+        self._nx_bars = nx_bars
         self._done_day: Optional[date] = None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="idea-tracker")
         self._task = None
@@ -196,7 +267,7 @@ class TrackerJob:
 
     def _run(self, day: date, now: datetime) -> None:
         try:
-            closed = settle_open(self.repo, day, self._bars)
+            closed = settle_open(self.repo, day, self._bars, self._nx_bars)
             logger.info("Idea tracker: %d records closed", closed)
             if _last_trading_day_of_week(day):
                 stats = track_record(self.repo, now)

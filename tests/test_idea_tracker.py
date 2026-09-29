@@ -105,3 +105,74 @@ def test_a_scan_tracks_approved_and_rejected_candidates():
     _run_batch(runner, service, clock, 10)
     verdicts = {payload["ticker"]: payload["verdict"] for _, payload in tracked}
     assert verdicts["NVDA"] == "medium" and set(verdicts.values()) >= {"medium", "rejected"}
+
+
+def _rising(start, days, first=50.0, step=0.2):
+    return _bars(start, [(first + i * step, first + i * step + 0.5, first + i * step - 0.5, first + i * step)
+                         for i in range(days)])
+
+
+def test_nx_snapshot_uses_bars_before_the_signal_and_the_alert_price():
+    history = _rising("2025-06-01", 400)  # a steady rise: the slow tunnel sits below recent prices
+    signal_day = history[-1]["date"]
+    last_close = history[-2]["close"]
+    agree = it.nx_snapshot(history, signal_day, last_close, "long")
+    assert agree["slow"] == "above" and agree["alignment"] == "agree" and agree["structure"] == "fast_above_slow"
+    assert it.nx_snapshot(history, signal_day, last_close, "short")["alignment"] == "against"
+    inside = it.nx_snapshot(history, signal_day, (agree["slow_bottom"] + agree["slow_top"]) / 2, "long")
+    assert inside["slow"] == "inside" and inside["alignment"] == "neutral"
+    # Only bars before the signal day count: a huge bar on the signal day changes nothing.
+    spiked = history[:-1] + [{**history[-1], "high": 10_000.0, "close": 9_000.0}]
+    assert it.nx_snapshot(spiked, signal_day, last_close, "long") == agree
+    assert it.nx_snapshot(history[:100], history[99]["date"], 60.0, "long") is None
+
+
+def test_settle_open_fills_nx_once_and_summarises_by_alignment(repo):
+    long_history = _rising("2025-06-01", 400)
+    signal_day = long_history[-1]["date"]
+    price = long_history[-2]["close"]
+    for ticker, direction in (("AAA", "long"), ("BBB", "short")):
+        repo.track_idea(f"idea:x:{ticker}", _record(ticker=ticker, direction=direction, signal_day=signal_day,
+                                                     entry=price, stop=price * 0.97 if direction == "long" else price * 1.03,
+                                                     target=price * 1.06 if direction == "long" else price * 0.94))
+    later = _bars(signal_day, [(price, price * 1.07, price * 0.99, price * 1.06)])  # longs hit target, shorts stop
+    daily = {"SPY": later, "AAA": later, "BBB": later}
+    fetched = []
+
+    def nx_bars(tickers):
+        fetched.append(tuple(tickers))
+        return {ticker: long_history for ticker in tickers}
+
+    it.settle_open(repo, date.fromisoformat(later[-1]["date"]), bars=lambda tickers: daily, nx_bars=nx_bars)
+    records = {r["ticker"]: r for r in repo.tracked_ideas()}
+    assert records["AAA"]["nx"]["alignment"] == "agree" and records["BBB"]["nx"]["alignment"] == "against"
+    assert [set(call) for call in fetched] == [{"AAA", "BBB"}]
+    stats = it.track_record(repo, now=datetime.now(timezone.utc))
+    assert stats["by_nx"]["agree"]["closed"] == 1 and stats["by_nx"]["agree"]["avg_return_pct"] > 0
+    assert stats["by_nx"]["against"]["closed"] == 1 and stats["by_nx"]["against"]["avg_return_pct"] < 0
+    assert {r["ticker"]: r["nx_alignment"] for r in stats["recent"]} == {"AAA": "agree", "BBB": "against"}
+    text = it.format_track_record(stats)
+    assert "By your NX slow tunnel" in text and "NX agrees 1" in text and "too few to judge yet" in text
+    # Already filled: nothing is fetched again.
+    it.settle_open(repo, date.fromisoformat(later[-1]["date"]), bars=lambda tickers: daily, nx_bars=nx_bars)
+    assert [set(call) for call in fetched] == [{"AAA", "BBB"}]
+
+
+def test_open_records_get_nx_even_before_they_settle(repo):
+    long_history = _rising("2025-06-01", 400)
+    signal_day = long_history[-1]["date"]
+    repo.track_idea("idea:y:AAA", _record(signal_day=signal_day, entry=long_history[-2]["close"]))
+    it.settle_open(repo, date.fromisoformat(signal_day), bars=lambda tickers: {"SPY": [], "AAA": []},
+                   nx_bars=lambda tickers: {"AAA": long_history})
+    (record,) = repo.tracked_ideas()
+    assert record["status"] == "open" and record["nx"]["alignment"] == "agree"
+
+
+def test_nx_download_failure_does_not_stop_settling(repo):
+    repo.track_idea("idea:z:AAA", _record())
+
+    def broken(tickers):
+        raise RuntimeError("network")
+
+    it.settle_open(repo, date(2026, 9, 30), bars=lambda tickers: {"SPY": [], "AAA": []}, nx_bars=broken)
+    assert "nx" not in repo.tracked_ideas()[0]
