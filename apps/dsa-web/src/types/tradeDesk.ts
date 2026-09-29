@@ -199,6 +199,17 @@ export interface TradeAdviceJob {
   /** Your broker position in the ticker, attached to manual requests (read-only). */
   position?: TradeHeldPosition | null;
   positionInputs?: { existingShares: number; planFromPosition: boolean } | null;
+  /** The user's NX tunnel on the ticker at the answer (daily; context and reference levels only). */
+  nxTunnel?: {
+    asOf: string;
+    close: number;
+    fast: { top: number; bottom: number; state: string };
+    slow: { top: number; bottom: number; state: string };
+    structure: string;
+    changesToday: string[];
+    toFastBottomPct: number;
+    summary?: string;
+  } | null;
   [key: string]: unknown;
 }
 

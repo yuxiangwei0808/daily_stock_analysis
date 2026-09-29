@@ -136,6 +136,19 @@ const heldSummary = (view: HoldingsView | null | undefined, ticker: string): str
   ].join('; ');
 };
 
+function NxUsed({ job }: { job: TradeAdviceJob }) {
+  const nx = job.nxTunnel;
+  if (!nx) return null;
+  const level = (value: number) => value.toFixed(2);
+  return (
+    <section className="mt-4 rounded-xl border border-border/40 bg-card/30 p-3 text-sm" data-testid="nx-used">
+      <h3 className="text-sm font-semibold text-foreground">Your NX tunnel <span className="font-normal text-muted-text">(daily, as of {nx.asOf})</span></h3>
+      <p className="mt-1 text-secondary-text">{nx.summary || `Fast ${level(nx.fast.bottom)}–${level(nx.fast.top)} (${nx.fast.state}), slow ${level(nx.slow.bottom)}–${level(nx.slow.top)} (${nx.slow.state})`}</p>
+      <p className="mt-1 text-xs text-muted-text">Reference levels for stops and invalidation; NX has no tested edge on its own.</p>
+    </section>
+  );
+}
+
 const VERDICT_LABELS: Record<string, string> = { buy: 'Buy', add: 'Add', hold: 'Hold', reduce: 'Reduce', sell: 'Sell', watch: 'Watch', avoid: 'Avoid', alert: 'Alert' };
 
 /** The latest report's verdict on a stock: "Watch · score 45 · stop 31.20 · target 38.00 · Sep 29". */
@@ -1026,6 +1039,7 @@ const TradeDeskPage: React.FC = () => {
       {job.request.dataMode === 'replay' ? <InlineAlert className="mt-4" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}
       {job.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={job.planError} /> : null}
       <PositionUsed job={job} />
+      <NxUsed job={job} />
       {job.panel?.opinions?.length ? <ModelPanel panel={job.panel} /> : null}
       {job.explanation ? <AdviceVerdict job={job} /> : null}
       {job.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(job, job.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}

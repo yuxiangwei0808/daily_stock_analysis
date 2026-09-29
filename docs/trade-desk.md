@@ -88,6 +88,13 @@ the other candidates; it is not priced as one trade). Account totals and cash ar
 sent. Only requests you make get the position; automatic follow-ups, which can reach
 Discord, never do. The answer shows a "Your position" panel with what was used.
 
+**Your NX tunnel.** Live answers on US tickers include your NX indicator on daily
+bars (fast tunnel = EMA of highs/lows over 26 bars, slow = 89; see
+`src/services/nx_tunnel.py`): the tunnel edges and where the price sits. The model is
+told it is your chart framework with no tested edge on its own — it may use the edges
+as trigger, invalidation and stop levels and mention them, but not pick or reject a
+trade because of NX. The answer shows a "Your NX tunnel" panel. Replay requests skip it.
+
 When no contracts can be compared, the answer says why (no quotable options, or
 none passing the filters, with the provider's notes) instead of a generic message.
 

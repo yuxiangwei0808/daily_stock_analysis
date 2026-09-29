@@ -133,6 +133,34 @@ def test_manual_requests_carry_your_position_and_automatic_ones_do_not(repo, mon
     assert repo.advice(job['id']).get('position') is None
 
 
+def test_live_answers_carry_the_nx_tunnel_and_replay_ones_do_not(repo, monkeypatch):
+    nx = {"as_of": "2026-09-29", "close": 100.0, "fast": {"top": 104.0, "bottom": 98.0, "state": "inside"},
+          "slow": {"top": 96.0, "bottom": 90.0, "state": "above"}, "structure": "fast_above_slow",
+          "changes_today": [], "to_fast_bottom_pct": 2.04, "to_slow_bottom_pct": 11.1}
+    asked = []
+
+    def fake(ticker):
+        asked.append(ticker)
+        return dict(nx)
+
+    monkeypatch.setattr('src.services.nx_tunnel.for_ticker', fake)
+    svc = service(repo)
+    results = {}
+    for mode in ('live', 'replay'):
+        job = repo.create_advice(TradeAdviceRequest(ticker='TEST', data_mode=mode).model_dump(mode='json'))
+        svc._run_advice(job['id'], threading.Event())
+        results[mode] = repo.advice(job['id'])
+    live = results['live']
+    assert live['nx_tunnel']['fast']['bottom'] == 98.0 and live['nx_tunnel']['summary'].startswith('Price 100.00')
+    assert any(item.get('kind') == 'nx_tunnel' for item in live['snapshot']['evidence'])
+    assert results['replay'].get('nx_tunnel') is None and asked == ['TEST']
+
+
+def test_the_model_is_told_nx_is_context_only():
+    from src.services.trade_desk.advisor import _RULES
+    assert "kind 'nx_tunnel'" in _RULES and "never choose or reject a trade because of NX alone" in _RULES
+
+
 def test_cancelled_advice_cannot_be_resurrected(repo):
     job = repo.create_advice({'ticker': 'TEST'})
     repo.update_advice(job['id'], {'status': 'cancelled'})

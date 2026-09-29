@@ -329,6 +329,18 @@ describe('TradeDeskPage', () => {
     await waitFor(() => expect(screen.queryByTestId('report-verdict')).not.toBeInTheDocument());
   });
 
+  it('shows the NX tunnel an answer used', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Use the fast tunnel as the stop',
+      nxTunnel: { asOf: '2026-09-29', close: 33.26, fast: { top: 43.04, bottom: 40.01, state: 'below' }, slow: { top: 85.03, bottom: 77.83, state: 'below' },
+        structure: 'fast_below_slow', changesToday: [], toFastBottomPct: -16.9, summary: 'Price 33.26: below the fast tunnel (40.01–43.04)' } }] });
+    renderPage();
+    const panel = await screen.findByTestId('nx-used');
+    expect(panel).toHaveTextContent('Your NX tunnel');
+    expect(panel).toHaveTextContent('as of 2026-09-29');
+    expect(panel).toHaveTextContent('Price 33.26: below the fast tunnel (40.01–43.04)');
+    expect(panel).toHaveTextContent('no tested edge');
+  });
+
   it('opens the merged ask tab for old ?view=ask links', async () => {
     renderPage('/trade-desk?view=ask');
     const tab = await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ });

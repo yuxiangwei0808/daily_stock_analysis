@@ -246,6 +246,19 @@ class TradeDeskService:
                 continue
         return context, request
 
+    @staticmethod
+    def _nx_levels(request):
+        """The user's NX tunnel on a live US ticker (context and reference levels), or None."""
+        if request.data_mode != "live":
+            return None
+        try:
+            from src.services import nx_tunnel
+            nx = nx_tunnel.for_ticker(request.ticker)
+            return {**nx, "summary": nx_tunnel.summary_line(nx, "en")} if nx else None
+        except Exception as exc:  # the answer goes on without it
+            logger.info("Trade Desk NX tunnel unavailable: %s", type(exc).__name__)
+            return None
+
     def _fresh_news(self, request):
         """Latest headlines from FREE_NEWS_SOURCES, fetched when the user asks (not for automatic scans)."""
         from src.config import get_config
@@ -321,13 +334,17 @@ class TradeDeskService:
             if position:
                 snapshot.evidence.append({"kind": "position", "title": f"Your broker position in {request.ticker}",
                                           "read_only": True, **position})
+            nx = self._nx_levels(request)
+            if nx:
+                snapshot.evidence.append({"kind": "nx_tunnel", "title": f"Your NX tunnel on {request.ticker} (daily)",
+                                          **nx})
             candidates = build_candidates(snapshot, request)
             plan_error = ""
             if request.plan_legs and not any(c.strategy == PLAN_STRATEGY for c in candidates):
                 plan_error = price_plan(snapshot, request)[1] or (
                     "Your held position could not be priced." if request.plan_source == "position"
                     else "Your plan could not be priced.")
-            changes = {"plan_error": plan_error, "position": position,
+            changes = {"plan_error": plan_error, "position": position, "nx_tunnel": nx,
                        "position_inputs": {"existing_shares": request.existing_shares,
                                            "plan_from_position": request.plan_source == "position"} if position else None,
                        "candidates": [c.model_dump(mode="json") for c in candidates],

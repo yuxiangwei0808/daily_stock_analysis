@@ -293,3 +293,14 @@ class _ThreadlessTestClient:
 
 fastapi.testclient.TestClient = _ThreadlessTestClient
 starlette.testclient.TestClient = _ThreadlessTestClient
+
+
+@pytest.fixture(autouse=True)
+def _offline_nx_tunnel(request, monkeypatch):
+    """NX tunnel lookups download two years of Yahoo bars; tests get none unless they set it.
+
+    tests/test_nx_tunnel.py exercises the real function with its own fake downloader.
+    """
+    if request.module.__name__.endswith("test_nx_tunnel"):
+        return
+    monkeypatch.setattr("src.services.nx_tunnel.for_ticker", lambda ticker: None)

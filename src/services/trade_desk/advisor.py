@@ -81,6 +81,10 @@ _RULES = (
     "(holding from here; the cost already paid does not change the forward payoff). A roll is closing the "
     "held legs and opening one of the other candidates; say so, since it is not priced as one trade. "
     "existing_shares filled from the position means covered or collared candidates use shares already owned. "
+    "An evidence item with kind 'nx_tunnel' is the user's own NX indicator on daily bars: a fast tunnel "
+    "(EMA of highs/lows, 26) and a slow one (89), with where the price sits. It is how the user reads the chart, "
+    "not a tested edge: use its edges as reference levels for triggers, invalidation and stops where they fit, "
+    "and mention them, but never choose or reject a trade because of NX alone. "
 )
 
 
