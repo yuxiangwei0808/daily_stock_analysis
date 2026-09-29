@@ -163,7 +163,9 @@ function PositionUsed({ job }: { job: TradeAdviceJob }) {
       <h3 className="text-sm font-semibold text-foreground">Your position (read-only)</h3>
       <p className="mt-1 text-secondary-text">{parts.join('; ')}</p>
       {inputs?.planFromPosition ? <p className="mt-1 text-xs text-muted-text">The "custom" candidate is your held options priced from the current mid (holding from here).</p> : null}
-      {inputs?.existingShares ? <p className="mt-1 text-xs text-muted-text">Covered/collar candidates use your {inputs.existingShares} owned shares.</p> : null}
+      {inputs?.existingShares ? <p className="mt-1 text-xs text-muted-text">{inputs.existingShares >= 100
+        ? `Compared with your shares in mind: a protective put, and covered calls on ${Math.floor(inputs.existingShares / 100) * 100} of your ${inputs.existingShares} shares.`
+        : `Compared with your ${inputs.existingShares} shares in mind: a protective put first (covered calls need 100 shares).`}</p> : null}
       {position.alerts.length ? <p className="mt-1 text-xs text-muted-text">Your alerts: {position.alerts.map((alert) => `${alert.kind.replace(/_/g, ' ')} ${alert.value}`).join(', ')}</p> : null}
     </section>
   );
@@ -760,6 +762,11 @@ const TradeDeskPage: React.FC = () => {
     const source = new EventSource(tradeDeskApi.getEventsUrl(lastEventId.current || undefined), { withCredentials: true });
     source.onmessage = (event) => {
       lastEventId.current = event.lastEventId || lastEventId.current;
+      // Discord delivery bookkeeping (two rows per message sent) changes nothing on this page.
+      try {
+        const type = (JSON.parse(event.data) as { event_type?: string }).event_type;
+        if (type === 'discord_attempt' || type === 'discord_delivery') return;
+      } catch { /* not JSON: refresh as before */ }
       if (sseRefreshTimer.current == null) {
         sseRefreshTimer.current = window.setTimeout(() => {
           sseRefreshTimer.current = null;

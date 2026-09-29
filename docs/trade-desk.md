@@ -78,7 +78,9 @@ entries stay as the log, plus an `advice_deleted` entry.
 "Use my position" (on by default; live data only). The request then carries your
 shares, open option legs (quantity, unit cost, current mid, P&L on cost, trading days
 left) and your alerts for that ticker, read-only from the last sync with fresh quotes.
-Owned shares prefill the share count, so covered calls and collars use them. A single
+Owned shares prefill the share count; with direction "auto" and no strategies of your own,
+the comparison becomes a protective put and (with 100+ shares) covered calls beside a bull and a bear
+debit spread, instead of the generic directional set. A single
 held option position (no plan or expiry of your own) becomes the `custom` candidate,
 priced from the current mid as "holding from here", and the model answers for it first:
 hold, take profit or close, reduce, hedge or roll (a roll shows as closing it plus one of
@@ -451,7 +453,8 @@ All `/api/v1/trade-desk/*` routes inherit the existing administrator session gua
 The API supports health, catalog, advice submission/status/cancellation, plans,
 paper fills, manual fills, positions, journal, outcomes, preferences and SSE events.
 `POST /advice` accepts `parent_advice_id` for a follow-up version. `GET /advice`
-takes `scope=active|archive|all` (default `active`), marks archived items with
+takes `scope=active|archive|all` (default `active`; list rows carry only snapshot timing, the
+full quote snapshots come from `GET /advice/{id}`), marks archived items with
 `archived` (`expired`, `stale`, `no_result`, `old`) and returns `counts`. `DELETE
 /advice/{id}` deletes one finished request (409 while queued/running or linked to a
 plan); `DELETE /advice?scope=archive` deletes every archived one and returns `deleted`

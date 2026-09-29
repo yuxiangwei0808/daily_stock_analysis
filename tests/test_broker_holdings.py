@@ -509,6 +509,17 @@ def test_questions_use_held_shares_and_price_a_held_spread_as_the_plan(store):
     assert request.expiry == date(2026, 10, 16)
     _, request = svc._with_position(TradeAdviceRequest(ticker="SOXS"))
     assert request.existing_shares == 10 and not request.plan_legs
+    assert request.strategies[0] == "long_put"  # under 100 shares: a hedge, no covered call
+    held = h.Holdings.position_context
+    try:  # 300 shares: covered call first
+        h.Holdings.position_context = lambda self, ticker, view=None: {**held(self, ticker, view), "shares": 300.0}
+        _, request = svc._with_position(TradeAdviceRequest(ticker="SOXS"))
+        assert request.existing_shares == 300 and request.strategies[:2] == ["covered_call", "long_put"]
+    finally:
+        h.Holdings.position_context = held
+    # A direction or strategies of your own win.
+    _, request = svc._with_position(TradeAdviceRequest(ticker="SOXS", direction="bearish"))
+    assert request.strategies == []
     # Your own plan, expiry or share count wins.
     _, request = svc._with_position(TradeAdviceRequest(ticker="USO", expiry="2026-10-09"))
     assert not request.plan_legs and request.plan_source == "user"

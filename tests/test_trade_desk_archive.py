@@ -122,3 +122,16 @@ def test_delete_archived_only_touches_the_archive(monkeypatch):
     result = _delete_archived(repo, batch=1)
     assert result == {"deleted": [old["id"]], "kept": {}}
     assert repo.advice(current["id"]) is not None
+
+
+def test_lists_leave_out_raw_snapshots():
+    from api.v1.endpoints.trade_desk import _slim
+    snapshot = {"id": "s1", "quoted_at": "2026-09-29T14:00:00Z", "provider": "moomoo", "stale": False,
+                "options": [{"contract_id": "X"}] * 50, "bars": [{"close": 1}] * 40, "evidence": [{"title": "n"}]}
+    item = {"id": "a", "snapshot": snapshot, "snapshots": {"s1": snapshot}, "source_snapshots": {"s1": snapshot},
+            "candidates": [{"id": "c"}]}
+    slim = _slim(item)
+    for value in (slim["snapshot"], slim["snapshots"]["s1"], slim["source_snapshots"]["s1"]):
+        assert value["quoted_at"] == "2026-09-29T14:00:00Z" and value["provider"] == "moomoo"
+        assert "options" not in value and "bars" not in value and "evidence" not in value
+    assert slim["candidates"] == [{"id": "c"}] and item["snapshot"]["options"]  # the stored row is untouched

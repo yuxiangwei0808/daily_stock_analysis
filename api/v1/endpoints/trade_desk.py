@@ -112,6 +112,26 @@ async def advice_list(request: Request, limit: int = Query(default=100, ge=1, le
     return await invoke(_advice_page, get_service(request).repo, limit, scope)
 
 
+_SNAPSHOT_META = ("id", "underlying", "spot", "bid", "ask", "quoted_at", "received_at", "provider", "mode",
+                  "session", "source_verified", "stale")
+
+
+def _slim(item):
+    """A list row without the raw quote snapshots (chains, bars, evidence: ~90% of a stored answer).
+
+    ``GET /advice/{id}`` still returns everything; lists keep only what the page shows.
+    """
+    def meta(snapshot):
+        return {key: snapshot.get(key) for key in _SNAPSHOT_META} if isinstance(snapshot, dict) else snapshot
+    slim = dict(item)
+    if "snapshot" in slim:
+        slim["snapshot"] = meta(slim["snapshot"])
+    for key in ("snapshots", "source_snapshots"):
+        if isinstance(slim.get(key), dict):
+            slim[key] = {snapshot_id: meta(value) for snapshot_id, value in slim[key].items()}
+    return slim
+
+
 def _advice_page(repo, limit, scope, batch=200):
     from datetime import timedelta
 
@@ -126,7 +146,7 @@ def _advice_page(repo, limit, scope, batch=200):
             reason = archive_reason(item, now)
             active += not reason
             if scope == "all" or (scope == "archive") == bool(reason):
-                selected.append({**item, "archived": reason or None})
+                selected.append({**_slim(item), "archived": reason or None})
         # Older rows are all archived: stop once the page is full and the active ones are counted.
         past_active = not rows or str(rows[-1].get("created_at", "")) < horizon.isoformat()
         if len(rows) < batch or (past_active and (scope == "active" or len(selected) >= limit)):

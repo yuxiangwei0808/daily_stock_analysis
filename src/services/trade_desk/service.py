@@ -225,6 +225,11 @@ class TradeDeskService:
         updates = {}
         if not request.existing_shares and context["shares"] >= 1:
             updates["existing_shares"] = int(context["shares"])
+        shares = int(updates.get("existing_shares", request.existing_shares) or 0)
+        if not request.strategies and request.direction == "auto" and shares >= 1:
+            # Held shares: compare a hedge (and income with 100+ shares) with the directional trades.
+            updates["strategies"] = (["covered_call", "long_put", "bull_call_debit", "bear_put_debit"] if shares >= 100
+                                     else ["long_put", "bear_put_debit", "bull_call_debit", "long_straddle"])
         groups = context["options"]
         if not request.plan_legs and request.expiry is None and len(groups) == 1 and len(groups[0]["legs"]) <= 4:
             updates["plan_legs"] = [{"side": "buy" if leg["qty"] > 0 else "sell", "quantity": int(abs(leg["qty"])),
@@ -232,7 +237,7 @@ class TradeDeskService:
                                     for leg in groups[0]["legs"]]
             updates["plan_source"] = "position"
         base = request.model_dump(mode="json")
-        for attempt in (updates, {k: v for k, v in updates.items() if k == "existing_shares"}):
+        for attempt in (updates, {k: v for k, v in updates.items() if k in {"existing_shares", "strategies"}}):
             if not attempt:
                 break
             try:  # an unpriceable leg shape keeps the shares and drops the plan
