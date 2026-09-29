@@ -230,8 +230,9 @@ function RuleList({ rules, onChanged, withTarget = false }: { rules: HoldingRule
   );
 }
 
-function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel }: {
+function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel, onAsk }: {
   position: HoldingOption; rules: HoldingRule[]; adding: boolean; onAdd: () => void; onChanged: (warning?: string) => void; onCancel: () => void;
+  onAsk?: (ticker: string) => void;
 }) {
   const { t } = useUiLanguage();
   const expiry = position.expiry.slice(5).replace('-', '/');
@@ -245,10 +246,13 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel }: {
             {t('tradeDesk.holdings.underlying')} {money(position.underlyingPrice)}
           </p>
         </div>
-        <Badge variant={position.expired ? 'default' : urgent ? 'danger' : position.daysLeft <= 5 ? 'warning' : 'info'}>
-          {position.expired ? t('tradeDesk.holdings.expired')
-            : position.daysLeft === 0 ? t('tradeDesk.holdings.expiresToday') : `${position.daysLeft} ${t('tradeDesk.holdings.tradingDaysLeft')}`}
-        </Badge>
+        <div className="flex items-center gap-1">
+          {onAsk && !position.expired ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${position.underlying}`} onClick={() => onAsk(position.underlying)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
+          <Badge variant={position.expired ? 'default' : urgent ? 'danger' : position.daysLeft <= 5 ? 'warning' : 'info'}>
+            {position.expired ? t('tradeDesk.holdings.expired')
+              : position.daysLeft === 0 ? t('tradeDesk.holdings.expiresToday') : `${position.daysLeft} ${t('tradeDesk.holdings.tradingDaysLeft')}`}
+          </Badge>
+        </div>
       </div>
       <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <div><dt className="text-xs text-muted-text">{t('tradeDesk.holdings.cost')}</dt><dd className="text-foreground">{money(position.cost)}</dd></div>
@@ -277,9 +281,10 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel }: {
   );
 }
 
-function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
+function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel, onAsk }: {
   stocks: HoldingStock[]; rulesFor: (key: string) => HoldingRule[]; adding: string | null;
   onAdd: (key: string) => void; onChanged: (warning?: string) => void; onCancel: () => void;
+  onAsk?: (ticker: string) => void;
 }) {
   const { t } = useUiLanguage();
   return (
@@ -306,7 +311,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
             <RuleList rules={rules} onChanged={onChanged} />
             {adding === stock.key
               ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onChanged} onCancel={onCancel} />
-              : <Button className="mt-2" size="sm" variant="ghost" onClick={() => onAdd(stock.key)}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>}
+              : <div className="mt-2 flex gap-1"><Button size="sm" variant="ghost" onClick={() => onAdd(stock.key)}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>{onAsk ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.ticker)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}</div>}
           </li>
         );
       })}
@@ -333,6 +338,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
                 <td className="py-2">
                   <span className="font-mono font-semibold text-foreground">{stock.ticker}</span>
                   <span className="ml-2 text-xs text-secondary-text">{stock.name}</span>
+                  {onAsk ? <Button className="ml-1" size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.ticker)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
                   <RuleList rules={rules} onChanged={onChanged} />
                   {adding === stock.key
                     ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onChanged} onCancel={onCancel} />
@@ -359,7 +365,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel }: {
   );
 }
 
-export const HoldingsPanel: React.FC = () => {
+export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ onAsk }) => {
   const { t } = useUiLanguage();
   const [data, setData] = useState<HoldingsResponse | null>(null);
   const [problem, setProblem] = useState('');
@@ -432,7 +438,7 @@ export const HoldingsPanel: React.FC = () => {
           <div className="grid gap-4 xl:grid-cols-2">
             {view.options.map((position) => (
               <OptionCard key={position.key} position={position} rules={rulesFor(position.key)} adding={adding === position.key}
-                onAdd={() => setAdding(position.key)} onChanged={changed} onCancel={() => setAdding(null)} />
+                onAdd={() => setAdding(position.key)} onChanged={changed} onCancel={() => setAdding(null)} onAsk={onAsk} />
             ))}
           </div>
         ) : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noOptions')}</p>}
@@ -440,7 +446,7 @@ export const HoldingsPanel: React.FC = () => {
       <Card variant="bordered" padding="md">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.stocks')}</h2>
         {view?.stocks.length
-          ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onCancel={() => setAdding(null)} />
+          ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onCancel={() => setAdding(null)} onAsk={onAsk} />
           : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noStocks')}</p>}
       </Card>
       </> : null}

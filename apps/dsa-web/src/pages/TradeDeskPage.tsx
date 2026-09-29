@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BookOpen, Check, ChevronRight, CircleDollarSign, FileQuestion, LineChart as LineChartIcon, Pause, Play, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, CircleDollarSign, FileQuestion, Pause, Play, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { tradeDeskApi } from '../api/tradeDesk';
@@ -255,6 +255,9 @@ function AdviceForm({
   isSubmitting,
   sourceReportId,
   heldNote,
+  open,
+  onToggle,
+  tickerOptions,
 }: {
   form: AdviceFormState;
   setForm: React.Dispatch<React.SetStateAction<AdviceFormState>>;
@@ -266,6 +269,9 @@ function AdviceForm({
   isSubmitting: boolean;
   sourceReportId?: number;
   heldNote?: string;
+  open: boolean;
+  onToggle: () => void;
+  tickerOptions: string[];
 }) {
   const { t } = useUiLanguage();
   const disabled = !health?.enabled || isSubmitting;
@@ -276,69 +282,76 @@ function AdviceForm({
     setSelectedStrategies((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
   const liveUnavailable = form.dataMode === 'live' && liveIsBlocked(health);
+  // Filled-in extras stay visible as a count on the closed "More options" summary.
+  const extras = [form.expiry, form.allocation, form.existingShares !== '0' && form.existingShares, form.marginPerUnit, form.planLegs.trim(), selectedStrategies.length].filter(Boolean).length;
+  const field = 'input-surface h-10 w-full rounded-xl border px-3 text-sm text-foreground';
+  const caption = 'mb-1.5 block text-xs font-medium text-secondary-text';
 
   return (
     <Card variant="gradient" padding="md">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <span className="label-uppercase">{t('tradeDesk.ask')}</span>
-          <h2 className="mt-1 text-lg font-semibold text-foreground">{t('tradeDesk.getAdvice')}</h2>
+      <button type="button" aria-expanded={open} onClick={onToggle} className="flex w-full items-center justify-between gap-3 text-left">
+        <span className="flex min-w-0 items-center gap-2">
+          <Sparkles className="h-4 w-4 shrink-0 text-cyan" />
+          <span className="text-base font-semibold text-foreground">{t('tradeDesk.ask')}</span>
+          {!open && form.ticker ? <span className="truncate font-mono text-sm text-secondary-text">{form.ticker}</span> : null}
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          {sourceReportId ? <Badge variant="info">Report #{sourceReportId}</Badge> : null}
+          <ChevronDown className={`h-4 w-4 text-secondary-text transition-transform ${open ? 'rotate-180' : ''}`} />
+        </span>
+      </button>
+
+      {open ? <div className="mt-4 space-y-4">
+        <div className="grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
+          <label><span className={caption}>{t('tradeDesk.ticker')}</span><input aria-label={t('tradeDesk.ticker')} list="trade-desk-tickers" value={form.ticker} onChange={(event) => update('ticker', event.target.value.toUpperCase())} placeholder={t('tradeDesk.tickerPlaceholder')} className="input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 font-mono text-sm text-foreground" /><datalist id="trade-desk-tickers">{tickerOptions.map((ticker) => <option key={ticker} value={ticker} />)}</datalist></label>
+          <label><span className={caption}>{t('tradeDesk.message')}</span><textarea aria-label={t('tradeDesk.message')} value={form.message} onChange={(event) => update('message', event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !disabled && !liveUnavailable && form.ticker.trim()) onSubmit(); }} placeholder={t('tradeDesk.questionPlaceholder')} rows={2} className="input-surface input-focus-glow w-full rounded-xl border px-4 py-2.5 text-sm text-foreground" /></label>
         </div>
-        {sourceReportId ? <Badge variant="info">Report #{sourceReportId}</Badge> : null}
-      </div>
 
-      <div className="mb-4 grid gap-3 rounded-2xl border border-border/60 bg-card/40 p-3 text-sm md:grid-cols-2">
-        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-border/50 p-3">
-          <input type="radio" name="trade-desk-mode" checked={form.dataMode === 'live'} onChange={() => update('dataMode', 'live')} />
-          <span><strong className="block text-foreground">{t('tradeDesk.live')}</strong><span className="text-secondary-text">{health?.live.available ? (health.live.message || 'Fresh verified quotes') : (health?.live.code === 'rights_unknown' ? 'Connected; quote permissions are unverified' : t('tradeDesk.liveUnavailable'))}</span></span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-border/50 p-3">
-          <input type="radio" name="trade-desk-mode" checked={form.dataMode === 'replay'} onChange={() => update('dataMode', 'replay')} />
-          <span><strong className="block text-foreground">{t('tradeDesk.replay')}</strong><span className="text-secondary-text">{t('tradeDesk.replaySynthetic')}</span></span>
-        </label>
-      </div>
-      {liveUnavailable ? <InlineAlert variant="warning" title={t('tradeDesk.liveUnavailable')} message={health?.live.message || t('tradeDesk.staleData')} /> : null}
-      {form.dataMode === 'replay' ? <InlineAlert className="mt-3" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}
+        {heldNote && form.dataMode === 'live' ? <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-cyan/25 bg-cyan/5 p-3 text-sm" data-testid="use-holdings"><input type="checkbox" className="mt-1" checked={form.useHoldings} onChange={(event) => update('useHoldings', event.target.checked)} /><span><strong className="text-foreground">Use my position</strong><span className="block text-secondary-text">You hold {heldNote}. The answer weighs holding, closing, hedging or rolling it; owned shares count for covered calls.</span></span></label> : null}
 
-      <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <label className="lg:col-span-2"><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.ticker')}</span><input aria-label={t('tradeDesk.ticker')} value={form.ticker} onChange={(event) => update('ticker', event.target.value.toUpperCase())} placeholder={t('tradeDesk.tickerPlaceholder')} className="input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground" /></label>
-        <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.direction')}</span><select aria-label={t('tradeDesk.direction')} value={form.direction} onChange={(event) => update('direction', event.target.value as AdviceFormState['direction'])} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground"><option value="auto">{t('tradeDesk.direction.auto')}</option><option value="bullish">{t('tradeDesk.direction.bullish')}</option><option value="bearish">{t('tradeDesk.direction.bearish')}</option><option value="neutral">{t('tradeDesk.direction.neutral')}</option><option value="volatile">{t('tradeDesk.direction.volatile')}</option></select></label>
-        <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.horizon')}</span><select aria-label={t('tradeDesk.horizon')} value={form.horizon} onChange={(event) => update('horizon', event.target.value as AdviceFormState['horizon'])} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground"><option value="both">{t('tradeDesk.horizon.both')}</option><option value="intraday">{t('tradeDesk.horizon.intraday')}</option><option value="swing">{t('tradeDesk.horizon.swing')}</option></select></label>
-      </div>
-      {heldNote && form.dataMode === 'live' ? <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-cyan/25 bg-cyan/5 p-3 text-sm" data-testid="use-holdings"><input type="checkbox" className="mt-1" checked={form.useHoldings} onChange={(event) => update('useHoldings', event.target.checked)} /><span><strong className="text-foreground">Use my position</strong><span className="block text-secondary-text">You hold {heldNote}. The answer weighs holding, closing, hedging or rolling it; owned shares count for covered calls.</span></span></label> : null}
-
-      <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.expiry')}</span><input aria-label={t('tradeDesk.expiry')} type="date" value={form.expiry} onChange={(event) => update('expiry', event.target.value)} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
-        <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.allocation')}</span><input aria-label={t('tradeDesk.allocation')} type="number" min="0" step="any" value={form.allocation} onChange={(event) => update('allocation', event.target.value)} placeholder="optional" className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
-        <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.existingShares')}</span><input aria-label={t('tradeDesk.existingShares')} type="number" min="0" step="1" value={form.existingShares} onChange={(event) => update('existingShares', event.target.value)} className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
-        <label><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.marginPerUnit')}</span><input aria-label={t('tradeDesk.marginPerUnit')} type="number" min="0" step="any" value={form.marginPerUnit} onChange={(event) => update('marginPerUnit', event.target.value)} placeholder="optional" className="input-surface h-11 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
-      </div>
-
-      <div className="mt-4 rounded-2xl border border-border/50 bg-card/30 p-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground"><SlidersHorizontal className="h-4 w-4 text-cyan" />{t('tradeDesk.strategy')}</div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {catalog.length === 0 ? <span className="text-sm text-secondary-text">{t('tradeDesk.strategyAll')}</span> : catalog.map((item) => {
-            const selected = selectedStrategies.includes(item.id);
-            return <button key={item.id} type="button" onClick={() => toggleStrategy(item.id)} className={`rounded-full border px-3 py-1.5 text-xs transition ${selected ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border/60 text-secondary-text hover:text-foreground'}`} aria-pressed={selected}>{selected ? <Check className="mr-1 inline h-3 w-3" /> : null}{item.title || item.id}</button>;
-          })}
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          <fieldset><legend className={caption}>Data</legend><div className="grid grid-cols-2 gap-2 text-sm">
+            <label className={`flex cursor-pointer items-start gap-2 rounded-xl border p-2 ${form.dataMode === 'live' ? 'border-cyan/40 bg-cyan/5' : 'border-border/50'}`}><input type="radio" name="trade-desk-mode" className="mt-1" checked={form.dataMode === 'live'} onChange={() => update('dataMode', 'live')} /><span><strong className="block text-foreground">{t('tradeDesk.live')}</strong><span className="block text-xs text-secondary-text">{health?.live.available ? (health.live.message || 'Fresh verified quotes') : (health?.live.code === 'rights_unknown' ? 'Connected; quote permissions are unverified' : t('tradeDesk.liveUnavailable'))}</span></span></label>
+            <label className={`flex cursor-pointer items-start gap-2 rounded-xl border p-2 ${form.dataMode === 'replay' ? 'border-cyan/40 bg-cyan/5' : 'border-border/50'}`}><input type="radio" name="trade-desk-mode" className="mt-1" checked={form.dataMode === 'replay'} onChange={() => update('dataMode', 'replay')} /><span><strong className="block text-foreground">{t('tradeDesk.replay')}</strong><span className="block text-xs text-secondary-text">{t('tradeDesk.replaySynthetic')}</span></span></label>
+          </div></fieldset>
+          <label><span className={caption}>{t('tradeDesk.direction')}</span><select aria-label={t('tradeDesk.direction')} value={form.direction} onChange={(event) => update('direction', event.target.value as AdviceFormState['direction'])} className={field}><option value="auto">{t('tradeDesk.direction.auto')}</option><option value="bullish">{t('tradeDesk.direction.bullish')}</option><option value="bearish">{t('tradeDesk.direction.bearish')}</option><option value="neutral">{t('tradeDesk.direction.neutral')}</option><option value="volatile">{t('tradeDesk.direction.volatile')}</option></select></label>
+          <label><span className={caption}>{t('tradeDesk.horizon')}</span><select aria-label={t('tradeDesk.horizon')} value={form.horizon} onChange={(event) => update('horizon', event.target.value as AdviceFormState['horizon'])} className={field}><option value="both">{t('tradeDesk.horizon.both')}</option><option value="intraday">{t('tradeDesk.horizon.intraday')}</option><option value="swing">{t('tradeDesk.horizon.swing')}</option></select></label>
         </div>
-      </div>
+        {liveUnavailable ? <InlineAlert variant="warning" title={t('tradeDesk.liveUnavailable')} message={health?.live.message || t('tradeDesk.staleData')} /> : null}
+        {form.dataMode === 'replay' ? <InlineAlert variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}
 
-      <details className="mt-4 rounded-2xl border border-border/50 bg-card/20 p-3">
-        <summary className="cursor-pointer text-sm font-semibold text-foreground">{t('tradeDesk.advanced')}</summary>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
-          <label><span className="mb-2 block text-xs text-secondary-text">{t('tradeDesk.feePerContract')}</span><input aria-label={t('tradeDesk.feePerContract')} type="number" min="0" step="any" value={form.feePerContract} onChange={(event) => update('feePerContract', event.target.value)} className="input-surface h-10 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
-          <label><span className="mb-2 block text-xs text-secondary-text">{t('tradeDesk.riskFreeRate')}</span><input aria-label={t('tradeDesk.riskFreeRate')} type="number" step="any" value={form.riskFreeRate} onChange={(event) => update('riskFreeRate', event.target.value)} className="input-surface h-10 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
-          <label><span className="mb-2 block text-xs text-secondary-text">{t('tradeDesk.dividendYield')}</span><input aria-label={t('tradeDesk.dividendYield')} type="number" min="0" step="any" value={form.dividendYield} onChange={(event) => update('dividendYield', event.target.value)} className="input-surface h-10 w-full rounded-xl border px-3 text-sm text-foreground" /></label>
+        <details className="rounded-2xl border border-border/50 bg-card/20 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-foreground"><SlidersHorizontal className="mr-1.5 inline h-4 w-4 text-cyan" />{t('tradeDesk.moreOptions')}{extras ? <span className="ml-2 text-xs font-normal text-cyan">{extras} set</span> : null}</summary>
+          <div className="mt-3 space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label><span className={caption}>{t('tradeDesk.expiry')}</span><input aria-label={t('tradeDesk.expiry')} type="date" value={form.expiry} onChange={(event) => update('expiry', event.target.value)} className={field} /></label>
+              <label><span className={caption}>{t('tradeDesk.allocation')}</span><input aria-label={t('tradeDesk.allocation')} type="number" min="0" step="any" value={form.allocation} onChange={(event) => update('allocation', event.target.value)} placeholder="optional" className={field} /></label>
+              <label><span className={caption}>{t('tradeDesk.existingShares')}</span><input aria-label={t('tradeDesk.existingShares')} type="number" min="0" step="1" value={form.existingShares} onChange={(event) => update('existingShares', event.target.value)} className={field} /></label>
+              <label><span className={caption}>{t('tradeDesk.marginPerUnit')}</span><input aria-label={t('tradeDesk.marginPerUnit')} type="number" min="0" step="any" value={form.marginPerUnit} onChange={(event) => update('marginPerUnit', event.target.value)} placeholder="optional" className={field} /></label>
+            </div>
+            <div>
+              <span className={caption}>{t('tradeDesk.strategy')}</span>
+              <div className="flex flex-wrap gap-2">
+                {catalog.length === 0 ? <span className="text-sm text-secondary-text">{t('tradeDesk.strategyAll')}</span> : catalog.map((item) => {
+                  const selected = selectedStrategies.includes(item.id);
+                  return <button key={item.id} type="button" onClick={() => toggleStrategy(item.id)} className={`rounded-full border px-3 py-1.5 text-xs transition ${selected ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border/60 text-secondary-text hover:text-foreground'}`} aria-pressed={selected}>{selected ? <Check className="mr-1 inline h-3 w-3" /> : null}{item.title || item.id}</button>;
+                })}
+              </div>
+            </div>
+            <label className="block"><span className={caption}>{t('tradeDesk.planLegs')}</span><textarea aria-label={t('tradeDesk.planLegs')} value={form.planLegs} onChange={(event) => update('planLegs', event.target.value)} placeholder={'buy 1 call 230 2026-10-16\nsell 1 call 240 2026-10-16'} rows={2} className="input-surface w-full rounded-xl border px-4 py-2.5 font-mono text-xs text-foreground" /><span className="mt-1 block text-xs text-secondary-text">{t('tradeDesk.planLegsHint')}</span></label>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <label><span className={caption}>{t('tradeDesk.feePerContract')}</span><input aria-label={t('tradeDesk.feePerContract')} type="number" min="0" step="any" value={form.feePerContract} onChange={(event) => update('feePerContract', event.target.value)} className={field} /></label>
+              <label><span className={caption}>{t('tradeDesk.riskFreeRate')}</span><input aria-label={t('tradeDesk.riskFreeRate')} type="number" step="any" value={form.riskFreeRate} onChange={(event) => update('riskFreeRate', event.target.value)} className={field} /></label>
+              <label><span className={caption}>{t('tradeDesk.dividendYield')}</span><input aria-label={t('tradeDesk.dividendYield')} type="number" min="0" step="any" value={form.dividendYield} onChange={(event) => update('dividendYield', event.target.value)} className={field} /></label>
+            </div>
+          </div>
+        </details>
+
+        <div className="flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="max-w-2xl text-xs leading-5 text-secondary-text"><CircleDollarSign className="mr-1 inline h-3.5 w-3.5 text-cyan" />{t('tradeDesk.noAccountValue')}</p>
+          <Button type="button" size="lg" disabled={disabled || liveUnavailable || !form.ticker.trim()} isLoading={isSubmitting} onClick={onSubmit}><Sparkles className="h-4 w-4" />{t('tradeDesk.getAdvice')}</Button>
         </div>
-      </details>
-
-      <label className="mt-4 block"><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.message')}</span><textarea aria-label={t('tradeDesk.message')} value={form.message} onChange={(event) => update('message', event.target.value)} placeholder={t('tradeDesk.messagePlaceholder')} rows={3} className="input-surface input-focus-glow w-full rounded-xl border px-4 py-3 text-sm text-foreground" /></label>
-      <label className="mt-4 block"><span className="mb-2 block text-sm font-medium text-foreground">{t('tradeDesk.planLegs')}</span><textarea aria-label={t('tradeDesk.planLegs')} value={form.planLegs} onChange={(event) => update('planLegs', event.target.value)} placeholder={'buy 1 call 230 2026-10-16\nsell 1 call 240 2026-10-16'} rows={2} className="input-surface w-full rounded-xl border px-4 py-3 font-mono text-xs text-foreground" /><span className="mt-1 block text-xs text-secondary-text">{t('tradeDesk.planLegsHint')}</span></label>
-      <div className="mt-4 flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <p className="max-w-2xl text-xs leading-5 text-secondary-text"><CircleDollarSign className="mr-1 inline h-3.5 w-3.5 text-cyan" />{t('tradeDesk.noAccountValue')}</p>
-        <Button type="button" size="lg" disabled={disabled || liveUnavailable || !form.ticker.trim()} isLoading={isSubmitting} onClick={onSubmit}><Sparkles className="h-4 w-4" />{t('tradeDesk.getAdvice')}</Button>
-      </div>
+      </div> : null}
     </Card>
   );
 }
@@ -529,10 +542,85 @@ function ModelPanel({ panel }: { panel: TradeModelPanel }) {
   );
 }
 
-function AdviceJobCard({ job, selected, onSelect, onCancel, onDelete, onFollowUp, isCancelling }: { job: TradeAdviceJob; selected: boolean; onSelect: () => void; onCancel: () => void; onDelete: () => void; onFollowUp: (message: string) => void; isCancelling: boolean }) {
+const shortDate = (value: string | null | undefined): string => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+
+/** Your questions grouped by stock, newest group first; the group holding the selection opens itself. */
+function QuestionList({ jobs, selectedId, heldTickers, busyId, onSelect, onCancel, onDelete }: {
+  jobs: TradeAdviceJob[];
+  selectedId: string | null;
+  heldTickers: Set<string>;
+  busyId: string | null;
+  onSelect: (job: TradeAdviceJob) => void;
+  onCancel: (job: TradeAdviceJob) => void;
+  onDelete: (job: TradeAdviceJob) => void;
+}) {
   const { t } = useUiLanguage();
-  const [message, setMessage] = useState('');
-  return <Card variant={selected ? 'gradient' : 'bordered'} padding="sm" className="cursor-pointer"><div className="flex items-start justify-between gap-3" onClick={onSelect}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><strong className="font-mono text-foreground">{job.request.ticker}</strong><ModeBadge mode={job.request.dataMode} /><Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>{job.archived ? <Badge variant="default">{ARCHIVE_REASONS[job.archived] || job.archived}</Badge> : null}{job.parentAdviceId ? <Badge variant="history">{t('tradeDesk.researchVersion')}</Badge> : null}</div><p className="mt-1 text-xs text-secondary-text">{formatDate(job.createdAt)} · {job.candidates.length} candidates</p></div>{job.status === 'queued' || job.status === 'running' ? <Button size="xsm" variant="ghost" isLoading={isCancelling} onClick={(event) => { event.stopPropagation(); onCancel(); }}><Pause className="h-3.5 w-3.5" />{t('tradeDesk.cancelJob')}</Button> : <div className="flex items-center gap-1"><Button size="xsm" variant="ghost" aria-label={`Delete ${job.request.ticker} request`} title="Delete" isLoading={isCancelling} onClick={(event) => { event.stopPropagation(); onDelete(); }}><Trash2 className="h-3.5 w-3.5" /></Button><ChevronRight className="h-4 w-4 text-muted-text" /></div>}</div>{selected && (job.assessment || job.explanation || job.error) ? <div className="mt-3 space-y-2 border-t border-border/40 pt-3 text-sm text-secondary-text"><p><strong className="text-foreground">{t('tradeDesk.assessment')}:</strong> {textValue(job.assessment)}</p><p><strong className="text-foreground">{t('tradeDesk.explanation')}:</strong> {textValue(job.explanation)}</p>{job.error ? <p className="text-danger"><strong>{t('tradeDesk.jobError')}:</strong> {job.error}</p> : null}<div className="flex flex-col gap-2 pt-2 sm:flex-row"><input aria-label={`${t('tradeDesk.followUp')} ${job.request.ticker}`} value={message} onChange={(event) => setMessage(event.target.value)} onClick={(event) => event.stopPropagation()} placeholder={t('tradeDesk.followUpPlaceholder')} className="input-surface h-9 min-w-0 flex-1 rounded-lg border px-3 text-xs text-foreground" /><Button size="sm" variant="outline" disabled={!message.trim()} onClick={(event) => { event.stopPropagation(); onFollowUp(message.trim()); setMessage(''); }}><Sparkles className="h-3.5 w-3.5" />{t('tradeDesk.followUp')}</Button></div></div> : null}</Card>;
+  const [filter, setFilter] = useState('');
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  const groups = useMemo(() => {
+    const byTicker = new Map<string, TradeAdviceJob[]>();
+    for (const job of jobs) {
+      const ticker = job.request.ticker;
+      byTicker.set(ticker, [...(byTicker.get(ticker) || []), job]);
+    }
+    return Array.from(byTicker.entries());
+  }, [jobs]);
+  const needle = filter.trim().toUpperCase();
+  const shown = needle ? groups.filter(([ticker]) => ticker.includes(needle)) : groups;
+  const isOpen = (ticker: string, items: TradeAdviceJob[], index: number) => toggled[ticker] ?? (
+    index === 0 || Boolean(needle) || items.some((job) => job.id === selectedId));
+  return (
+    <div className="space-y-2">
+      {groups.length > 3 ? <input aria-label={t('tradeDesk.filterTickers')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('tradeDesk.filterTickers')} className="input-surface h-9 w-full rounded-lg border px-3 text-xs text-foreground" /> : null}
+      {shown.map(([ticker, items], index) => {
+        const open = isOpen(ticker, items, index);
+        const latest = items[0];
+        return (
+          <section key={ticker} className="rounded-xl border border-border/50 bg-card/40" data-testid={`question-group-${ticker}`}>
+            <button type="button" aria-expanded={open} onClick={() => setToggled((current) => ({ ...current, [ticker]: !open }))} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left">
+              <span className="flex min-w-0 items-center gap-2">
+                <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-secondary-text transition-transform ${open ? 'rotate-90' : ''}`} />
+                <strong className="font-mono text-sm text-foreground">{ticker}</strong>
+                <span className="text-xs text-secondary-text">{items.length}</span>
+                {heldTickers.has(ticker) ? <Badge variant="info">{t('tradeDesk.held')}</Badge> : null}
+              </span>
+              <span className="flex shrink-0 items-center gap-2 text-xs text-secondary-text">{shortDate(latest.createdAt)}<Badge variant={statusVariant(latest.status)}>{statusLabel(latest.status)}</Badge></span>
+            </button>
+            {open ? <ul className="space-y-1 border-t border-border/40 p-1.5">
+              {items.map((job) => {
+                const selected = job.id === selectedId;
+                const running = job.status === 'queued' || job.status === 'running';
+                return (
+                  <li key={job.id}>
+                    <div className={`flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 ${selected ? 'bg-cyan/10 ring-1 ring-cyan/30' : 'hover:bg-hover'}`}>
+                      <button type="button" aria-current={selected || undefined} onClick={() => onSelect(job)} className="min-w-0 flex-1 text-left">
+                        <span className="block truncate text-sm text-foreground" title={job.request.message || undefined}>{job.request.message || 'Compare strategies'}</span>
+                        <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-secondary-text">
+                          <span>{shortDate(job.createdAt)}</span>
+                          <Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>
+                          {job.request.dataMode === 'replay' ? <ModeBadge mode="replay" /> : null}
+                          {job.candidates.length ? <span>{job.candidates.length} ideas</span> : null}
+                          {job.parentAdviceId ? <Badge variant="history">{t('tradeDesk.followUpBadge')}</Badge> : null}
+                          {job.archived ? <Badge variant="default">{ARCHIVE_REASONS[job.archived] || job.archived}</Badge> : null}
+                        </span>
+                      </button>
+                      {running
+                        ? <Button size="xsm" variant="ghost" isLoading={busyId === job.id} onClick={() => onCancel(job)}><Pause className="h-3.5 w-3.5" />{t('tradeDesk.cancelJob')}</Button>
+                        : <Button size="xsm" variant="ghost" aria-label={`Delete ${ticker} request`} title="Delete" isLoading={busyId === job.id} onClick={() => onDelete(job)}><Trash2 className="h-3.5 w-3.5" /></Button>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul> : null}
+          </section>
+        );
+      })}
+    </div>
+  );
 }
 
 function PositionCard({ position, plans, onPaperFill, onManualFill, onReconcile, onSettle, onUpdatePlan }: { position: TradePosition; plans: TradeDeskPlan[]; onPaperFill: (position: TradePosition) => void; onManualFill: (position: TradePosition) => void; onReconcile: (position: TradePosition) => void; onSettle: (position: TradePosition) => void; onUpdatePlan: (planId: string, changes: UpdateTradePlanRequest) => void }) {
@@ -701,6 +789,25 @@ const TradeDeskPage: React.FC = () => {
 
   const selectedAdvice = useMemo(() => advice.find((item) => item.id === selectedAdviceId) || archive?.find((item) => item.id === selectedAdviceId) || null, [advice, archive, selectedAdviceId]);
   const heldNote = heldSummary(heldView, form.ticker);
+  const heldTickers = useMemo(() => new Set([...(heldView?.stocks || []).map((row) => row.ticker),
+    ...(heldView?.options || []).filter((row) => !row.expired).map((row) => row.underlying)]), [heldView]);
+  // Ticker suggestions: what you hold, then what you asked about recently.
+  const tickerOptions = useMemo(() => Array.from(new Set([...heldTickers, ...advice.map((job) => job.request.ticker)])).slice(0, 40), [heldTickers, advice]);
+  const [askOpen, setAskOpen] = useState<boolean | null>(null);
+  const askPanelOpen = askOpen ?? (Boolean(deepLinkTicker) || advice.length === 0);
+  // From a held position: open the ask panel on that ticker with your position attached.
+  const askAbout = (ticker: string) => {
+    setForm((current) => ({ ...current, ticker, dataMode: 'live', useHoldings: true }));
+    setAskOpen(true);
+    setView('opportunities');
+    if (typeof window !== 'undefined') window.scrollTo?.({ top: 0, behavior: 'smooth' });
+  };
+  const selectQuestion = (job: TradeAdviceJob) => {
+    setSelectedAdviceId(job.id);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      window.setTimeout(() => document.getElementById('advice-detail')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }), 0);
+    }
+  };
   const showScope = async (scope: 'active' | 'archive') => {
     setAdviceScope(scope);
     if (scope !== 'archive') return;
@@ -733,7 +840,7 @@ const TradeDeskPage: React.FC = () => {
     if (!form.ticker.trim()) return;
     if (form.dataMode === 'live' && liveIsBlocked(health)) { setError(health?.live.message || t('tradeDesk.liveUnavailable')); return; }
     setIsSubmitting(true);
-    try { const job = await tradeDeskApi.createAdvice(adviceRequest()); adviceListSequence.current += 1; setAdvice((items) => [job, ...items.filter((item) => item.id !== job.id)]); setSelectedAdviceId(job.id); setMessage(`Advice ${job.id} queued`); } catch (submitError) { setError(errorMessage(submitError)); } finally { setIsSubmitting(false); }
+    try { const job = await tradeDeskApi.createAdvice(adviceRequest()); adviceListSequence.current += 1; setAdvice((items) => [job, ...items.filter((item) => item.id !== job.id)]); setSelectedAdviceId(job.id); setAskOpen(false); setMessage(`Asked about ${job.request.ticker}; the answer appears under Your questions.`); } catch (submitError) { setError(errorMessage(submitError)); } finally { setIsSubmitting(false); }
   };
 
   const cancelAdvice = async (job: TradeAdviceJob) => {
@@ -849,8 +956,50 @@ const TradeDeskPage: React.FC = () => {
 
   const setActiveView = (nextView: TradeDeskView) => { setView(nextView); };
   const listedAdvice = adviceScope === 'archive' ? archive || [] : advice;
-  const renderJobList = () => <div className="space-y-3">{listedAdvice.length ? listedAdvice.slice(0, adviceScope === 'archive' ? 100 : 20).map((job) => <AdviceJobCard key={job.id} job={job} selected={job.id === selectedAdviceId} onSelect={() => setSelectedAdviceId(job.id)} onCancel={() => void cancelAdvice(job)} onDelete={() => setPendingDelete({ job })} onFollowUp={(content) => void followUp(job, content)} isCancelling={busyAdviceId === job.id} />) : <EmptyState icon={<FileQuestion className="h-8 w-8" />} title={t('tradeDesk.noCandidates')} description={t('tradeDesk.description')} />}</div>;
-  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} />{selectedAdvice ? <Card variant="bordered" padding="md"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold text-foreground">{selectedAdvice.request.ticker} opportunities</h2><ModeBadge mode={selectedAdvice.request.dataMode} /><Badge variant={statusVariant(selectedAdvice.status)}>{statusLabel(selectedAdvice.status)}</Badge></div><p className="mt-1 text-xs text-secondary-text">{formatDate(selectedAdvice.updatedAt)} · snapshot {textValue(selectedAdvice.snapshot && (selectedAdvice.snapshot as { id?: unknown }).id) || 'pending'}</p></div><Button size="sm" variant="ghost" onClick={() => void refreshData(false)}><RefreshCw className="h-3.5 w-3.5" />{t('tradeDesk.refresh')}</Button></div>{selectedAdvice.request.dataMode === 'replay' ? <InlineAlert className="mt-4" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}{selectedAdvice.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={selectedAdvice.planError} /> : null}<PositionUsed job={selectedAdvice} />{selectedAdvice.panel?.opinions?.length ? <ModelPanel panel={selectedAdvice.panel} /> : null}{selectedAdvice.explanation ? <AdviceVerdict job={selectedAdvice} /> : null}{selectedAdvice.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(selectedAdvice, selectedAdvice.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}<div className="mt-5 space-y-5">{intradayCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.intraday')}</h3><div className="space-y-4">{intradayCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={selectedAdvice} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === selectedAdvice.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div></section> : null}{swingCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.swing')}</h3><div className="space-y-4">{swingCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={selectedAdvice} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === selectedAdvice.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div></section> : null}{selectedAdvice.status === 'completed' && selectedAdvice.candidates.length === 0 ? <EmptyState title={t('tradeDesk.noCandidates')} description={textValue(selectedAdvice.explanation)} /> : null}</div></Card> : null}<div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)]"><div><div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.researchVersion')}</h2><div className="flex gap-1 text-xs" role="group" aria-label="Advice history">{(['active', 'archive'] as const).map((scope) => <button key={scope} type="button" aria-pressed={adviceScope === scope} onClick={() => void showScope(scope)} className={`rounded-lg px-2 py-1 ${adviceScope === scope ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{scope === 'active' ? 'Current' : 'Archive'} ({scope === 'active' ? adviceCounts?.active ?? advice.length : adviceCounts?.archive ?? archive?.length ?? 0})</button>)}</div></div>{adviceScope === 'archive' ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-secondary-text">Expired, stale, empty or week-old requests, kept until you delete them.</p>{archive?.length ? <Button size="xsm" variant="ghost" onClick={() => setPendingDelete({ archive: adviceCounts?.archive ?? archive.length })}><Trash2 className="h-3.5 w-3.5" />Delete all archived</Button> : null}</div> : null}{renderJobList()}</div><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><LineChartIcon className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.followUp')}</h2></div><p className="mt-2 text-sm leading-6 text-secondary-text">{t('tradeDesk.followUpPlaceholder')}</p><textarea value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} rows={5} disabled={!selectedAdvice} placeholder={selectedAdvice ? t('tradeDesk.followUpPlaceholder') : t('tradeDesk.noCandidates')} className="input-surface mt-4 w-full rounded-xl border px-3 py-2 text-sm text-foreground" /><Button className="mt-3 w-full" variant="outline" disabled={!selectedAdvice || !followUpForm.trim()} isLoading={isSubmitting} onClick={() => selectedAdvice && void followUp(selectedAdvice)}><Sparkles className="h-4 w-4" />{t('tradeDesk.followUp')}</Button></Card></div></div>;
+  const renderQuestions = () => <Card variant="bordered" padding="sm" className="lg:sticky lg:top-4">
+    <div className="mb-2 flex items-center justify-between gap-2 px-1">
+      <h2 className="text-sm font-semibold text-foreground">{t('tradeDesk.yourQuestions')}</h2>
+      <div className="flex gap-1 text-xs" role="group" aria-label="Question history">{(['active', 'archive'] as const).map((scope) => <button key={scope} type="button" aria-pressed={adviceScope === scope} onClick={() => void showScope(scope)} className={`rounded-lg px-2 py-1 ${adviceScope === scope ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{scope === 'active' ? 'Current' : 'Archive'} ({scope === 'active' ? adviceCounts?.active ?? advice.length : adviceCounts?.archive ?? archive?.length ?? 0})</button>)}</div>
+    </div>
+    {adviceScope === 'archive' ? <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1"><p className="text-xs text-secondary-text">Expired, stale, empty or week-old questions, kept until you delete them.</p>{archive?.length ? <Button size="xsm" variant="ghost" onClick={() => setPendingDelete({ archive: adviceCounts?.archive ?? archive.length })}><Trash2 className="h-3.5 w-3.5" />Delete all archived</Button> : null}</div> : null}
+    {listedAdvice.length
+      ? <QuestionList jobs={listedAdvice} selectedId={selectedAdviceId} heldTickers={heldTickers} busyId={busyAdviceId} onSelect={selectQuestion} onCancel={(job) => void cancelAdvice(job)} onDelete={(job) => setPendingDelete({ job })} />
+      : <p className="px-1 py-6 text-center text-xs text-secondary-text">{adviceScope === 'archive' ? 'Nothing archived.' : 'No questions yet. Ask about a stock above.'}</p>}
+  </Card>;
+  const candidateList = (items: StrategyCandidate[], job: TradeAdviceJob) => <div className="space-y-4">{items.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={job} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === job.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div>;
+  const renderAnswer = () => {
+    if (!selectedAdvice) return <Card variant="bordered" padding="md"><EmptyState icon={<FileQuestion className="h-8 w-8" />} title={t('tradeDesk.yourQuestions')} description={t('tradeDesk.pickQuestion')} /></Card>;
+    const job = selectedAdvice;
+    const running = job.status === 'queued' || job.status === 'running';
+    return <Card variant="bordered" padding="md"><div id="advice-detail" className="scroll-mt-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2"><h2 className="font-mono text-lg font-semibold text-foreground">{job.request.ticker}</h2><ModeBadge mode={job.request.dataMode} /><Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>{job.parentAdviceId ? <Badge variant="history">{t('tradeDesk.followUpBadge')}</Badge> : null}{job.archived ? <Badge variant="default">{ARCHIVE_REASONS[job.archived] || job.archived}</Badge> : null}</div>
+          {job.request.message ? <p className="mt-1 text-sm text-secondary-text">“{job.request.message}”</p> : null}
+          <p className="mt-1 text-xs text-muted-text" title={`snapshot ${textValue(job.snapshot && (job.snapshot as { id?: unknown }).id) || 'pending'}`}>Updated {formatDate(job.updatedAt)}</p>
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => void refreshData(false)}><RefreshCw className="h-3.5 w-3.5" />{t('tradeDesk.refresh')}</Button>
+      </div>
+      {running ? <p className="mt-4 flex items-center gap-2 text-sm text-secondary-text"><RefreshCw className="h-4 w-4 animate-spin text-cyan" />Working on it; answers usually take one to three minutes.</p> : null}
+      {job.error ? <InlineAlert className="mt-4" variant="danger" title={t('tradeDesk.jobError')} message={job.error} /> : null}
+      {job.request.dataMode === 'replay' ? <InlineAlert className="mt-4" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}
+      {job.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={job.planError} /> : null}
+      <PositionUsed job={job} />
+      {job.panel?.opinions?.length ? <ModelPanel panel={job.panel} /> : null}
+      {job.explanation ? <AdviceVerdict job={job} /> : null}
+      {job.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(job, job.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}
+      <div className="mt-5 space-y-5">
+        {intradayCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.intraday')}</h3>{candidateList(intradayCandidates, job)}</section> : null}
+        {swingCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.swing')}</h3>{candidateList(swingCandidates, job)}</section> : null}
+        {job.status === 'completed' && job.candidates.length === 0 && !job.explanation ? <EmptyState title={t('tradeDesk.noCandidates')} description={t('tradeDesk.description')} /> : null}
+      </div>
+      {!running ? <div className="mt-5 border-t border-border/50 pt-4">
+        <textarea aria-label={t('tradeDesk.followUp')} value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && followUpForm.trim()) void followUp(job); }} rows={2} placeholder={t('tradeDesk.followUpPlaceholder')} className="input-surface w-full rounded-xl border px-3 py-2 text-sm text-foreground" />
+        <div className="mt-2 flex justify-end"><Button size="sm" variant="outline" disabled={!followUpForm.trim()} isLoading={isSubmitting} onClick={() => void followUp(job)}><Sparkles className="h-4 w-4" />{t('tradeDesk.followUp')}</Button></div>
+      </div> : null}
+    </div></Card>;
+  };
+  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
   const manualFillContracts = manualFillPosition ? (() => {
     const plan = plans.find((item) => item.id === manualFillPosition.planId) || manualFillPosition.plan;
     const candidateContracts = plan?.candidate.legs.map((leg) => leg.contractId) || [];
@@ -873,7 +1022,7 @@ const TradeDeskPage: React.FC = () => {
 
   if (isLoading && !health) return <AppPage><Loading label={t('common.loading')} /></AppPage>;
   if (health && !health.enabled) return <AppPage><InlineAlert variant="warning" title={t('tradeDesk.unavailable')} message="Trade Desk is disabled by the server configuration." /></AppPage>;
-  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<ConfirmDialog isOpen={pendingDelete !== null} isDanger title={pendingDelete && 'job' in pendingDelete ? `Delete the ${pendingDelete.job.request.ticker} request?` : 'Delete all archived requests?'} message={pendingDelete && 'job' in pendingDelete ? 'The request and its answer are removed permanently. The journal keeps its log entries.' : `${pendingDelete && 'archive' in pendingDelete ? pendingDelete.archive : 0} archived requests are removed permanently. Requests linked to a monitored plan are kept.`} confirmText="Delete" onConfirm={() => void confirmDelete()} onCancel={() => setPendingDelete(null)} /><div className="mt-5">{view === 'opportunities' ? renderOpportunities() : view === 'holdings' ? <HoldingsPanel /> : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
+  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<ConfirmDialog isOpen={pendingDelete !== null} isDanger title={pendingDelete && 'job' in pendingDelete ? `Delete the ${pendingDelete.job.request.ticker} request?` : 'Delete all archived requests?'} message={pendingDelete && 'job' in pendingDelete ? 'The request and its answer are removed permanently. The journal keeps its log entries.' : `${pendingDelete && 'archive' in pendingDelete ? pendingDelete.archive : 0} archived requests are removed permanently. Requests linked to a monitored plan are kept.`} confirmText="Delete" onConfirm={() => void confirmDelete()} onCancel={() => setPendingDelete(null)} /><div className="mt-5">{view === 'opportunities' ? renderOpportunities() : view === 'holdings' ? <HoldingsPanel onAsk={askAbout} /> : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
 };
 
 export default TradeDeskPage;

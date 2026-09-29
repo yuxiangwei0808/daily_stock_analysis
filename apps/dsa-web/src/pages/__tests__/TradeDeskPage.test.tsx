@@ -153,7 +153,7 @@ describe('TradeDeskPage', () => {
     renderPage('/trade-desk?ticker=AAPL&sourceReportId=42');
     await screen.findByLabelText(/Ticker|股票代码/);
     fireEvent.click(screen.getByRole('radio', { name: /Replay/ }));
-    fireEvent.click(screen.getByRole('button', { name: /Generate opportunities|生成机会/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^(Ask|提问)$/ }));
 
     await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({
       ticker: 'AAPL',
@@ -167,7 +167,7 @@ describe('TradeDeskPage', () => {
     renderPage();
 
     expect(await screen.findByText(/Trade Desk is disabled by the server configuration|Trade Desk .*服务配置/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Generate opportunities|生成机会/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(Ask|提问)$/ })).not.toBeInTheDocument();
   });
 
   it('cancels a queued advice job and keeps job lifecycle visible', async () => {
@@ -195,7 +195,7 @@ describe('TradeDeskPage', () => {
       effectiveRequests: { [candidate.id]: { ...baseRequest, allocation: 500, direction: 'bearish' } } };
     api.listAdvice.mockResolvedValue({ items: [job] });
     renderPage();
-    const followup = await screen.findByPlaceholderText(/Ask from this version|基于这个版本/);
+    const followup = await screen.findByPlaceholderText(/Ask a follow-up about this answer|针对这个回答继续追问/);
     fireEvent.change(followup, { target: { value: 'Explain this choice further' } });
     fireEvent.click(screen.getByRole('button', { name: /Ask a follow-up|继续追问/ }));
     await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({
@@ -256,7 +256,7 @@ describe('TradeDeskPage', () => {
     // Live is unavailable in this fixture; the choice is still sent with a replay request.
     fireEvent.click(screen.getByRole('radio', { name: /Replay/ }));
     expect(screen.queryByTestId('use-holdings')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Generate opportunities|生成机会/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^(Ask|提问)$/ }));
     await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({ ticker: 'SOXS', useHoldings: false })));
     fireEvent.change(ticker, { target: { value: 'AAPL' } });
     expect(screen.queryByTestId('use-holdings')).not.toBeInTheDocument();
@@ -272,6 +272,41 @@ describe('TradeDeskPage', () => {
     expect(panel).toHaveTextContent('35C 2026-10-02 (-18.0%) · 4 trading days left');
     expect(panel).toHaveTextContent('holding from here');
     expect(panel).toHaveTextContent('price below 30');
+  });
+
+  it('groups your questions by stock and keeps the ask panel folded when there is history', async () => {
+    const job = (id: string, ticker: string, message: string) => ({ ...queuedJob, id, status: 'completed', explanation: `Answer ${id}`,
+      request: { ...queuedJob.request, ticker, message } });
+    api.listAdvice.mockResolvedValue({ items: [job('a1', 'SOXS', 'Day call entry?'), job('a2', 'NVDA', 'Covered call?'),
+      job('a3', 'SOXS', 'Close or hold?'), job('a4', 'AAPL', 'Earnings play'), job('a5', 'META', 'Put spread')] });
+    renderPage();
+    const soxs = await screen.findByTestId('question-group-SOXS');
+    expect(soxs).toHaveTextContent('Day call entry?');
+    expect(soxs).toHaveTextContent('Close or hold?');
+    // Only the newest group (and the selected question's) starts open.
+    expect(screen.getByTestId('question-group-NVDA')).not.toHaveTextContent('Covered call?');
+    fireEvent.click(screen.getByRole('button', { name: /NVDA/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Covered call\?/ }));
+    expect((await screen.findAllByText('Answer a2')).length).toBeGreaterThan(0);
+    // Filter narrows the groups.
+    fireEvent.change(screen.getByLabelText(/Filter by ticker|按代码筛选/), { target: { value: 'me' } });
+    expect(screen.queryByTestId('question-group-SOXS')).not.toBeInTheDocument();
+    expect(screen.getByTestId('question-group-META')).toBeInTheDocument();
+    // The ask panel is a dropdown: folded while history exists.
+    expect(screen.queryByLabelText(/Ticker|股票代码/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Ask about a stock|问问股票/, expanded: false }));
+    expect(await screen.findByLabelText(/Ticker|股票代码/)).toBeInTheDocument();
+  });
+
+  it('asks about a held position straight from the holdings tab', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Older answer' }] });
+    api.getHoldings.mockResolvedValue({ enabled: true, rules: [], view: { syncedAt: '2026-09-29T14:00:00Z', stocks: [{ key: 'SOXS', ticker: 'SOXS', name: 'Bear 3X', qty: 200, pnlPct: 4.2 }], options: [] } });
+    renderPage();
+    fireEvent.click(await screen.findByRole('tab', { name: /Broker holdings|券商持仓|Holdings/ }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Ask about SOXS' }))[0]);
+    expect(screen.getByRole('tab', { name: /Ask about a stock|问问股票/ })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByLabelText(/Ticker|股票代码/)).toHaveValue('SOXS');
+    expect(await screen.findByTestId('use-holdings')).toHaveTextContent('You hold 200 shares');
   });
 
   it('opens the merged ask tab for old ?view=ask links', async () => {
@@ -304,7 +339,7 @@ describe('TradeDeskPage', () => {
       code: 'opend_not_configured', message: 'Set TRADE_DESK_OPEND_HOST' } });
     renderPage('/trade-desk?ticker=AAPL');
     await screen.findByLabelText(/Ticker|股票代码/);
-    await waitFor(() => expect(screen.getByRole('button', { name: /Generate opportunities|生成机会/ })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^(Ask|提问)$/ })).toBeDisabled());
   });
 
   it('allows live submission when rights are only unknown', async () => {
@@ -312,7 +347,7 @@ describe('TradeDeskPage', () => {
       code: 'rights_unknown', message: 'Rights not reported' } });
     renderPage('/trade-desk?ticker=AAPL');
     await screen.findByLabelText(/Ticker|股票代码/);
-    await waitFor(() => expect(screen.getByRole('button', { name: /Generate opportunities|生成机会/ })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^(Ask|提问)$/ })).toBeEnabled());
   });
 
   it('labels replay alerts in the journal even when the payload has many fields', async () => {

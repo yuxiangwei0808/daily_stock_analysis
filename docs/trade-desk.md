@@ -56,8 +56,16 @@ phone; localhost links on another device will not reach this server.
 
 ## Using it
 
-The **Ask about a stock** tab holds the request form, the selected answer and the
-request history. The history shows current requests; **Archive** lists requests
+The **Ask about a stock** tab has three parts. The ask panel at the top folds away
+like a dropdown (it opens by itself when there is no history or when a link brings a
+ticker); its quick row is the ticker (suggestions: what you hold, then what you asked
+recently), your question (Ctrl/Cmd+Enter sends) and **Ask**, with data mode, direction
+and horizon beside it and everything else under **More options**. Sending folds the
+panel so the answer is in view. **Your questions** lists your requests grouped by
+stock (newest group first, a filter once there are more than three); the answer to the
+selected one sits beside it, with the follow-up box at its end. In **Broker
+holdings**, **Ask** on a position opens the panel on that ticker with your position
+attached. The list shows current requests; **Archive** lists requests
 whose options have expired, that were marked stale, that found nothing (after
 their day) or that are over a week old. Nothing is deleted: archived requests stay
 in `trade_desk_advice` for the track record and backtests (`GET /advice?scope=archive`)
