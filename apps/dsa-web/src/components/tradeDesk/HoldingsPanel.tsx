@@ -2,6 +2,7 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, BellOff, Pause, Play, Plus, RefreshCw, Sparkles, Trash2, Wallet, X } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
+import { PortfolioRisk } from './PortfolioRisk';
 import { Badge, Button, Card, EmptyState, InlineAlert, Loading } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey } from '../../i18n/uiText';
@@ -442,6 +443,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
       </Card>
       {view?.syncedAt ? <>
       <SummaryCard summary={data?.summary} onBuilt={(summary) => setData((current) => (current ? { ...current, summary } : current))} />
+      <PortfolioRisk syncedAt={view.syncedAt} />
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.options')}</h2>
         {view?.options.length ? (

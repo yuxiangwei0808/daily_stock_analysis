@@ -493,9 +493,22 @@ class Holdings:
         summary = build_summary(view, self.raw(), history, self.rules(), _local(now).date(),
                                 earnings_date=earnings_date)
         summary["message"] = format_summary(summary)
+        try:  # percentages only, like the rest of the summary
+            from .risk import portfolio_risk, summary_line
+            download = None if bars is trend.download_bars else (lambda tickers, period="1y": bars(tickers))
+            line = summary_line(portfolio_risk(view, download=download, now=now))
+            if line:
+                summary["message"] += "\n" + line
+        except Exception as exc:  # the summary goes out without the risk line
+            logger.info("Portfolio risk unavailable: %s", type(exc).__name__)
         summary["built_at"] = utcnow().isoformat()
         self.repo.set_setting("portfolio_summary", summary)
         return summary
+
+    def risk(self, now: Optional[datetime] = None, *, download=None) -> Dict[str, Any]:
+        """Delta, time decay, beta and index-move P&L across what you hold (estimates; see risk.py)."""
+        from .risk import portfolio_risk
+        return portfolio_risk(self.view(now=now), download=download, now=now)
 
     def last_summary(self) -> Optional[Dict[str, Any]]:
         return self.repo.setting("portfolio_summary", None)

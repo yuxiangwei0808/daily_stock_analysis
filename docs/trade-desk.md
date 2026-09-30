@@ -524,6 +524,24 @@ unlocked and nothing is ordered. The snapshot is stored locally
   weight of the account and P&L on cost — never share counts, cost or dollar
   amounts. The dashboard shows full detail.
 
+## Portfolio risk
+
+The Holdings tab's **Portfolio risk** card (`GET /holdings/risk`, `trade_desk/risk.py`) adds up
+what you hold, as read-only estimates:
+
+- Delta per underlying in share-equivalents and dollars, and the SPY-beta-weighted total (the
+  SPY dollars that would move like the account). Each option's implied volatility is backed out
+  of its mark (Black-Scholes; early exercise ignored); a leg without a usable mark counts at its
+  intrinsic delta.
+- Time decay: the value change over one day at today's price, per underlying and in total.
+- Beta to SPY and QQQ from a year of daily returns (at least 60 shared days, else 1.0, marked
+  with *); leveraged and inverse funds get their real betas this way.
+- Scenarios SPY ±3% and QQQ ±5%: each holding moves by its beta times the index move and the
+  options are re-priced at the moved price with the same volatility and time (an instant move).
+
+The daily portfolio summary on Discord adds one line in percentages only, e.g. "Risk
+(estimate): if SPY -3% ≈ -0.7% · QQQ -5% ≈ -1.0% · time decay ≈ -0.02%/day".
+
 ## Your own trade plan and fresh news
 
 A request may carry `plan_legs`: up to four legs, either objects

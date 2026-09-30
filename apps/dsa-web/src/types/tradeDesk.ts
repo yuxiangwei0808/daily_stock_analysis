@@ -526,3 +526,22 @@ export interface SystemStatus {
   overall: 'ok' | 'warn' | 'error' | string;
   components: SystemStatusComponent[];
 }
+
+export interface PortfolioRiskRow {
+  ticker: string;
+  price?: number | null;
+  sharesEquiv: number;
+  deltaDollars?: number | null;
+  thetaPerDay: number;
+  thetaPartial: boolean;
+  betaSpy?: number | null;
+  betaQqq?: number | null;
+  betaAssumed: boolean;
+}
+
+export interface PortfolioRisk {
+  asOf: string;
+  rows: PortfolioRiskRow[];
+  totals: { deltaDollars: number; spyBetaDollars: number; spyBetaPct?: number | null; thetaPerDay: number; thetaPct?: number | null };
+  scenarios: Array<{ key: string; label: string; pnl: number; pct?: number | null }>;
+}

@@ -21,6 +21,7 @@ import type {
   TradeJournalListResponse,
   TradeOutcomes,
   TradePositionListResponse,
+  PortfolioRisk,
   SystemStatus,
   TradePreferences,
   TradePreferencesUpdate,
@@ -278,6 +279,11 @@ export const tradeDeskApi = {
   async getTrackRecord(): Promise<TrackRecord> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/track-record`);
     return toCamelCase<TrackRecord>(response.data);
+  },
+
+  async getHoldingsRisk(): Promise<PortfolioRisk> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/risk`);
+    return toCamelCase<PortfolioRisk>(response.data);
   },
 
   async getHoldings(): Promise<HoldingsResponse> {

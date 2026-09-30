@@ -349,6 +349,12 @@ async def holdings_view(request: Request):
             "summary": service.holdings.last_summary()}
 
 
+@router.get("/holdings/risk")
+async def holdings_risk(request: Request):
+    """Portfolio delta, time decay, beta to SPY/QQQ and index-move scenarios (read-only estimates)."""
+    return await invoke(get_service(request).holdings.risk)
+
+
 @router.post("/holdings/refresh")
 async def holdings_refresh(request: Request):
     store = _holdings(request)
