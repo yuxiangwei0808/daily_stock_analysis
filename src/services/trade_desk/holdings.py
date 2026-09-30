@@ -621,7 +621,7 @@ class HoldingsMonitor:
         tickers = self.holdings.tickers()
         levels = {}
         self._warm_earnings(day)
-        from .opportunities import breakout_levels
+        from .levels import breakout_levels
         for ticker, rows in self._bars(tickers).items():
             found = breakout_levels(rows, day)
             if found:

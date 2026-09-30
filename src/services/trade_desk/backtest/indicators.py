@@ -1,7 +1,7 @@
 """Backtest of the user's moomoo indicators NX and CD on daily bars (research only).
 
 Rules were fixed before any result was seen. Signals use the day's close and
-enter at the next open; costs are ``strategy_backtest.COST_BPS`` per side.
+enter at the next open; costs are ``swing.COST_BPS`` per side.
 
 - ``cd_buy``: long on CD's 抄底 mark.
 - ``cd_buy_nx``: the same, only while the close is above NX's slow tunnel (B1).
@@ -29,8 +29,9 @@ from __future__ import annotations
 import random
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from . import moomoo_indicators as mi
-from . import strategy_backtest as bt
+from .. import levels
+from .. import moomoo_indicators as mi
+from . import swing as bt
 
 PLANS = ("cd_buy", "cd_buy_nx", "cd_sell", "nx_long", "nx_short")
 EXITS = ("atr", "hold10", "rule")
@@ -74,10 +75,7 @@ def rule_exit(plan: str, ind: Dict[str, Any], index: int) -> bool:
 
 
 def _atr(bars: Sequence[Dict[str, Any]], index: int) -> float:
-    window = bars[max(0, index - 14):index + 1]
-    ranges = [max(float(b["high"]) - float(b["low"]), abs(float(b["high"]) - float(a["close"])),
-                  abs(float(b["low"]) - float(a["close"]))) for a, b in zip(window, window[1:])]
-    return sum(ranges) / len(ranges) if ranges else 0.0
+    return levels.atr(bars, index)
 
 
 def trade(bars, ind, index: int, plan: str, direction: str, exit_kind: str, ticker: str) -> Optional[bt.Trade]:

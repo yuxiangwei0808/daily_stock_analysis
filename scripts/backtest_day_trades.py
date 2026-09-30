@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backtest day-trading rules on intraday bars (see src/services/trade_desk/intraday_backtest.py).
+"""Backtest day-trading rules on intraday bars (see src/services/trade_desk/backtest/intraday.py).
 
     python scripts/backtest_day_trades.py --out reports/backtests
 
@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.services.trade_desk import intraday_backtest as ib  # noqa: E402
+from src.services.trade_desk.backtest import intraday as ib  # noqa: E402
 from src.services.trade_desk import trend  # noqa: E402
 
 logger = logging.getLogger("day-backtest")

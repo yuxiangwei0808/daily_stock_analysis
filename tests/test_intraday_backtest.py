@@ -2,7 +2,7 @@ import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from src.services.trade_desk import intraday_backtest as ib
+from src.services.trade_desk.backtest import intraday as ib
 
 NY = ZoneInfo("America/New_York")
 

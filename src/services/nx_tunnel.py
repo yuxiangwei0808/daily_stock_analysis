@@ -18,35 +18,26 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-MIN_BARS = 250  # EMA(89) seeded with the first bar needs a few hundred bars to match the chart
 CACHE_SECONDS = 600
 _cache: Dict[str, tuple] = {}
 _lock = threading.Lock()
 
 
-def _state(close: float, top: float, bottom: float) -> str:
-    return "above" if close > top else "below" if close < bottom else "inside"
-
-
 def describe(bars: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Tunnel levels and the price's position on the last bar; None without enough history."""
-    if len(bars) < MIN_BARS:
+    from src.services.trade_desk.moomoo_indicators import NX_MIN_BARS, nx, tunnel_state, tunnel_structure
+    if len(bars) < NX_MIN_BARS:
         return None
-    from src.services.trade_desk.moomoo_indicators import nx
     lines = nx(bars)
     close = float(bars[-1]["close"])
     fast = {"top": lines["A"][-1], "bottom": lines["B"][-1]}
     slow = {"top": lines["A1"][-1], "bottom": lines["B1"][-1]}
-    fast["state"], slow["state"] = _state(close, fast["top"], fast["bottom"]), _state(close, slow["top"], slow["bottom"])
+    fast["state"] = tunnel_state(close, fast["top"], fast["bottom"])
+    slow["state"] = tunnel_state(close, slow["top"], slow["bottom"])
     previous_close = float(bars[-2]["close"])
-    previous_fast = _state(previous_close, lines["A"][-2], lines["B"][-2])
-    previous_slow = _state(previous_close, lines["A1"][-2], lines["B1"][-2])
-    if fast["bottom"] > slow["top"]:
-        structure = "fast_above_slow"
-    elif fast["top"] < slow["bottom"]:
-        structure = "fast_below_slow"
-    else:
-        structure = "overlapping"
+    previous_fast = tunnel_state(previous_close, lines["A"][-2], lines["B"][-2])
+    previous_slow = tunnel_state(previous_close, lines["A1"][-2], lines["B1"][-2])
+    structure = tunnel_structure(lines)
     changes = []
     if fast["state"] != previous_fast:
         changes.append(f"fast:{previous_fast}->{fast['state']}")

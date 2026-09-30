@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backtest the user's moomoo indicators NX and CD (see src/services/trade_desk/indicator_backtest.py).
+"""Backtest the user's moomoo indicators NX and CD (see src/services/trade_desk/backtest/indicators.py).
 
     python scripts/backtest_indicators.py --start 2021-10-01 --split 2024-01-01 --out reports/backtests
 
@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backtest_trade_plans as plans  # noqa: E402
-from src.services.trade_desk import indicator_backtest as ib  # noqa: E402
+from src.services.trade_desk.backtest import indicators as ib  # noqa: E402
 from src.services.trade_desk import moomoo_indicators as mi  # noqa: E402
-from src.services.trade_desk import strategy_backtest as bt  # noqa: E402
+from src.services.trade_desk.backtest import swing as bt  # noqa: E402
 
 logger = logging.getLogger("indicator-backtest")
 

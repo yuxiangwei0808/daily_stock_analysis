@@ -1,5 +1,5 @@
 """NX and CD recomputed from the user's moomoo scripts, and the backtest that uses them."""
-from src.services.trade_desk import indicator_backtest as ib
+from src.services.trade_desk.backtest import indicators as ib
 from src.services.trade_desk import moomoo_indicators as mi
 
 
@@ -71,7 +71,7 @@ def test_run_pairs_every_trade_with_twins():
 
 
 def test_same_date_twins_show_no_edge_on_random_walks():
-    from src.services.trade_desk import strategy_backtest as bt
+    from src.services.trade_desk.backtest import swing as bt
     walks = bt.random_walk_bars(60, 700, seed=3)
     first = walks[next(iter(walks))][0]["date"]
     trades, dated, _ = ib.run(walks, member=lambda ticker, day: True, start_date=first, end_date="9999")

@@ -28,7 +28,7 @@ from datetime import date, datetime, time as dtime
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from zoneinfo import ZoneInfo
 
-from . import trend
+from .. import trend
 
 NEW_YORK = ZoneInfo("America/New_York")
 COST_BPS = 5.0
@@ -259,7 +259,7 @@ def summarize(trades: Sequence[DayTrade]) -> Dict[str, Any]:
 
 def levels_for(daily: List[Dict[str, Any]], day: str) -> Optional[Dict[str, float]]:
     """Prior 20-day high/low, MA50, ATR14 and 50-day average volume before ``day``."""
-    from .opportunities import breakout_levels
+    from ..levels import breakout_levels
     return breakout_levels(daily, date.fromisoformat(day))
 
 

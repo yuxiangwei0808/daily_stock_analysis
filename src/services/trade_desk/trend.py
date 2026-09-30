@@ -16,6 +16,8 @@ from datetime import datetime, time as dtime
 from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
+from . import levels
+
 logger = logging.getLogger(__name__)
 
 _NEW_YORK = ZoneInfo("America/New_York")
@@ -92,9 +94,7 @@ def score_bars(bars: List[Dict[str, float]], *, partial_fraction: float = 1.0) -
     ma20, ma50 = ma(20), ma(50)
     ma20_slope = (ma20 / ma(20, 5) - 1) * 100
     ma50_slope = (ma50 / ma(50, 10) - 1) * 100
-    true_ranges = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
-                   for i in range(len(rows) - 14, len(rows))]
-    atr = _mean(true_ranges)
+    atr = levels.atr(rows)
     high20, low20 = max(highs[-21:-1]), min(lows[-21:-1])  # prior 20 sessions, excluding the last bar
     momentum = (close / closes[-21] - 1) * 100
     last_volume = volumes[-1] / max(0.05, min(1.0, partial_fraction))

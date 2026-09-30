@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from src.services.trade_desk import strategy_backtest as bt
+from src.services.trade_desk.backtest import swing as bt
 
 
 def _bar(i, o, h, l, c, v=1_000_000):

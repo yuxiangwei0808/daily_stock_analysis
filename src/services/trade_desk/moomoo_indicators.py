@@ -109,6 +109,23 @@ def nx(bars: Sequence[Dict[str, Any]], n1: int = 26, n2: int = 89) -> Dict[str, 
     return {"A": ema(highs, n1), "B": ema(lows, n1), "A1": ema(highs, n2), "B1": ema(lows, n2)}
 
 
+NX_MIN_BARS = 250  # EMA(89) seeded with the first bar needs a few hundred bars to match the moomoo chart
+
+
+def tunnel_state(price: float, top: float, bottom: float) -> str:
+    """Where a price sits against one NX tunnel: "above", "inside" or "below"."""
+    return "above" if price > top else "below" if price < bottom else "inside"
+
+
+def tunnel_structure(lines: Dict[str, Series], index: int = -1) -> str:
+    """Fast tunnel against the slow one: "fast_above_slow", "fast_below_slow" or "overlapping"."""
+    if lines["B"][index] > lines["A1"][index]:
+        return "fast_above_slow"
+    if lines["A"][index] < lines["B1"][index]:
+        return "fast_below_slow"
+    return "overlapping"
+
+
 def cd(bars: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """CD's lines and its two marks: ``buy`` (抄底, DXDX) and ``sell`` (卖出, DBJGXC)."""
     close = [float(bar["close"]) for bar in bars]

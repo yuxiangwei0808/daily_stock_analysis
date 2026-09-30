@@ -13,7 +13,7 @@ It writes `trade_plans_<date>_<fill>.json/.md` (the `reports/` folder is not com
 
 ## What is tested
 
-| Plan | Rule (see `src/services/trade_desk/strategy_backtest.py`) |
+| Plan | Rule (see `src/services/trade_desk/backtest/swing.py`) |
 |---|---|
 | `swing_trend` | `trend.score_bars` strength ≥ 70, not stretched; long or short |
 | `swing_trend_regime` | the same, only with the market (SPY vs MA50) |
@@ -102,7 +102,7 @@ Findings (2026-09-29, same-date twins, t clustered by signal month):
 python scripts/backtest_day_trades.py --out reports/backtests
 ```
 
-Engine: `src/services/trade_desk/intraday_backtest.py`. Every trade is flat by the
+Engine: `src/services/trade_desk/backtest/intraday.py`. Every trade is flat by the
 close; rules were fixed before the run:
 
 | Rule | Entry | Exit |

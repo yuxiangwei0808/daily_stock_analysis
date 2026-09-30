@@ -1,6 +1,6 @@
 """Forward track record for trade ideas and breakout alerts (research only; nothing is traded).
 
-The backtest (``strategy_backtest``) can replay the deterministic rules but not the
+The backtest (``backtest.swing``) can replay the deterministic rules but not the
 model's review, so every scan's candidates are followed forward from the moment
 they were published:
 
@@ -44,7 +44,6 @@ _NEW_YORK = ZoneInfo("America/New_York")
 MAX_DAYS = 15
 COST_BPS = 5.0
 WINDOW_DAYS = 90
-NX_MIN_BARS = 250
 VERDICT_HORIZONS = (5, 10)
 VERDICT_DAYS = 45  # how far back the after-close job reads the report history
 BULLISH_ACTIONS, BEARISH_ACTIONS = {"buy", "add", "hold"}, {"reduce", "sell", "avoid"}
@@ -184,25 +183,16 @@ def settle(record: Dict[str, Any], bars: List[Dict[str, Any]], market: List[Dict
     return update
 
 
-def _tunnel_state(price: float, top: float, bottom: float) -> str:
-    return "above" if price > top else "below" if price < bottom else "inside"
-
-
 def nx_snapshot(bars: List[Dict[str, Any]], signal_day: str, price: float, direction: str) -> Optional[Dict[str, Any]]:
     """NX tunnels from the bars before ``signal_day``, read at the alert price; None without enough history."""
-    from .moomoo_indicators import nx
+    from .moomoo_indicators import NX_MIN_BARS, nx, tunnel_state, tunnel_structure
     history = [bar for bar in bars if str(bar["date"])[:10] < signal_day]
     if len(history) < NX_MIN_BARS or not price:
         return None
     lines = nx(history)
-    fast = _tunnel_state(price, lines["A"][-1], lines["B"][-1])
-    slow = _tunnel_state(price, lines["A1"][-1], lines["B1"][-1])
-    if lines["B"][-1] > lines["A1"][-1]:
-        structure = "fast_above_slow"
-    elif lines["A"][-1] < lines["B1"][-1]:
-        structure = "fast_below_slow"
-    else:
-        structure = "overlapping"
+    fast = tunnel_state(price, lines["A"][-1], lines["B"][-1])
+    slow = tunnel_state(price, lines["A1"][-1], lines["B1"][-1])
+    structure = tunnel_structure(lines)
     alignment = "neutral" if slow == "inside" else (
         "agree" if (slow == "above") == (direction == "long") else "against")
     return {"fast": fast, "slow": slow, "structure": structure, "alignment": alignment,

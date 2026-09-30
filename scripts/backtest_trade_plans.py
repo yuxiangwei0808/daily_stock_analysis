@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backtest the trade plans this system produces (see src/services/trade_desk/strategy_backtest.py).
+"""Backtest the trade plans this system produces (see src/services/trade_desk/backtest/swing.py).
 
     python scripts/backtest_trade_plans.py --start 2021-10-01 --split 2024-01-01 --out reports/backtests
 
@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.services.trade_desk import strategy_backtest as bt  # noqa: E402
+from src.services.trade_desk.backtest import swing as bt  # noqa: E402
 
 logger = logging.getLogger("backtest")
 ETFS = ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE",

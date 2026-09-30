@@ -3330,8 +3330,9 @@ class GeminiAnalyzer:
         if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
             raise preflight_error
         backend_id, fallback_backend_id = self._resolve_generation_backend_config()
-        try:
-            result = self._get_generation_backend(backend_id).generate(
+
+        def primary_generate():
+            return self._get_generation_backend(backend_id).generate(
                 prompt,
                 generation_config,
                 system_prompt=system_prompt,
@@ -3340,6 +3341,18 @@ class GeminiAnalyzer:
                 response_validator=response_validator,
                 audit_context=audit_context,
             )
+
+        try:
+            try:
+                result = primary_generate()
+            except GenerationError as first_exc:
+                # A malformed reply is usually a one-off: ask the same model once more before
+                # falling back (or failing the stock when no fallback is configured).
+                if first_exc.error_code != GenerationErrorCode.INVALID_JSON or first_exc.stage != "validation":
+                    raise
+                logger.warning("[generation] %s returned an invalid reply; retrying once with the same backend",
+                               backend_id)
+                result = primary_generate()
         except GenerationError as exc:
             if not exc.fallbackable or not fallback_backend_id:
                 raise

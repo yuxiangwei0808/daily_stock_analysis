@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
-from . import trend
+from .. import levels, trend
 
 STOP_ATR, TARGET_ATR, MAX_DAYS = 1.5, 3.0, 15
 COST_BPS = 5.0
@@ -144,9 +144,7 @@ def breakout_signals(bars: Sequence[Dict[str, Any]], *, start: int = 60) -> Iter
         lows = [float(bar["low"]) for bar in window[-20:]]
         closes = [float(bar["close"]) for bar in window]
         volumes = [float(bar.get("volume") or 0) for bar in window]
-        ranges = [max(float(b["high"]) - float(b["low"]), abs(float(b["high"]) - float(a["close"])),
-                      abs(float(b["low"]) - float(a["close"]))) for a, b in zip(window[-15:-1], window[-14:])]
-        atr = sum(ranges) / len(ranges) if ranges else 0
+        atr = levels.atr(bars, index - 1)  # the prior sessions only, like the live watcher
         avg_volume = sum(volumes) / len(volumes) if volumes else 0
         bar = bars[index]
         close, volume, ma50 = float(bar["close"]), float(bar.get("volume") or 0), sum(closes) / len(closes)
@@ -225,10 +223,7 @@ def random_baseline(trades: Sequence[Trade], bars_by_ticker: Dict[str, List[Dict
             if not pool:
                 break
             index = rng.choice(pool)
-            window = bars[max(0, index - 14):index + 1]
-            ranges = [max(float(b["high"]) - float(b["low"]), abs(float(b["high"]) - float(a["close"])),
-                          abs(float(b["low"]) - float(a["close"]))) for a, b in zip(window, window[1:])]
-            atr = sum(ranges) / len(ranges) if ranges else 0
+            atr = levels.atr(bars, index)
             twin = simulate(bars, index, trade.direction, atr, plan=f"random:{trade.plan}", ticker=trade.ticker)
             if twin:
                 twins.append(twin)
@@ -258,10 +253,7 @@ def date_baseline(trades: Sequence[Trade], bars_by_ticker: Dict[str, List[Dict[s
                 break
             other = rng.choice(others)
             bars, index = bars_by_ticker[other], index_of[other][day]
-            window = bars[max(0, index - 14):index + 1]
-            ranges = [max(float(b["high"]) - float(b["low"]), abs(float(b["high"]) - float(a["close"])),
-                          abs(float(b["low"]) - float(a["close"]))) for a, b in zip(window, window[1:])]
-            atr = sum(ranges) / len(ranges) if ranges else 0
+            atr = levels.atr(bars, index)
             twin = simulate(bars, index, trade.direction, atr, plan=f"date:{trade.plan}", ticker=other)
             if twin:
                 twins.append(twin)
