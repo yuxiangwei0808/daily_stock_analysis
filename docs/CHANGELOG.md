@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] YouTube 博主观点只读完整字幕，不再用标题与简介推断观点；无字幕的视频（如美投讲美股、视野环球财经）可开启 `YOUTUBE_TRANSCRIBE_AUDIO` 在本机用 faster-whisper 转写（音频下载到临时目录、用完即删），否则跳过
 - [新功能] 免费社交媒体扫描（`SOCIAL_SCAN_ENABLED`，默认关闭，仅美股）：ApeWisdom（Reddit 提及）、Stocktwits（热门榜与帖子看多/看空）、Tradestie（WSB）；个股报告与 Trade Desk 回答附“社交媒体热度”背景（不改变评分或结论），交易机会标注热议股票，交易日收盘后推送“📣 Social scan”，热议股票从当日收盘起跟踪 5/10/20 个交易日对比 SPY
 - [新功能] YouTube 博主观点（`YOUTUBE_CHANNELS`、`YOUTUBE_PICKS_BACKEND`）：每 3 小时读取所关注频道的 RSS，新视频字幕（无字幕时用标题与简介）由模型提取明确的买入/卖出观点，从发布后的第一个收盘价起跟踪并在周度跟踪记录中按频道统计；报告与 Trade Desk 回答显示近 30 天观点作参考
 - [修复] 定时任务复查：`MARKET_REVIEW_TIMES` 与 `BRIEF_CHANGES_ONLY_TIMES` 在服务模式下此前从未生效（子进程拿不到当前时段），现已修复；服务停机期间错过的时段在重启后补跑，补跑的“仅变化”简报以时段时间为基准；简报推送后记为已推送，之后重启不再重跑重发；修改定时后的补跑会等待上一轮收尾而不是直接跳过

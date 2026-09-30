@@ -372,13 +372,27 @@ X has no free API and Reddit's own JSON refuses this client, so neither is read 
 
 **YouTube picks** (`YOUTUBE_CHANNELS=Name=UC…,…`, channel ids, not handles, because a handle
 search can land on a clips or fan channel). Every 3 hours the worker reads each channel's RSS
-feed. A new video's captions (YouTube's own, uploaded before automatic, English or Chinese),
-or its title and description when it has none, go to `YOUTUBE_PICKS_BACKEND` (default: the
-routine `GENERATION_BACKEND`). The model returns only explicit calls as JSON: ticker, bullish or
+feed. A new video's full spoken text goes to `YOUTUBE_PICKS_BACKEND` (default: the routine
+`GENERATION_BACKEND`). The model returns only explicit calls as JSON: ticker, bullish or
 bearish, conviction, horizon and a short reason. Tickers are validated and at most 10 picks
 per video are kept. A video is marked read once its picks are stored (setting
 `youtube_processed`), so a restart never pays for it twice; a failed model call is retried on
 the next pass. The first pass reads the last 30 days to seed the record.
+
+The spoken text is the video's captions (YouTube's own, uploaded before automatic, English or
+Chinese; complete transcripts, about 900–1,100 characters a minute in English and 250 in
+Chinese). Some channels publish no captions. With `YOUTUBE_TRANSCRIBE_AUDIO=true` (needs
+`pip install yt-dlp faster-whisper "av<16"`), such a video's audio is downloaded by yt-dlp into
+a temporary folder and transcribed on the CPU by faster-whisper (`YOUTUBE_WHISPER_MODEL`, default
+`large-v3-turbo`, int8, `YOUTUBE_WHISPER_THREADS` threads, default 8: a 25-minute video takes
+about 6 minutes). The folder is deleted as soon as the transcription ends or fails; a folder
+left by a killed process is removed on the next pass, and a server stop ends a transcription
+at its next segment. The model (about 1.6 GB) downloads on first use into
+`YOUTUBE_WHISPER_DIR` (default: the Hugging Face cache) and is released after each pass.
+Titles and descriptions say too little to read a call from: a video without a transcript is
+retried on the next two passes and then skipped. Videos over two hours (live streams) are not
+transcribed. yt-dlp downloads go against YouTube's terms for automated access and can stop
+working when YouTube changes; captioned channels are unaffected.
 
 - Each pick is tracked (`kind: influencer`, id `influencer:<video>:<ticker>`) from the first
   close after the video was published: during the session, that day's close; after 16:00 or
@@ -389,9 +403,9 @@ the next pass. The first pass reads the last 30 days to seed the record.
 - Reports ("YouTube picks, last 30 days") and Trade Desk answers show a ticker's calls from
   the last 30 days; trade ideas show calls from the last 14 days.
 
-Cost: the social sources and RSS are free. Only the pick extraction uses a model, about one
-call per video; a transcript is typically 3–8k tokens, so a low-cost LiteLLM model costs a
-fraction of a cent per video.
+Cost: the social sources, RSS, captions and local transcription are free (transcription uses
+CPU time). Only the pick extraction uses a model, about one call per video; a transcript is
+typically 3–8k tokens, so a low-cost LiteLLM model costs a fraction of a cent per video.
 
 ## Broker holdings and your alerts
 

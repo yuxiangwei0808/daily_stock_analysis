@@ -175,7 +175,7 @@ def test_reports_and_trade_desk_answers_get_both_references(web, repo, monkeypat
     monkeypatch.setenv("YOUTUBE_CHANNELS", "Meet Kevin=UCUvvj5lwue7PspotMDjk5UA")
     video = {"video_id": "v1", "title": "t", "published": datetime.now(timezone.utc)}
     repo.track_idea(*yp.record("Meet Kevin", "UCUvvj5lwue7PspotMDjk5UA", video,
-                               {"ticker": "MU", "stance": "bullish", "reason": "memory"}, date.today(), True))
+                               {"ticker": "MU", "stance": "bullish", "reason": "memory"}, date.today(), "captions"))
     monkeypatch.setattr(yp, "for_report", lambda ticker, db=None: yp.recent_picks(repo, ticker))
     pipeline = SimpleNamespace(db=None)
     references = StockAnalysisPipeline._reference_context(pipeline, "MU")

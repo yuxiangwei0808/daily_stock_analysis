@@ -2,6 +2,7 @@
 import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -66,8 +67,8 @@ def test_picks_are_validated_and_capped():
         {"ticker": "BRK.B", "stance": "bearish", "conviction": None, "horizon": "unspecified", "reason": ""},
     ]
     assert "Transcript:\ntranscript text" in prompts[0] and "Title: Buy this" in prompts[0]
-    yp.extract_picks("x", {**video, "description": "desc"}, "", lambda prompt: prompts.append(prompt) or '{"picks": []}')
-    assert "(No captions.) Description:\ndesc" in prompts[-1]
+    with pytest.raises(ValueError):  # a title alone is never read for a call
+        yp.extract_picks("x", {**video, "description": "desc"}, "", lambda prompt: '{"picks": []}')
     with pytest.raises(ValueError):
         yp.extract_picks("x", video, "t", lambda prompt: "I cannot help with that")
 
@@ -84,42 +85,109 @@ def _video(video_id, hours_ago, title="t"):
 
 
 def test_the_scan_records_picks_once_and_retries_a_failed_video(repo):
-    feed = [_video("new", 2), _video("fails", 30), _video("old", 24 * 40)]
-    answers = {"new": {"picks": [{"ticker": "MU", "stance": "bullish", "reason": "memory"}]}}
-    generated = []
+    feed = [_video("new", 2, "new"), _video("fails", 30, "fails"), _video("spoken", 3, "spoken"),
+            _video("silent", 4, "silent"), _video("old", 24 * 40, "old")]
+    answers = {"new": [{"ticker": "MU", "stance": "bullish", "reason": "memory"}],
+               "spoken": [{"ticker": "TSM", "stance": "bullish"}]}
+    generated, transcribed = [], []
 
     def generate(prompt):
-        video_id = "new" if "Title: new" in prompt else "fails"
+        video_id = prompt.split("Title: ")[1].split("\n")[0]
         generated.append(video_id)
         if video_id == "fails":
             raise RuntimeError("model down")
-        return json.dumps(answers[video_id])
+        return json.dumps({"picks": answers.get(video_id, [])})
 
     def captions(video_id):
-        if video_id == "new":
-            raise RuntimeError("blocked")  # falls back to the description
+        if video_id in {"spoken", "silent"}:
+            return ""  # no captions
         return "words"
-    feed[0]["title"] = "new"
+
+    def transcribe(video_id, should_stop):
+        transcribed.append(video_id)
+        return "spoken words" if video_id == "spoken" else ""
     job = yp.YouTubeScanJob(repo, channel_list=[("Meet Kevin", KEVIN)], read_feed=lambda cid: feed,
-                            read_captions=captions, generate=generate, trading_day=_weekday)
-    assert job.run(NOW) == 1
-    [row] = repo.tracked_ideas()
-    assert row["id"] == "influencer:new:MU" and row["channel"] == "Meet Kevin" and row["direction"] == "long"
-    assert row["signal_day"] == "2026-09-30" and row["entry"] is None and row["source"] == "description"
-    assert job.today_picks[0]["ticker"] == "MU"
-    assert set(repo.setting(yp.PROCESSED_KEY)) == {"new"}  # the failed video is retried, the old one never read
+                            read_captions=captions, transcribe=transcribe, generate=generate, trading_day=_weekday)
+    assert job.run(NOW) == 2
+    rows = {row["ticker"]: row for row in repo.tracked_ideas()}
+    assert rows["MU"]["id"] == "influencer:new:MU" and rows["MU"]["channel"] == "Meet Kevin"
+    assert rows["MU"]["signal_day"] == "2026-09-30" and rows["MU"]["entry"] is None and rows["MU"]["source"] == "captions"
+    assert rows["TSM"]["source"] == "audio" and {pick["ticker"] for pick in job.today_picks} == {"MU", "TSM"}
+    assert "silent" not in generated  # no transcript: the title is never sent to the model
+    assert set(repo.setting(yp.PROCESSED_KEY)) == {"new", "spoken"}  # failures retried; the old video never read
     generated.clear()
+    transcribed.clear()
     job.run(NOW)
-    assert generated == ["fails"]
+    assert generated == ["fails"] and transcribed == ["silent"]
+    job.run(NOW)  # the third pass without a transcript drops the video
+    assert "silent" in repo.setting(yp.PROCESSED_KEY)
+
+
+def test_a_stop_ends_the_pass_during_a_transcription(repo):
+    feed = [_video("a", 2, "a"), _video("b", 3, "b")]
+
+    def transcribe(video_id, should_stop):
+        raise InterruptedError("stopping")
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: feed,
+                            read_captions=lambda vid: "", transcribe=transcribe,
+                            generate=lambda prompt: '{"picks": []}', trading_day=_weekday)
+    assert job.run(NOW) == 0 and not repo.setting(yp.PROCESSED_KEY)
+
+
+def test_the_audio_folder_is_deleted_after_use_and_after_a_failure(monkeypatch, tmp_path):
+    import yt_dlp
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    folders = []
+
+    class FakeDownloader:
+        def __init__(self, options):
+            self.template = options["outtmpl"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download):
+            path = self.template.replace("%(id)s", "vid").replace("%(ext)s", "m4a")
+            folders.append(path.rsplit("/", 1)[0])
+            open(path, "wb").write(b"audio")
+            return {"ext": "m4a"}
+
+    class FakeModel:
+        def __init__(self, fail):
+            self.fail = fail
+
+        def transcribe(self, path, **kwargs):
+            assert open(path, "rb").read() == b"audio"
+            if self.fail:
+                raise RuntimeError("decoder")
+            return iter([SimpleNamespace(text="我看好"), SimpleNamespace(text="台积电")]), None
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeDownloader)
+    monkeypatch.setattr(yp, "_whisper", lambda: FakeModel(False))
+    assert yp.transcribe_audio("vid") == "我看好台积电"
+    monkeypatch.setattr(yp, "_whisper", lambda: FakeModel(True))
+    with pytest.raises(RuntimeError):
+        yp.transcribe_audio("vid")
+    assert len(folders) == 2 and not any(Path(folder).exists() for folder in folders)
+    assert list(tmp_path.iterdir()) == []
+    stale = tmp_path / (yp.AUDIO_PREFIX + "crashed")
+    stale.mkdir()
+    (stale / "vid.m4a").write_bytes(b"audio")
+    import os
+    os.utime(stale, (0, 0))
+    yp.clear_stale_audio()
+    assert not stale.exists()
 
 
 def test_recent_picks_and_channel_results(repo):
     video = _video("v1", 5)
     for ticker, stance in (("MU", "bullish"), ("TSLA", "bearish")):
         repo.track_idea(*yp.record("Meet Kevin", KEVIN, video, {"ticker": ticker, "stance": stance, "reason": "r"},
-                                   date(2026, 9, 30), True))
+                                   date(2026, 9, 30), "captions"))
     repo.track_idea(*yp.record("Tom Nash", "UCJwKCyEIFHwUOPQQ-4kC1Zw", _video("v2", 24 * 45),
-                               {"ticker": "MU", "stance": "bullish"}, date(2026, 8, 17), True))
+                               {"ticker": "MU", "stance": "bullish"}, date(2026, 8, 17), "captions"))
     picks = yp.recent_picks(repo, "MU", now=NOW)
     assert [pick["channel"] for pick in picks] == ["Meet Kevin"]  # Tom Nash's call is older than 30 days
     assert yp.summary_line(picks, "en") == "Meet Kevin bullish (09-30)"
@@ -135,7 +203,7 @@ def test_recent_picks_and_channel_results(repo):
 
 def test_the_weekly_record_lists_each_channel(repo):
     repo.track_idea(*yp.record("Meet Kevin", KEVIN, _video("v1", 24 * 10), {"ticker": "MU", "stance": "bullish"},
-                               date(2026, 9, 1), True))
+                               date(2026, 9, 1), "captions"))
     days = [f"2026-09-{d:02d}" for d in range(1, 30)]
     bars = [{"date": day, "open": 100, "high": 100, "low": 100, "close": 100.0 + i, "volume": 1} for i, day in enumerate(days)]
     spy = [{**bar, "close": 100.0} for bar in bars]

@@ -341,6 +341,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `SOCIAL_SCAN_ENABLED` | Free social media scan (Reddit/WSB/Stocktwits, keyless, US stocks, context only; see [trade-desk.md](trade-desk.md)) | Optional |
 | `YOUTUBE_CHANNELS` | YouTube channels you follow (`Name=UC…channel id`, comma-separated); their explicit calls are extracted and tracked | Optional |
 | `YOUTUBE_PICKS_BACKEND` | Generation backend for the YouTube pick extraction (empty = `GENERATION_BACKEND`) | Optional |
+| `YOUTUBE_TRANSCRIBE_AUDIO` | Transcribe videos without captions locally with yt-dlp + faster-whisper (audio deleted after use; see also `YOUTUBE_WHISPER_MODEL`/`_DIR`/`_THREADS`) | Optional |
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty, `searx.space` discovery is used only if public instances are explicitly enabled | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `false`). Public instances are commonly rate-limited or do not return JSON, so enabling this can add 30-60s per run and still yield no news | Optional |
 | `FREE_NEWS_SOURCES` | Free news sources, comma-separated: `google_news` (Google News RSS, no key, used as the last search fallback), `yahoo_finance` (no key), `finnhub` (free `FINNHUB_API_KEY`). Stock analysis uses `google_news`; Trade Desk fetches every enabled source when a user requests a comparison. Off by default | Optional |

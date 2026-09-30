@@ -2,11 +2,15 @@
 
 ``YOUTUBE_CHANNELS`` lists the channels as ``Name=UC…`` entries (channel ids, not handles:
 a handle can point at a clips or fan channel). Every ``POLL_SECONDS`` the channel feeds
-(RSS, free) are read. Each new video's captions (YouTube's own, from the Android player
-API), or its title and description when it has none, go to a model that lists only
-the stocks the host explicitly recommends or warns against, as strict JSON. The model
-is ``YOUTUBE_PICKS_BACKEND`` (default: the routine ``GENERATION_BACKEND``); a low-cost
-LiteLLM model reads a video for a fraction of a cent.
+(RSS, free) are read. Each new video's full spoken text goes to a model that lists only
+the stocks the host explicitly recommends or warns against, as strict JSON. The text is
+the video's captions (YouTube's own, from the Android player API); a video without
+captions is transcribed locally when ``YOUTUBE_TRANSCRIBE_AUDIO`` is on (yt-dlp downloads
+the audio into a temporary folder, faster-whisper transcribes it on the CPU, and the
+folder is deleted right away). Titles and descriptions say too little to read a call
+from, so a video with no transcript is skipped (retried on later passes, then dropped).
+The model is ``YOUTUBE_PICKS_BACKEND`` (default: the routine ``GENERATION_BACKEND``); a
+low-cost LiteLLM model reads a video for a fraction of a cent.
 
 Each pick is followed forward in the idea tracker (kind ``influencer``) from the first
 close after the video was published (no look-ahead), 5, 10 and 20 sessions, against
@@ -19,6 +23,10 @@ import html
 import logging
 import os
 import re
+import shutil
+import tempfile
+import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -31,6 +39,9 @@ BACKFILL_DAYS = 30  # the first run reads this far back, to seed the track recor
 RECENT_DAYS = 30
 MAX_TRANSCRIPT_CHARS = 60000
 MAX_PICKS_PER_VIDEO = 10
+TRANSCRIPT_ATTEMPTS = 3  # passes a video without a transcript is retried before it is dropped
+MAX_AUDIO_SECONDS = 2 * 3600  # longer videos (live streams) are not transcribed
+AUDIO_PREFIX = "dsa-yt-audio-"
 PROCESSED_KEY = "youtube_processed"
 _NEW_YORK = ZoneInfo("America/New_York")
 _NS = {"a": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015",
@@ -105,7 +116,66 @@ def captions(video_id: str) -> str:
     return " ".join(html.unescape(text).split())
 
 
-PROMPT = """You read the transcript (or, without captions, the title and description) of a stock-market YouTube video.
+def transcribe_enabled() -> bool:
+    return os.getenv("YOUTUBE_TRANSCRIBE_AUDIO", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_whisper_lock = threading.Lock()
+_whisper_model = None
+
+
+def _whisper():
+    """The local speech-to-text model, loaded on first use (about 1.6 GB on disk for large-v3-turbo)."""
+    global _whisper_model
+    with _whisper_lock:
+        if _whisper_model is None:
+            from faster_whisper import WhisperModel
+            _whisper_model = WhisperModel(os.getenv("YOUTUBE_WHISPER_MODEL", "large-v3-turbo").strip() or "large-v3-turbo",
+                                          device="cpu", compute_type="int8",
+                                          cpu_threads=int(os.getenv("YOUTUBE_WHISPER_THREADS", "8") or 8),
+                                          download_root=os.getenv("YOUTUBE_WHISPER_DIR", "").strip() or None)
+        return _whisper_model
+
+
+def release_whisper() -> None:
+    """Frees the model's memory between passes."""
+    global _whisper_model
+    with _whisper_lock:
+        _whisper_model = None
+
+
+def clear_stale_audio(max_age_seconds: float = 3600) -> None:
+    """Removes audio folders a crash or kill left behind (normally each is deleted as soon as it is used)."""
+    root = tempfile.gettempdir()
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if name.startswith(AUDIO_PREFIX) and time.time() - os.path.getmtime(path) > max_age_seconds:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def transcribe_audio(video_id: str, should_stop: Callable[[], bool] = lambda: False) -> str:
+    """The video's speech as text: the audio goes to a temporary folder that is deleted on the way out."""
+    import yt_dlp
+    from yt_dlp.utils import match_filter_func
+    with tempfile.TemporaryDirectory(prefix=AUDIO_PREFIX) as folder:
+        options = {"format": "bestaudio[ext=m4a]/bestaudio", "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
+                   "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
+                   "match_filter": match_filter_func(f"duration <= {MAX_AUDIO_SECONDS} & !is_live")}
+        with yt_dlp.YoutubeDL(options) as downloader:
+            downloader.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+        files = [os.path.join(folder, name) for name in os.listdir(folder) if not name.endswith(".part")]
+        if not files:
+            return ""  # a live stream or a very long video
+        segments, _info = _whisper().transcribe(files[0], vad_filter=True, beam_size=1)
+        parts = []
+        for segment in segments:  # decoded lazily: a server stop ends the work between segments
+            if should_stop():
+                raise InterruptedError("stopping")
+            parts.append(segment.text)
+        return "".join(parts).strip()
+
+
+PROMPT = """You read the transcript of a stock-market YouTube video.
 List only the stocks the host explicitly recommends buying or holding ("bullish") or explicitly says to sell, avoid or short ("bearish").
 Skip stocks that are only mentioned, compared or used as examples; skip broad index funds discussed as market commentary; skip crypto.
 Use US ticker symbols (Class B shares with a dot, e.g. BRK.B). The transcript may be automatic captions or Chinese; answer in English.
@@ -117,9 +187,9 @@ Return {"picks": []} when the video makes no explicit call."""
 def extract_picks(channel: str, video: Dict[str, Any], text: str,
                   generate: Optional[Callable[[str], str]] = None) -> List[Dict[str, Any]]:
     """The video's explicit calls, validated; [] when there are none. Raises when the model fails."""
-    source = (f"Transcript:\n{text[:MAX_TRANSCRIPT_CHARS]}" if text else
-              f"(No captions.) Description:\n{video.get('description', '')[:4000]}")
-    prompt = f"{PROMPT}\n\nChannel: {channel}\nTitle: {video['title']}\n{source}"
+    if not text:
+        raise ValueError("no transcript")  # a title or description is not enough to read a call from
+    prompt = f"{PROMPT}\n\nChannel: {channel}\nTitle: {video['title']}\nTranscript:\n{text[:MAX_TRANSCRIPT_CHARS]}"
     raw = (generate or _generate)(prompt)
     from src.agent.runner import try_parse_json
     data = try_parse_json(raw or "")
@@ -159,7 +229,7 @@ def signal_day(published: datetime, trading_day: Callable[[date], bool]) -> date
 
 
 def record(channel: str, channel_id: str, video: Dict[str, Any], pick: Dict[str, Any], day: date,
-           captioned: bool) -> tuple:
+           source: str) -> tuple:
     """(id, record) for one pick (idea tracker kind ``influencer``)."""
     return (f"influencer:{video['video_id']}:{pick['ticker']}", {
         "kind": "influencer", "verdict": "influencer", "group": pick["stance"], "ticker": pick["ticker"],
@@ -167,7 +237,7 @@ def record(channel: str, channel_id: str, video: Dict[str, Any], pick: Dict[str,
         "entry": None, "channel": channel, "channel_id": channel_id, "video_id": video["video_id"],
         "title": video["title"][:200], "published_at": video["published"].isoformat(),
         "conviction": pick.get("conviction"), "horizon": pick.get("horizon"), "reason": pick.get("reason", ""),
-        "source": "captions" if captioned else "description"})
+        "source": source})  # "captions" or "audio"
 
 
 def recent_picks(repo: Any, ticker: str, days: int = RECENT_DAYS, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
@@ -260,15 +330,19 @@ class YouTubeScanJob:
     def __init__(self, repo: Any, *, channel_list: Optional[List[Tuple[str, str]]] = None,
                  read_feed: Callable[[str], List[Dict[str, Any]]] = feed,
                  read_captions: Callable[[str], str] = captions,
+                 transcribe: Optional[Callable[..., str]] = None,
                  generate: Optional[Callable[[str], str]] = None,
                  trading_day: Optional[Callable[[date], bool]] = None,
                  clock: Optional[Callable[[], float]] = None):
-        import time
         from concurrent.futures import ThreadPoolExecutor
         self.repo = repo
         self._channels = channel_list
         self._feed = read_feed
         self._captions = read_captions
+        # Local transcription of videos without captions, when YOUTUBE_TRANSCRIBE_AUDIO is on.
+        self._transcribe = transcribe if transcribe is not None else (transcribe_audio if transcribe_enabled() else None)
+        self._missing: Dict[str, int] = {}  # video -> passes without a transcript
+        self._stopping = threading.Event()
         self._generate = generate
         self._trading_day = trading_day
         self._clock = clock or time.monotonic
@@ -278,6 +352,7 @@ class YouTubeScanJob:
         self.today_picks: List[Dict[str, Any]] = []  # for the evening digest
 
     def stop(self):
+        self._stopping.set()  # a transcription in progress ends at its next segment; its folder is deleted
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def tick(self, now: datetime) -> None:
@@ -292,6 +367,37 @@ class YouTubeScanJob:
         cutoff = now - timedelta(days=BACKFILL_DAYS)
         trading = self._trading_day or _trading_day
         added = 0
+        if self._transcribe is not None:
+            try:
+                clear_stale_audio()
+            except OSError as exc:
+                logger.info("Could not clear old audio folders: %s", type(exc).__name__)
+        try:
+            added = self._pass(now, processed, cutoff, trading)
+        finally:
+            release_whisper()
+        self.today_picks = [pick for pick in self.today_picks
+                            if datetime.fromisoformat(pick["published_at"]) >= now - timedelta(days=1)]
+        logger.info("YouTube scan: %d picks recorded", added)
+        return added
+
+    def _transcript(self, video_id: str) -> Tuple[str, str]:
+        """(text, source): the captions, else the transcribed audio, else ("", "")."""
+        try:
+            text = self._captions(video_id)
+            if text:
+                return text, "captions"
+        except Exception as exc:
+            logger.info("YouTube captions unavailable for %s: %s", video_id, type(exc).__name__)
+        if self._transcribe is None:
+            return "", ""
+        started = time.monotonic()
+        text = self._transcribe(video_id, should_stop=self._stopping.is_set)
+        logger.info("YouTube audio for %s transcribed in %.0f s", video_id, time.monotonic() - started)
+        return (text, "audio") if text else ("", "")
+
+    def _pass(self, now, processed, cutoff, trading) -> int:
+        added = 0
         for name, channel_id in (self._channels if self._channels is not None else channels()):
             try:
                 videos = self._feed(channel_id)
@@ -299,21 +405,32 @@ class YouTubeScanJob:
                 logger.info("YouTube feed unavailable for %s: %s", name, type(exc).__name__)
                 continue
             for video in reversed(videos):  # oldest first
+                if self._stopping.is_set():
+                    return added
                 if video["video_id"] in processed or video["published"] < cutoff:
                     continue
                 try:
-                    try:
-                        text = self._captions(video["video_id"])
-                    except Exception as exc:  # the title and description still go to the model
-                        logger.info("YouTube captions unavailable for %s: %s", video["video_id"], type(exc).__name__)
-                        text = ""
+                    text, source = self._transcript(video["video_id"])
+                except InterruptedError:
+                    return added
+                except Exception as exc:  # download or transcription failed: counted like a missing transcript
+                    logger.warning("YouTube transcription failed for %s: %s", video["video_id"], type(exc).__name__)
+                    text, source = "", ""
+                if not text:
+                    misses = self._missing[video["video_id"]] = self._missing.get(video["video_id"], 0) + 1
+                    if misses >= TRANSCRIPT_ATTEMPTS:  # captions rarely arrive later; stop asking
+                        processed[video["video_id"]] = video["published"].date().isoformat()
+                        self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
+                        logger.info("YouTube video %s has no transcript; skipped", video["video_id"])
+                    continue
+                try:
                     picks = extract_picks(name, video, text, self._generate)
                 except Exception as exc:  # the model failed: retried on the next pass
                     logger.warning("YouTube picks failed for %s: %s", video["video_id"], type(exc).__name__)
                     continue
                 day = signal_day(video["published"], trading)
                 for pick in picks:
-                    record_id, payload = record(name, channel_id, video, pick, day, bool(text))
+                    record_id, payload = record(name, channel_id, video, pick, day, source)
                     if self.repo.track_idea(record_id, payload):
                         added += 1
                         if video["published"] >= now - timedelta(days=1):
@@ -321,9 +438,6 @@ class YouTubeScanJob:
                 processed[video["video_id"]] = video["published"].date().isoformat()
                 # Saved after each video: a restart never pays for the same video twice.
                 self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
-        self.today_picks = [pick for pick in self.today_picks
-                            if datetime.fromisoformat(pick["published_at"]) >= now - timedelta(days=1)]
-        logger.info("YouTube scan: %d picks recorded", added)
         return added
 
 

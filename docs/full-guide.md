@@ -378,6 +378,7 @@ daily_stock_analysis/
 | `SOCIAL_SCAN_ENABLED` | 免费社交媒体扫描（Reddit/WSB/Stocktwits，无需 key，仅美股，仅作背景，见 [trade-desk.md](trade-desk.md)） | 可选 |
 | `YOUTUBE_CHANNELS` | 关注的 YouTube 频道（`名称=UC…频道ID`，逗号分隔），提取并跟踪其明确观点 | 可选 |
 | `YOUTUBE_PICKS_BACKEND` | 提取 YouTube 观点所用的生成后端（留空 = `GENERATION_BACKEND`） | 可选 |
+| `YOUTUBE_TRANSCRIBE_AUDIO` | 无字幕视频用 yt-dlp + faster-whisper 在本机转写（音频用完即删；另有 `YOUTUBE_WHISPER_MODEL`/`_DIR`/`_THREADS`） | 可选 |
 | `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`）。公共实例普遍限流或未开启 JSON 输出，开启后每次分析可能多耗 30~60 秒且新闻面为空 | 可选 |
 | `FREE_NEWS_SOURCES` | 免费新闻源，逗号分隔：`google_news`（Google News RSS，无需 key，作为搜索兜底）、`yahoo_finance`（无需 key）、`finnhub`（需免费 `FINNHUB_API_KEY`）。个股分析使用 `google_news`；Trade Desk 在用户发起对比时实时拉取已启用来源。默认关闭 | 可选 |
