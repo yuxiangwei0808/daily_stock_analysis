@@ -1174,13 +1174,15 @@ def test_refresh_prices_reprices_the_contracts_without_the_model(repo):
                                    'snapshots': {snap.id: snap.model_dump(mode='json')}})
     svc = service(repo)
     fresh = snapshot()
-    repriced = item.model_copy(update={'payoff': item.payoff.model_copy(update={'entry_debit': 190.0})})
+    repriced = item.model_copy(update={'payoff': item.payoff.model_copy(update={'entry_debit': 190.0}),
+                                       'snapshot_id': fresh.id})  # as reprice_candidate does
     svc._refresh_candidate = lambda cand, request, spot, require_unchanged=True: (
         (repriced, fresh) if not require_unchanged else (None, fresh))
     updated = svc.reprice(job['id'])
     assert updated['status'] == 'stale' and updated['explanation'] == 'Written at the old prices'
     assert updated['candidates'][0]['payoff']['entry_debit'] == 190.0 and updated['reprice_failed'] == []
     assert updated['repriced_at'] and fresh.id in updated['snapshots']
+    assert snap.id not in updated['snapshots']  # the superseded snapshot is dropped
 
     def unavailable(*args, **kwargs):
         raise ValueError('Fresh verified quotes are required for recalculation')

@@ -68,4 +68,18 @@ describe('payoff readings', () => {
     expect(niceTicks(1600, 1950)).toEqual([1600, 1700, 1800, 1900]);
     expect(niceTicks(-151, 349, 4, true)).toEqual([-200, 0, 200, 400]);
   });
+
+  it('keeps the strikes and breakeven apart', () => {
+    const narrow = [{ price: 0, pnl: -141.3 }, { price: 600, pnl: -141.3 }, { price: 601, pnl: -41.3 }, { price: 1202, pnl: -41.3 }];
+    const rows = payoffTable(narrow, 598, [600.41], [600, 601]);
+    expect(rows.map((row) => row.label).filter(Boolean)).toEqual(['Now', 'Strike', 'Breakeven', 'Strike']);
+  });
+
+  it('extends the window past the last point with the last slope', () => {
+    const put = [{ price: 0, pnl: 24000 }, { price: 250, pnl: -1000 }, { price: 275, pnl: -1000 }, { price: 500, pnl: -1000 }];
+    const focused = focusPayoffPoints(put, [250, 600]);
+    expect(focused[focused.length - 1].price).toBeGreaterThan(600);
+    expect(focused[focused.length - 1].pnl).toBe(-1000);
+  });
 });
+

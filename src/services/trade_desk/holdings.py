@@ -217,8 +217,11 @@ _LEVEL_WORDS = {"below", "above", "under", "over", "near", "at", "to", "target",
                 "break", "breaks", "cross", "crosses", "reclaim", "reclaims", "hit", "hits", "reach", "reaches",
                 "from", "between", "and", "or", "than", "if", "when", "ma", "sma", "ema"}
 _TIME_UNITS = r"\s*(?:%|-?\s*(?:days?|dte|trading\s+days?|wks?|weeks?|months?|mins?|minutes?|hrs?|hours?|am|pm)\b)"
-_OPTION_CONTEXT = re.compile(r"\b(calls?|puts?|options?|spreads?|contracts?|cts?|credit|debit|premium|shares?|shs?)\b",
-                             re.I)
+# "at/for N" is a price you paid or got when the clause is about a fill: option or size words, a
+# strike (150C), or a past trade verb ("bought 300 at 152.30", "short 2 150P at 3.40").
+_OPTION_CONTEXT = re.compile(r"\b(calls?|puts?|options?|spreads?|contracts?|cts?|credit|debit|premium|shares?|shs?"
+                             r"|bought|sold|bto|sto|btc|stc|opened|closed|filled|entered|got\s+in|in|short|long|wrote"
+                             r"|covered|added|trimmed)\b|\b\d+(?:\.\d+)?[cp]\b", re.I)
 _NOTE_NUMBER = re.compile(r"(?<![\w.$€£¥\[/:])(\d[\d,.]*\d|\d)([kKmMxX]|[CcPp])?\b(?![/:]\d)")
 
 
@@ -515,7 +518,8 @@ class Holdings:
         return self.repo.setting("trade_journal", None)
 
     def refresh_journal(self, today: Optional[date] = None, *,
-                        bars: Callable[..., Dict[str, List[Dict[str, Any]]]] = trend.download_bars) -> Dict[str, Any]:
+                        bars: Callable[..., Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
+                        split_ratios: Callable[[str], List[tuple]] = trend.split_ratios) -> Dict[str, Any]:
         """Reads a year of fills from moomoo (read-only) and rebuilds the trade journal (see journal.py)."""
         from . import journal
         if not enabled():
@@ -526,16 +530,29 @@ class Holdings:
         expired = sorted({info["underlying"] for info in (parse_code(deal["code"]) for deal in deals)
                           if info["kind"] == "option" and info["expiry"] < today})
         history: Dict[str, List[Dict[str, Any]]] = {}
+        splits: Dict[str, List[tuple]] = {}
         if expired:
             try:
-                history = bars(expired, period="1y")
+                # The actual close on expiry day: no dividend adjustment, and splits undone below.
+                history = bars(expired, period="1y", adjusted=False)
+                splits = {ticker: split_ratios(ticker) for ticker in expired}
             except Exception as exc:  # expired options then count as worthless, flagged
                 logger.info("Journal expiry closes unavailable: %s", type(exc).__name__)
 
         def expiry_close(ticker: str, day: date) -> Optional[float]:
             rows = history.get(ticker) or history.get(ticker.replace("-", ".")) or []
-            return next((float(row["close"]) for row in rows if str(row["date"])[:10] == day.isoformat()), None)
-        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close)
+            close = next((float(row["close"]) for row in rows if str(row["date"])[:10] == day.isoformat()), None)
+            if close is None:
+                return None
+            for when, ratio in splits.get(ticker) or []:
+                if when > day.isoformat():  # Yahoo scaled the older price down for a later split
+                    close *= ratio
+            return close
+        current = {}
+        for row in self.raw().get("positions") or []:
+            code = parse_code(row["code"])["ticker"]
+            current[code] = float(row["qty"]) * (-1 if row.get("side") == "SHORT" and row["qty"] > 0 else 1)
+        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close, current)
         result.update(built_at=utcnow().isoformat(), fills=len(deals))
         self.repo.set_setting("trade_journal", result)
         return result
@@ -706,8 +723,9 @@ class HoldingsMonitor:
             function(*args)
             self.errors.pop(name, None)
         except Exception as exc:  # the next tick retries; alerts keep using the last snapshot
+            if name not in self.errors:  # "failing since" is the first failure, not the latest retry
+                self.error_at[name] = utcnow().isoformat()
             self.errors[name] = type(exc).__name__
-            self.error_at[name] = utcnow().isoformat()
             logger.warning("Holdings %s failed: %s", name, type(exc).__name__)
 
     def _load_levels(self, day: date) -> None:

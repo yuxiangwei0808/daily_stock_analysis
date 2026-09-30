@@ -12,14 +12,11 @@ export function focusPayoffPoints(points: PayoffPoint[], anchors: number[]): Pay
   const low = Math.min(...marks);
   const high = Math.max(...marks);
   const pad = Math.max((high - low) * 0.5, high * 0.08);
+  // The window may pass the server's last point (its tail stops at 2× the highest strike, which
+  // a far-out-of-the-money put leaves below today's price): pnlAt continues the last slope exactly.
   const from = Math.max(sorted[0].price, low - pad);
-  const to = Math.min(sorted[sorted.length - 1].price, high + pad);
-  const at = (x: number) => {
-    const i = Math.max(1, sorted.findIndex((p) => p.price >= x));
-    const [a, b] = [sorted[i - 1], sorted[Math.min(i, sorted.length - 1)]];
-    return b.price === a.price ? a.pnl : a.pnl + ((b.pnl - a.pnl) * (x - a.price)) / (b.price - a.price);
-  };
-  return [{ price: from, pnl: at(from) }, ...sorted.filter((p) => p.price > from && p.price < to), { price: to, pnl: at(to) }];
+  const to = high + pad;
+  return [{ price: from, pnl: pnlAt(sorted, from) }, ...sorted.filter((p) => p.price > from && p.price < to), { price: to, pnl: pnlAt(sorted, to) }];
 }
 
 const sortedPoints = (points: PayoffPoint[]) =>
@@ -72,6 +69,8 @@ export function payoffTable(points: PayoffPoint[], spot: number | null | undefin
     ...breakevens.filter((x) => Number.isFinite(x) && x > 0).map((price) => ({ price, label: 'Breakeven', kind: 'breakeven' as const })),
     ...[...new Set(strikes.filter((x) => Number.isFinite(x) && x > 0))].map((price) => ({ price, label: 'Strike', kind: 'strike' as const })),
   ].map((row) => ({ ...row, movePct: move(row.price), pnl: pnlAt(points, row.price) }));
+  // A ±% move close to a key level gives way to it; key levels keep their own rows unless they
+  // are the same price to the cent (a narrow spread's strikes and breakeven all matter).
   const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(b) * 0.005, 0.005);
   const moves: PayoffRow[] = now
     ? [-20, -10, -5, 5, 10, 20].map((pct) => now * (1 + pct / 100))
@@ -80,8 +79,8 @@ export function payoffTable(points: PayoffPoint[], spot: number | null | undefin
     : [];
   const unique: PayoffRow[] = [];
   for (const row of keys) {
-    const same = unique.find((kept) => near(kept.price, row.price));
-    if (same) same.label = [...new Set([same.label, row.label])].join(' · ');
+    const same = unique.find((kept) => Math.abs(kept.price - row.price) < 0.005);
+    if (same) same.label = [...new Set([...same.label.split(' · '), row.label])].join(' · ');
     else unique.push(row);
   }
   return [...unique, ...moves].sort((a, b) => a.price - b.price);

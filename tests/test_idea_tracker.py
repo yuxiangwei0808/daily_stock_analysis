@@ -65,7 +65,7 @@ def test_scans_and_breakouts_are_recorded_once_and_summarised(repo):
         {"ticker": "BBB", "direction": "short", "price": 50.0, "stop": 52.0, "targets": [46.0], "verdict": "rejected"}]}
     assert it.record_scan(repo, result) == 2 and it.record_scan(repo, result) == 0  # a rescan adds nothing
     assert it.record_breakout(repo, "CCC", "long", 20.0, 19.0, 22.0, date(2026, 9, 1))
-    bars = {"SPY": _bars("2026-08-31", [(500, 501, 499, 500)] + [(500, 502, 499, 501)] * 20),
+    bars = {"SPY": _bars("2026-08-31", [(500, 501, 499, 500)] + [(500, 502, 499, 501)] * 5),
             "AAA": _bars("2026-09-01", [(100, 107, 99, 106)]),
             "BBB": _bars("2026-09-01", [(50, 53, 49, 52)]),
             "CCC": _bars("2026-09-01", [(20, 20.5, 19.5, 20.2)] * 3)}
@@ -336,3 +336,32 @@ def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict()
     assert board["verdict:bearish"]["verdict"] == "ahead"
     assert board["youtube:Meet Kevin"]["verdict"] == "too_early" and board["social"]["open"] == 1
     assert "breakout" not in board  # nothing tracked, nothing listed
+
+
+def test_a_halted_ticker_closes_at_its_last_price_instead_of_staying_open(repo):
+    repo.track_idea("social:2026-09-01:PUMP", {"kind": "social", "group": "hot", "verdict": "social", "ticker": "PUMP",
+                                              "direction": "long", "signal_day": "2026-09-01", "entry": None})
+    spy = _bars("2026-08-31", [(100, 100, 100, 100.0)] * 30)
+    pump = _bars("2026-08-31", [(10, 10, 10, 10.0)] + [(8, 8, 8, 8.0)] * 3 + [(1.2, 1.2, 1.2, 1.2)])  # halted after 4 sessions
+    it.settle_open(repo, date(2026, 10, 1), bars=lambda tickers: {"SPY": spy, "PUMP": pump}, nx_bars=lambda tickers: {})
+    [row] = repo.tracked_ideas()
+    assert row["status"] == "closed" and row["reason"] == "halted"
+    assert row["return_20d_pct"] == pytest.approx(-88.0) and row["spy_20d_pct"] == pytest.approx(0.0)
+
+
+def test_a_split_after_the_signal_does_not_skew_returns(repo):
+    repo.track_idea("influencer:v1:SPLT", {"kind": "influencer", "group": "bullish", "ticker": "SPLT", "direction": "long",
+                                           "signal_day": "2026-09-01", "entry": None, "channel": "x"})
+    repo.track_idea("breakout:2026-09-01:SPLT:up", {"kind": "breakout", "verdict": "breakout", "ticker": "SPLT",
+                                                    "direction": "long", "signal_day": "2026-09-01", "entry": 100.0,
+                                                    "stop": 90.0, "target": 130.0})
+    spy = _bars("2026-08-31", [(100, 100, 100, 100.0)] * 12)
+    before = _bars("2026-08-31", [(100, 101, 99, 100.0)] * 3)
+    it.settle_open(repo, date(2026, 9, 3), bars=lambda tickers: {"SPY": spy, "SPLT": before}, nx_bars=lambda tickers: {})
+    # A 1:10 reverse split later: the provider rescales the whole history by 10.
+    after = [{**bar, **{k: bar[k] * 10 for k in ("open", "high", "low", "close")}} for bar in _bars("2026-08-31", [(100, 101, 99, 100.0)] * 6)]
+    it.settle_open(repo, date(2026, 9, 6), bars=lambda tickers: {"SPY": spy, "SPLT": after}, nx_bars=lambda tickers: {})
+    rows = {row["kind"]: row for row in repo.tracked_ideas()}
+    assert rows["influencer"]["mark_return_pct"] == pytest.approx(0.0) and rows["influencer"]["entry"] == pytest.approx(1000.0)
+    assert rows["breakout"]["status"] == "open" and rows["breakout"]["return_pct"] == pytest.approx(-0.05)  # not +900%
+    assert rows["breakout"]["entry"] == 100.0  # the printed price is kept

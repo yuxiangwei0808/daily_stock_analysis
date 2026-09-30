@@ -565,6 +565,11 @@ def test_discord_safe_hides_option_sizes_premiums_and_bare_counts():
         "holding 1,200 AAPL": "holding [n] AAPL", "my 5 NVDA calls": "my [n] NVDA calls",
         "sold 100 shares at 150 last week": "sold [n] shares at [amount] last week",
         "collected 85 premium": "collected [amount] premium",
+        "bought 300 at 152.30": "bought [n] at [amount]",
+        "sold 5 AAPL 150C at 2.10": "sold [n] AAPL 150C at [amount]",
+        "short 2 150P at 3.40": "short [n] 150P at [amount]",
+        "got in at 41.2": "got in at [amount]",
+        "opened at 3.40": "opened at [amount]",
     }
     for text, expected in cases.items():
         assert h.discord_safe(text) == expected, text
@@ -604,12 +609,16 @@ def test_the_trade_journal_is_built_from_fills_and_kept(store):
         calls.append((account, security_firm, days))
         return [{"deal_id": "1", "code": "US.SPY260918P550000", "side": "SELL_SHORT", "qty": 1, "price": 2.0,
                  "time": "2026-09-01 10:00:00"},
-                {"deal_id": "2", "code": "US.NVDA", "side": "BUY", "qty": 5, "price": 100.0, "time": "2026-09-02 10:00:00"},
-                {"deal_id": "3", "code": "US.NVDA", "side": "SELL", "qty": 5, "price": 110.0, "time": "2026-09-09 10:00:00"}]
+                {"deal_id": "2", "code": "US.AMD", "side": "BUY", "qty": 5, "price": 100.0, "time": "2026-09-02 10:00:00"},
+                {"deal_id": "3", "code": "US.AMD", "side": "SELL", "qty": 5, "price": 110.0, "time": "2026-09-09 10:00:00"},
+                # the 5 NVDA shares held today were bought before the history: this sale closes older shares
+                {"deal_id": "4", "code": "US.NVDA", "side": "SELL", "qty": 2, "price": 150.0, "time": "2026-09-10 10:00:00"}]
     provider.broker_deals = broker_deals
     assert store.journal() is None
     bars = {"SPY": [{"date": "2026-09-18", "close": 560.0}]}
-    built = store.refresh_journal(date(2026, 9, 30), bars=lambda tickers, period="1y": bars)
-    assert calls == [("1234", "FUTUINC", 365)] and built["fills"] == 3
-    assert built["total"]["trades"] == 2 and built["total"]["total_pnl"] == 250.0  # 200 premium kept + 50 on NVDA
+    built = store.refresh_journal(date(2026, 9, 30), bars=lambda tickers, period="1y", adjusted=True: bars,
+                                  split_ratios=lambda ticker: [])
+    assert calls == [("1234", "FUTUINC", 365)] and built["fills"] == 4
+    assert built["total"]["trades"] == 2 and built["total"]["total_pnl"] == 250.0  # 200 premium kept + 50 on AMD
+    assert built["unmatched_closes"] == 1
     assert store.journal()["built_at"] == built["built_at"]

@@ -86,6 +86,21 @@ def test_a_slot_missed_while_the_server_was_down_starts_if_recent(tmp_path, monk
     assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is False  # too late now
 
 
+def test_a_schedule_edit_never_catches_up_a_slot(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "db.sqlite"))
+    rs._write_run_record({"slot": "2026-09-29 16:10", "status": "finished", "started_at": "2026-09-29T16:10:00"})
+    _pin_clock(monkeypatch, datetime(2026, 9, 29, 16, 30))
+    edited = ["09:40", "12:00", "16:20"]  # 16:10 moved to 16:20 after today's run
+    assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), edited, launch=True) is True
+    assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), edited, launch=False) is False
+
+
+def test_a_late_catch_up_keeps_the_slot_it_was_approved_for():
+    service = SimpleNamespace(_catch_up_label="16:10")
+    assert rs.RuntimeSchedulerService._take_catch_up_label(service) == "16:10"
+    assert rs.RuntimeSchedulerService._take_catch_up_label(service) is None  # used once
+
+
 def test_runs_are_labelled_only_within_the_slot_window():
     assert rs._slot_label(["09:40", "12:00"], datetime(2026, 9, 29, 12, 10)) == "12:00"
     assert rs._slot_label(["09:40", "12:00"], datetime(2026, 9, 29, 15, 0)) is None  # a late manual start

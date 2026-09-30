@@ -1595,7 +1595,8 @@ class MoomooProvider:
         deals, seen = [], set()
         for row in rows:
             code, deal_id = _text(row.get("code")), _text(row.get("deal_id"))
-            if not code.startswith("US.") or deal_id in seen or _text(row.get("status")) not in ("OK", "N/A", ""):
+            # CHANGED is a corrected fill (its row carries the corrected size and price); CANCELLED is dropped.
+            if not code.startswith("US.") or deal_id in seen or _text(row.get("status")) not in ("OK", "CHANGED", "N/A", ""):
                 continue
             seen.add(deal_id)
             deals.append({"deal_id": deal_id, "code": code, "name": _text(row.get("stock_name")),

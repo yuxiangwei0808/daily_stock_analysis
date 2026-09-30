@@ -62,3 +62,19 @@ def test_missing_history_assumes_beta_one_and_no_mark_uses_intrinsic_delta():
     moves = {item["key"]: item["pnl"] for item in out["scenarios"]}
     assert moves["SPY-3"] == pytest.approx(2 * 100 * 50.0 * 0.03)  # intrinsic gain of the long puts
     assert all(item["pct"] is None for item in out["scenarios"])  # no account total, no percentages
+
+
+def test_a_failed_beta_download_is_retried_not_kept_for_the_day():
+    r._beta_cache.clear()
+    view = {"total_assets": 100000, "stocks": [{"ticker": "NVDA", "qty": 10, "price": 100.0}], "options": []}
+    calls = []
+
+    def download(tickers, period="1y"):
+        calls.append(list(tickers))
+        return {} if len(calls) == 1 else _bars()
+    first = r.portfolio_risk(view, download=download, now=NOW)
+    assert first["rows"][0]["beta_assumed"]
+    second = r.portfolio_risk(view, download=download, now=NOW)
+    assert not second["rows"][0]["beta_assumed"] and len(calls) == 2
+    r.portfolio_risk(view, download=download, now=NOW)
+    assert len(calls) == 2  # measured betas are kept for the day

@@ -45,6 +45,8 @@ TRANSCRIPT_ATTEMPTS = 3  # passes a video without a transcript is retried before
 CAPTION_PAUSE_SECONDS = 6 * 3600  # after YouTube rate-limits caption downloads, stop asking for this long
 CAPTION_SPACING_SECONDS = 10.0  # between caption downloads: bursts are what trip the rate limit
 CAPTIONS_PER_PASS = 25  # the rest wait for the next pass (every 3 hours)
+REQUESTS_PER_PASS = 60  # video-page and caption requests together
+MODEL_ATTEMPTS = 3  # passes a video is retried when the model fails, before it is dropped
 BLOCKED_AUDIO_AFTER = timedelta(days=1)  # captions refused this long: transcribe the audio instead
 AUDIO_BACKFILL_DAYS = 7  # audio is transcribed only for videos of the last week (CPU time)
 MAX_AUDIO_SECONDS = 2 * 3600  # longer videos (live streams) are not transcribed
@@ -111,16 +113,32 @@ class CaptionsBlocked(Exception):
     """The video has captions, but they were not downloaded: YouTube refused (rate limit) or fetching is paused."""
 
 
+class VideoNotReady(Exception):
+    """The video cannot be read yet (upcoming or live, or not playable right now): try a later pass."""
+
+
 def captions(video_id: str, fetch: bool = True) -> str:
-    """The video's caption text, or "" when it has none. Raises CaptionsBlocked when it has captions
-    that YouTube refuses to send (HTTP 429/403), or that ``fetch=False`` says not to ask for."""
+    """The video's caption text, or "" when it has none.
+
+    Raises CaptionsBlocked when it has captions that YouTube refuses to send (HTTP 429/403, a bot
+    check, an empty caption file), or that ``fetch=False`` says not to ask for; VideoNotReady for an
+    upcoming or live stream or a video YouTube will not play now. Only a clean answer means "none".
+    """
     import requests
     response = requests.post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", timeout=20,
                              json={"context": {"client": _ANDROID}, "videoId": video_id},
                              headers={"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"})
+    if response.status_code in (403, 429):
+        raise CaptionsBlocked(str(response.status_code))
     response.raise_for_status()
-    tracks = ((((response.json().get("captions") or {}).get("playerCaptionsTracklistRenderer") or {})
-               .get("captionTracks")) or [])
+    data = response.json()
+    status = str((data.get("playabilityStatus") or {}).get("status") or "")
+    details = data.get("videoDetails") or {}
+    if status == "LOGIN_REQUIRED":  # "confirm you're not a bot": YouTube is refusing this server
+        raise CaptionsBlocked("login_required")
+    if details.get("isUpcoming") or details.get("isLive") or status not in ("OK", ""):
+        raise VideoNotReady(status or "live")
+    tracks = (((data.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {}).get("captionTracks")) or []
     track = _pick_track(tracks)
     if track is None:
         return ""
@@ -130,8 +148,10 @@ def captions(video_id: str, fetch: bool = True) -> str:
     if reply.status_code in (403, 429):
         raise CaptionsBlocked(str(reply.status_code))
     reply.raise_for_status()
-    text = re.sub(r"<[^>]+>", " ", reply.text)
-    return " ".join(html.unescape(text).split())
+    text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", reply.text)).split())
+    if not text:
+        raise CaptionsBlocked("empty")  # a caption track whose file came back empty
+    return text
 
 
 def transcribe_enabled() -> bool:
@@ -192,6 +212,11 @@ def transcribe_audio(video_id: str, should_stop: Callable[[], bool] = lambda: Fa
         deno = _deno_path()
         if deno:  # YouTube's player challenges need a JavaScript runtime; without one formats go missing
             options["js_runtimes"] = {"deno": {"path": deno}}
+
+        def stop_hook(_status: Dict[str, Any]) -> None:
+            if should_stop():
+                raise InterruptedError("stopping")
+        options["progress_hooks"] = [stop_hook]  # a server stop also ends a download
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
         files = [os.path.join(folder, name) for name in os.listdir(folder) if not name.endswith(".part")]
@@ -248,11 +273,24 @@ def _generate(prompt: str) -> str:
     return backend.generate(prompt, {"temperature": 0, "max_output_tokens": 2048}).text or ""
 
 
-def signal_day(published: datetime, trading_day: Callable[[date], bool]) -> date:
+def _session_close(day: date) -> dtime:
+    """The regular close on ``day`` in New York time: 13:00 on early-close days, else 16:00."""
+    from src.core.trading_calendar import get_market_session_bounds
+    try:
+        close = get_market_session_bounds("us", datetime.combine(day, dtime(12, 0), tzinfo=_NEW_YORK))[1]
+        if close is not None and close.astimezone(_NEW_YORK).date() == day:
+            return close.astimezone(_NEW_YORK).time()
+    except Exception:
+        pass
+    return dtime(16, 0)
+
+
+def signal_day(published: datetime, trading_day: Callable[[date], bool],
+               session_close: Callable[[date], dtime] = _session_close) -> date:
     """The first session whose close comes after the video was published: its close is the entry."""
     local = published.astimezone(_NEW_YORK)
     day = local.date()
-    if local.time() >= dtime(16, 0) or not trading_day(day):
+    if not trading_day(day) or local.time() >= session_close(day):
         day += timedelta(days=1)
         while not trading_day(day):
             day += timedelta(days=1)
@@ -285,6 +323,13 @@ def flag(repo: Any, ticker: str, days: int = 14) -> str:
     """A line for a trade idea when a followed channel called the stock lately; "" otherwise."""
     picks = recent_picks(repo, ticker, days)
     return f"📺 YouTube: {summary_line(picks, 'en')}" if picks else ""
+
+
+def picks_since(repo: Any, hours: float = 24, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Picks from videos published in the last ``hours`` (for the evening digest), newest first."""
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=hours)
+    rows = [row for row in repo.tracked_ideas_like("influencer:%") if datetime.fromisoformat(row["published_at"]) >= cutoff]
+    return sorted(rows, key=lambda row: row["published_at"], reverse=True)
 
 
 def summary_line(picks: List[Dict[str, Any]], language: str = "en") -> str:
@@ -376,6 +421,10 @@ class YouTubeScanJob:
         self._blocked_since: Dict[str, datetime] = {}  # video -> first time its captions were refused
         self._captions_paused_until = 0.0
         self._caption_fetches = 0  # this pass
+        self._requests = 0  # this pass
+        self._model_trouble = 0  # model failures in a row, this pass
+        self._texts: Dict[str, Tuple[str, str]] = {}  # transcripts kept for a model retry
+        self._model_failures: Dict[str, int] = {}
         self._spacing = CAPTION_SPACING_SECONDS
         self._stopping = threading.Event()
         self._generate = generate
@@ -416,12 +465,11 @@ class YouTubeScanJob:
         cutoff = now - timedelta(days=BACKFILL_DAYS)
         trading = self._trading_day or _trading_day
         added = 0
-        if self._transcribe is not None:
-            try:
-                clear_stale_audio()
-            except OSError as exc:
-                logger.info("Could not clear old audio folders: %s", type(exc).__name__)
-        self._caption_fetches = 0
+        try:  # folders a killed process left, whether or not transcription is still on
+            clear_stale_audio()
+        except OSError as exc:
+            logger.info("Could not clear old audio folders: %s", type(exc).__name__)
+        self._caption_fetches = self._requests = self._model_trouble = 0
         try:
             added = self._pass(now, processed, cutoff, trading)
         finally:
@@ -435,17 +483,24 @@ class YouTubeScanJob:
         """(text, source): "captions", "audio", "" (no transcript: retried, then dropped) or "skip" (too
         old to transcribe). Raises _Deferred when the captions exist but YouTube is refusing them for now."""
         video_id = video["video_id"]
+        if video_id in self._texts:  # read on an earlier pass; only the model call failed
+            return self._texts[video_id]
+        if self._requests >= REQUESTS_PER_PASS:
+            raise _Deferred()  # the rest wait for the next pass
         fetch = self._clock() >= self._captions_paused_until and self._caption_fetches < CAPTIONS_PER_PASS
-        if fetch and self._caption_fetches:
-            self._stopping.wait(self._spacing)  # a server stop ends the wait
+        if self._requests:
+            self._stopping.wait(self._spacing)  # every YouTube request is spaced; a server stop ends the wait
+        self._requests += 1
         self._caption_fetches += int(fetch)
         try:
             text = self._captions(video_id, fetch=fetch)
             if text:
                 self._blocked_since.pop(video_id, None)
                 return text, "captions"
+        except VideoNotReady as exc:
+            raise _Deferred() from exc  # an upcoming or live stream: read once it has aired
         except CaptionsBlocked as exc:
-            if fetch:  # refused just now: stop asking for a while, YouTube lifts these blocks slowly
+            if fetch or str(exc) == "login_required":  # refused just now: stop asking for a while
                 self._captions_paused_until = self._clock() + CAPTION_PAUSE_SECONDS
                 logger.warning("YouTube refused captions (%s); captioned videos wait %d hours", exc,
                                CAPTION_PAUSE_SECONDS // 3600)
@@ -459,6 +514,8 @@ class YouTubeScanJob:
             raise _Deferred() from exc
         if self._transcribe is None:
             return "", ""
+        if self._model_trouble:
+            raise _Deferred()  # the model just failed: no CPU spent on audio it may not read
         if video["published"] < now - timedelta(days=AUDIO_BACKFILL_DAYS):
             return "", "skip"
         started = time.monotonic()
@@ -498,21 +555,41 @@ class YouTubeScanJob:
                         self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
                         logger.info("YouTube video %s has no transcript; skipped", video["video_id"])
                     continue
+                if self._stopping.is_set():
+                    return added
                 try:
                     picks = extract_picks(name, video, text, self._generate)
-                except Exception as exc:  # the model failed: retried on the next pass
-                    logger.warning("YouTube picks failed for %s: %s", video["video_id"], type(exc).__name__)
-                    continue
+                except Exception as exc:  # the model failed: the transcript is kept for the next pass
+                    video_id = video["video_id"]
+                    failures = self._model_failures[video_id] = self._model_failures.get(video_id, 0) + 1
+                    logger.warning("YouTube picks failed for %s: %s", video_id, type(exc).__name__)
+                    if failures >= MODEL_ATTEMPTS:
+                        self._texts.pop(video_id, None)
+                        processed[video_id] = video["published"].date().isoformat()
+                        self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
+                        continue
+                    self._texts[video_id] = (text, source)
+                    self._model_trouble += 1
+                    if self._model_trouble >= 2:
+                        return added  # the model looks down: no more downloads this pass
+                    continue  # one bad video must not hold the newer ones back
+                self._model_trouble = 0
+                self._texts.pop(video["video_id"], None)
                 day = signal_day(video["published"], trading)
-                for pick in picks:
-                    record_id, payload = record(name, channel_id, video, pick, day, source)
-                    if self.repo.track_idea(record_id, payload):
-                        added += 1
-                        if video["published"] >= now - timedelta(days=1):
-                            self.today_picks.append(payload)
-                processed[video["video_id"]] = video["published"].date().isoformat()
-                # Saved after each video: a restart never pays for the same video twice.
-                self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
+                try:
+                    for pick in picks:
+                        record_id, payload = record(name, channel_id, video, pick, day, source)
+                        if self.repo.track_idea(record_id, payload):
+                            added += 1
+                            if video["published"] >= now - timedelta(days=1):
+                                self.today_picks.append(payload)
+                    processed[video["video_id"]] = video["published"].date().isoformat()
+                    # Saved after each video: a restart never pays for the same video twice.
+                    self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
+                except Exception as exc:  # e.g. a locked database: the video is read again next pass
+                    logger.warning("YouTube picks not stored for %s: %s", video["video_id"], type(exc).__name__)
+                    self._texts[video["video_id"]] = (text, source)
+                    return added
         return added
 
 

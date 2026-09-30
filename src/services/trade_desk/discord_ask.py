@@ -23,8 +23,10 @@ from typing import Any, Callable, Optional, Set
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 5
-TIMEOUT_SECONDS = 15 * 60
+TIMEOUT_SECONDS = 14 * 60  # Discord's reply token lasts 15 minutes from the command
 MAX_REPLY = 1800
+DISCORD_LIMIT = 2000
+_ZERO_WIDTH = "​"
 _TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 _DONE = {"completed", "stale", "failed", "cancelled"}
 
@@ -51,32 +53,38 @@ def submit(service: Any, user_id: int, ticker: str, question: str, allowed: Set[
 
 
 def wait_for(service: Any, advice_id: str, *, sleep: Callable[[float], None] = time.sleep,
-             clock: Callable[[], float] = time.monotonic) -> Optional[dict]:
-    """The finished job, or None after TIMEOUT_SECONDS."""
-    deadline = clock() + TIMEOUT_SECONDS
-    while clock() < deadline:
+             clock: Callable[[], float] = time.monotonic, timeout: float = TIMEOUT_SECONDS,
+             stopping: Optional[threading.Event] = None) -> Optional[dict]:
+    """The finished job, or None after ``timeout`` seconds or once ``stopping`` is set."""
+    deadline = clock() + timeout
+    while clock() < deadline and not (stopping is not None and stopping.is_set()):
         job = service.repo.advice(advice_id)
         if job and job.get("status") in _DONE:
             return job
-        sleep(POLL_SECONDS)
+        if stopping is not None:
+            stopping.wait(POLL_SECONDS)
+        else:
+            sleep(POLL_SECONDS)
     return None
 
 
 def format_answer(job: Optional[dict], ticker: str, base_url: str = "") -> str:
-    """The reply: verdict, shortened explanation, link. Mentions are defused."""
+    """The reply: verdict, shortened explanation, link; mentions defused, always within Discord's 2000 characters."""
     if job is None:
         return f"**{ticker}** · still working after {TIMEOUT_SECONDS // 60} minutes; the answer will be on the Trade Desk page."
     link = f"\n{base_url.rstrip('/')}/trade-desk?adviceId={job['id']}" if base_url else ""
     if job["status"] in ("failed", "cancelled"):
         return f"**{ticker}** · the question {job['status']}: {str(job.get('error') or '')[:300]}{link}"
     verdict = {"trade": "Trade", "wait": "Wait", "compare": "Compare"}.get(job.get("assessment") or "", "Answer")
-    explanation = " ".join(str(job.get("explanation") or "No explanation was produced.").split())
-    if len(explanation) > MAX_REPLY:
-        explanation = explanation[:MAX_REPLY].rsplit(" ", 1)[0] + " …"
+    # Defused before measuring: the zero-width spaces count toward the limit.
+    explanation = " ".join(str(job.get("explanation") or "No explanation was produced.").split()).replace("@", "@" + _ZERO_WIDTH)
     count = len(job.get("candidates") or [])
     stale = " · prices moved since; refresh them on the page" if job["status"] == "stale" else ""
-    text = f"🧭 **{ticker}** · {verdict} · {count} candidate{'s' if count != 1 else ''}{stale}\n{explanation}{link}"
-    return text.replace("@", "@​")
+    head = f"🧭 **{ticker}** · {verdict} · {count} candidate{'s' if count != 1 else ''}{stale}\n"
+    room = min(MAX_REPLY, DISCORD_LIMIT - len(head) - len(link) - 2)
+    if len(explanation) > room:
+        explanation = explanation[:room].rsplit(" ", 1)[0] + " …"
+    return f"{head}{explanation}{link}"
 
 
 class DiscordAskBot:
@@ -89,14 +97,21 @@ class DiscordAskBot:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = None
         self._thread: Optional[threading.Thread] = None
+        self._stopping = threading.Event()  # ends pending waits so a shutdown is not held up
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="trade-desk-discord-ask", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        if self._loop is not None and self._client is not None:
-            asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
+        self._stopping.set()
+        loop, client = self._loop, self._client
+        if loop is None or client is None or loop.is_closed():
+            return  # never logged in (bad token, no network) or already stopped
+        try:
+            asyncio.run_coroutine_threadsafe(client.close(), loop)
+        except RuntimeError:  # the loop closed in between
+            pass
 
     def _run(self) -> None:
         import discord
@@ -111,15 +126,31 @@ class DiscordAskBot:
         @tree.command(name="ask", description="Ask Trade Desk about a US stock or its options")
         @app_commands.describe(ticker="US ticker, e.g. NVDA", question="What you want to know")
         async def ask(interaction: discord.Interaction, ticker: str, question: str = "") -> None:
+            if interaction.user.id not in self._allowed:  # answered at once, only to the asker
+                await interaction.response.send_message(
+                    "You are not on this bot's list of people who can ask (TRADE_DESK_DISCORD_ASK_USERS).", ephemeral=True)
+                return
+            # Discord wants a first response within 3 seconds; the database write can take longer.
+            await interaction.response.defer(thinking=True)
             try:
                 job = await asyncio.to_thread(submit, self.service, interaction.user.id, ticker, question, self._allowed)
-            except (PermissionError, ValueError) as exc:
-                await interaction.response.send_message(str(exc), ephemeral=True)
+            except Exception as exc:  # a bad ticker, a full queue, a locked database
+                reason = str(exc) if isinstance(exc, (ValueError, PermissionError)) else type(exc).__name__
+                await interaction.followup.send(f"Could not ask: {reason}")
                 return
             symbol = job["request"]["ticker"]
-            await interaction.response.send_message(f"Asked Trade Desk about **{symbol}**; answers take one to three minutes.")
-            finished = await asyncio.to_thread(wait_for, self.service, job["id"])
-            await interaction.followup.send(format_answer(finished, symbol, base_url))
+            # The reply token lasts 15 minutes from the command, not from now.
+            elapsed = (discord.utils.utcnow() - interaction.created_at).total_seconds()
+            finished = await asyncio.to_thread(wait_for, self.service, job["id"],
+                                               timeout=max(0.0, TIMEOUT_SECONDS - elapsed), stopping=self._stopping)
+            if self._stopping.is_set():
+                return
+            text = format_answer(finished, symbol, base_url)
+            try:
+                await interaction.followup.send(text)
+            except discord.HTTPException:  # the reply token expired: post in the channel instead
+                if interaction.channel is not None:
+                    await interaction.channel.send(text)
 
         @client.event
         async def on_ready() -> None:
@@ -134,6 +165,7 @@ class DiscordAskBot:
             logger.warning("Discord /ask bot stopped: %s", type(exc).__name__)
         finally:
             self._loop.close()
+
 
 
 def start(service: Any) -> Optional[DiscordAskBot]:

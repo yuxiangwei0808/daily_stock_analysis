@@ -365,6 +365,9 @@ class TradeDeskService:
             refreshed.append(match.model_dump(mode="json"))
         if len(failed) == len(refreshed):
             raise ValueError("No candidate could be priced from current quotes")
+        # Only the snapshots a candidate still points at are kept: each refresh adds new ones.
+        used = {item["snapshot_id"] for item in refreshed} | {((job.get("snapshot") or {}).get("id"))}
+        snapshots = {key: value for key, value in snapshots.items() if key in used}
         return self.repo.update_advice(advice_id, {"candidates": refreshed, "snapshots": snapshots,
                                                    "repriced_at": utcnow().isoformat(), "reprice_failed": failed},
                                        only_statuses={"completed", "stale"})
@@ -765,7 +768,10 @@ class TradeDeskService:
         if self.worker:
             self.worker.stop()
         if getattr(self, "discord_ask", None) is not None:
-            self.discord_ask.stop()
+            try:
+                self.discord_ask.stop()
+            except Exception as exc:  # shutdown goes on
+                logger.warning("Discord /ask bot stop failed: %s", type(exc).__name__)
         with self._lock:
             for cancel, _ in self._jobs.values():
                 cancel.set()

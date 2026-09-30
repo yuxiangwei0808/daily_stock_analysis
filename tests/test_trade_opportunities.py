@@ -519,6 +519,9 @@ def test_mirror_and_single_stock_funds_group_together():
     assert opp._breakout_group("SOXL", "") == opp._breakout_group("SOXS", "")
     assert opp._breakout_group("TSLL", "Direxion Daily TSLA Bull 2X Shares") == "TSLA"
     assert opp._breakout_group("AAPL", "Apple Inc.") == "AAPL"
+    # Index-provider words are not a group: two MSCI funds tracking different markets stay apart.
+    assert opp._breakout_group("EDC", "Direxion Daily MSCI Emerging Markets Bull 3X") == "EDC"
+    assert opp._breakout_group("DRN", "Direxion Daily MSCI Real Estate Bull 3X") == "DRN"
 
 
 def test_candidates_keep_room_for_the_watchlist_and_skip_stretched_setups():

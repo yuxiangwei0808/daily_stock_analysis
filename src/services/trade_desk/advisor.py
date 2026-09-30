@@ -87,8 +87,7 @@ _RULES = (
     "and mention them, but never choose or reject a trade because of NX alone. "
     "An evidence item with kind 'social_scan' is retail attention (Reddit, WallStreetBets, Stocktwits) and one "
     "with kind 'youtube_picks' lists recent calls by YouTube hosts the user follows. Both are background: mention "
-    "crowding or a host's call where relevant, but heavily discussed names have tended to lag afterwards and the "
-    "hosts' calls are untested, so never choose or reject a trade because of them. "
+    "crowding or a host's call where relevant, but neither attention nor the hosts' calls has a tested edge, so never choose or reject a trade because of them. "
 )
 
 

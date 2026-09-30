@@ -152,8 +152,12 @@ def recent_bars(bars: List[Dict[str, float]], count: int = 20) -> List[List[Any]
              int(_num(bar.get("volume")) or 0)] for bar in bars[-count:]]
 
 
-def download_bars(tickers: Iterable[str], *, period: str = "6mo", chunk: int = 100) -> Dict[str, List[Dict[str, Any]]]:
-    """Daily bars per ticker (oldest first) from yfinance, in batched downloads."""
+def download_bars(tickers: Iterable[str], *, period: str = "6mo", chunk: int = 100,
+                  adjusted: bool = True) -> Dict[str, List[Dict[str, Any]]]:
+    """Daily bars per ticker (oldest first) from yfinance, in batched downloads.
+
+    ``adjusted`` (the default) folds dividends and splits into past prices; ``adjusted=False``
+    keeps dividends out (Yahoo still scales past prices for splits, see ``split_ratios``)."""
     import yfinance as yf
 
     symbols = list(dict.fromkeys(str(t).strip().upper().replace(".", "-") for t in tickers if str(t).strip()))
@@ -161,7 +165,7 @@ def download_bars(tickers: Iterable[str], *, period: str = "6mo", chunk: int = 1
     for start in range(0, len(symbols), chunk):
         part = symbols[start:start + chunk]
         try:
-            data = yf.download(part, period=period, interval="1d", group_by="ticker", auto_adjust=True,
+            data = yf.download(part, period=period, interval="1d", group_by="ticker", auto_adjust=adjusted,
                                progress=False, threads=True, timeout=20)
         except Exception as exc:  # one failed chunk leaves the others usable
             logger.warning("Daily bars unavailable for %d tickers: %s", len(part), type(exc).__name__)
@@ -181,3 +185,14 @@ def download_bars(tickers: Iterable[str], *, period: str = "6mo", chunk: int = 1
                  "low": float(row["Low"]), "close": float(row["Close"]), "volume": float(row["Volume"] or 0)}
                 for index, row in frame.iterrows()]
     return result
+
+
+def split_ratios(ticker: str) -> List[tuple]:
+    """(date, ratio) of the ticker's splits (a 10:1 split is 10.0); [] when unknown."""
+    import yfinance as yf
+    try:
+        series = yf.Ticker(str(ticker).replace(".", "-")).splits
+    except Exception as exc:
+        logger.info("Split history unavailable for %s: %s", ticker, type(exc).__name__)
+        return []
+    return [(index.date().isoformat(), float(ratio)) for index, ratio in series.items() if ratio]

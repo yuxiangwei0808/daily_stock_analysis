@@ -14,10 +14,12 @@ YouTube call), to compare your own results with and without the system.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional
 
 SIGNAL_DAYS = 5
+_NEW_YORK = ZoneInfo("America/New_York")  # moomoo reports US fills in New York time
 HOLD_BUCKETS = (("same_day", "Same day", 0, 0), ("days_1_5", "1–5 days", 1, 5), ("days_6_20", "6–20 days", 6, 20),
                 ("over_20", "Over 20 days", 21, 10 ** 6))
 
@@ -26,15 +28,57 @@ def _when(text: str) -> datetime:
     return datetime.fromisoformat(str(text).replace("/", "-")[:19])
 
 
-def round_trips(deals: List[Dict[str, Any]], today: date,
-                expiry_close: Optional[Callable[[str, date], Optional[float]]] = None) -> List[Dict[str, Any]]:
-    """Closed round trips from fills, oldest first; expired options settle at intrinsic value."""
+def starting_positions(deals: List[Dict[str, Any]], current: Dict[str, float], today: date) -> Dict[str, float]:
+    """What was already held when the fill history begins: today's quantity less the net fills.
+
+    Shares bought before the window, or delivered by an assignment or exercise (neither is a fill),
+    would otherwise make their later sale look like a new short. Expired options are no longer
+    held, so they start flat and their last lots settle at expiry.
+    """
     from .holdings import parse_code
-    lots: Dict[str, List[Dict[str, Any]]] = {}
+    net: Dict[str, float] = {}
+    for deal in deals:
+        code = _bare(deal["code"])
+        net[code] = net.get(code, 0.0) + _signed(deal)
+    start = {}
+    for code in set(net) | set(current):
+        info = parse_code(code)
+        if info["kind"] == "option" and info["expiry"] < today:
+            continue
+        quantity = current.get(code, 0.0) - net.get(code, 0.0)
+        if abs(quantity) > 1e-9:
+            start[code] = quantity
+    return start
+
+
+def _bare(code: str) -> str:
+    return code[3:] if code.startswith("US.") else code
+
+
+def _signed(deal: Dict[str, Any]) -> float:
+    side = str(deal["side"]).upper()
+    return deal["qty"] if side in ("BUY", "BUY_BACK") else -deal["qty"] if side in ("SELL", "SELL_SHORT") else 0.0
+
+
+def round_trips(deals: List[Dict[str, Any]], today: date,
+                expiry_close: Optional[Callable[[str, date], Optional[float]]] = None,
+                starting: Optional[Dict[str, float]] = None, unmatched: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """Closed round trips from fills, oldest first; expired options settle at intrinsic value.
+
+    ``starting`` seeds positions held before the first fill at an unknown cost: closing them makes
+    no round trip (``unmatched`` counts those closes).
+    """
+    from .holdings import parse_code
+    lots: Dict[str, List[Dict[str, Any]]] = {code: [{"qty": qty, "price": None, "time": None}]
+                                            for code, qty in (starting or {}).items()}
     trips: List[Dict[str, Any]] = []
 
     def close(code: str, info: Dict[str, Any], lot: Dict[str, Any], qty: float, price: float, when: datetime,
               how: str) -> None:
+        if lot["price"] is None:  # held before the history begins: its cost is unknown
+            if unmatched is not None:
+                unmatched.append(1)
+            return
         multiplier = 100 if info["kind"] == "option" else 1
         long = lot["qty"] > 0
         pnl = (price - lot["price"]) * qty * multiplier * (1 if long else -1)
@@ -49,10 +93,9 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
                       "pnl": round(pnl, 2), "return_pct": round(pnl / cost * 100, 2) if cost else None, "how": how})
 
     for deal in deals:
-        code = deal["code"][3:] if deal["code"].startswith("US.") else deal["code"]
+        code = _bare(deal["code"])
         info = parse_code(code)
-        side = str(deal["side"]).upper()
-        signed = deal["qty"] if side in ("BUY", "BUY_BACK") else -deal["qty"] if side in ("SELL", "SELL_SHORT") else 0
+        signed = _signed(deal)
         when = _when(deal["time"])
         book = lots.setdefault(code, [])
         while signed and book and (book[0]["qty"] > 0) != (signed > 0):
@@ -88,13 +131,25 @@ def _stats(trips: List[Dict[str, Any]]) -> Dict[str, Any]:
             "avg_hold_days": round(sum(trip["hold_days"] for trip in trips) / len(trips), 1) if trips else None}
 
 
+def _known_before(signal: Dict[str, Any], opened: datetime) -> bool:
+    """Whether the signal existed before the trade: its record was stored before the open (report
+    calls are recorded after the close, so they count from the day after their report)."""
+    day = str(signal.get("signal_day", ""))[:10]
+    if signal.get("kind") == "verdict" or not signal.get("created_at"):
+        return day < opened.date().isoformat()
+    created = datetime.fromisoformat(str(signal["created_at"]))
+    created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+    return created <= opened.replace(tzinfo=_NEW_YORK)
+
+
 def signal_match(trip: Dict[str, Any], signals: List[Dict[str, Any]]) -> str:
-    """"agreed" / "against" / "none": the latest tracked signal on the ticker up to five days before the open."""
+    """"agreed" / "against" / "none": the latest tracked signal on the ticker known in the five days before the open."""
+    opened_at = datetime.fromisoformat(trip["opened"])
     opened = trip["opened"][:10]
     earliest = (date.fromisoformat(opened) - timedelta(days=SIGNAL_DAYS)).isoformat()
     related = [signal for signal in signals if signal.get("ticker") == trip["ticker"]
                and earliest <= str(signal.get("signal_day", ""))[:10] <= opened
-               and signal.get("direction") in ("long", "short")]
+               and signal.get("direction") in ("long", "short") and _known_before(signal, opened_at)]
     if not related:
         return "none"
     latest = max(related, key=lambda signal: str(signal.get("signal_day")))
@@ -102,8 +157,11 @@ def signal_match(trip: Dict[str, Any], signals: List[Dict[str, Any]]) -> str:
 
 
 def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: date,
-          expiry_close: Optional[Callable[[str, date], Optional[float]]] = None) -> Dict[str, Any]:
-    trips = round_trips(deals, today, expiry_close)
+          expiry_close: Optional[Callable[[str, date], Optional[float]]] = None,
+          current: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """``current`` is today's quantity per code (from the broker holdings), to seed what was held earlier."""
+    unmatched: List[int] = []
+    trips = round_trips(deals, today, expiry_close, starting_positions(deals, current or {}, today), unmatched)
     for trip in trips:
         trip["signal"] = signal_match(trip, signals)
     types = {}
@@ -120,11 +178,12 @@ def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: dat
         "by_hold": [{"key": key, "label": label, **_stats([t for t in trips if low <= t["hold_days"] <= high])}
                     for key, label, low, high in HOLD_BUCKETS],
         "by_signal": [{"key": key, "label": label, **_stats([t for t in trips if t["signal"] == key])}
-                      for key, label in (("agreed", "Agreed with a system signal"), ("against", "Against a system signal"),
-                                         ("none", "No system signal"))],
+                      for key, label in (("agreed", "Agreed with a signal"), ("against", "Against a signal"),
+                                         ("none", "No signal"))],
         "by_underlying": sorted(({"ticker": ticker, **_stats(rows)} for ticker, rows in by_underlying.items()),
                                 key=lambda item: -abs(item["total_pnl"]))[:10],
         "best": sorted(trips, key=lambda trip: -trip["pnl"])[:5],
         "worst": sorted(trips, key=lambda trip: trip["pnl"])[:5],
         "open_lots_note": "Open positions are not counted until they are closed or expire.",
+        "unmatched_closes": len(unmatched),  # sales of positions bought before the history (unknown cost)
     }

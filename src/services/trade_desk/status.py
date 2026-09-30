@@ -63,6 +63,31 @@ def _ago(value: Any, now: datetime) -> str:
     return f"{seconds // 86400} days ago"
 
 
+_probe_pool = None
+_probe: Optional[Any] = None
+PROBE_TIMEOUT = 5.0
+
+
+def _opend(service: Any) -> Dict[str, Any]:
+    """The OpenD check, bounded in time: the moomoo SDK retries a lost connection forever, so the
+    probe runs on its own thread and a probe that has not answered in PROBE_TIMEOUT reads as failing
+    (and is not started again while it is still stuck)."""
+    global _probe_pool, _probe
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+    if _probe_pool is None:
+        _probe_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="status-opend")
+    if _probe is None or _probe.done():
+        _probe = _probe_pool.submit(lambda: service.health()["live"])
+    try:
+        live = _probe.result(timeout=PROBE_TIMEOUT)
+    except FutureTimeout:
+        return {"state": "error", "detail": "not answering (the check has waited over 5 seconds)"}
+    except Exception as exc:
+        return {"state": "error", "detail": type(exc).__name__}
+    return {"state": "ok" if live.get("available") else "error",
+            "detail": str(live.get("message") or ("connected" if live.get("available") else "unavailable"))}
+
+
 def _part(worker: Any, name: str, now: datetime) -> Dict[str, Any]:
     """State of one worker part from its last tick: an error since, or when it last ran cleanly."""
     status = (getattr(worker, "part_status", {}) or {}).get(name) or {}
@@ -86,12 +111,7 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
     else:
         add("version", "Code version", "ok", f"{running_version or 'unknown'}, started {_ago(getattr(service, 'started_at', None), now)}")
 
-    try:
-        live = service.health()["live"]
-        add("opend", "moomoo OpenD quotes", "ok" if live.get("available") else "error",
-            str(live.get("message") or ("connected" if live.get("available") else "unavailable")))
-    except Exception as exc:
-        add("opend", "moomoo OpenD quotes", "error", type(exc).__name__)
+    add("opend", "moomoo OpenD quotes", **_opend(service))
 
     scheduler = getattr(service, "scheduler_status", None)
     if scheduler is None:
@@ -118,8 +138,12 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
         add("worker", "Alert monitor", "off", "not started")
     else:
         info = worker.status()
+        if not getattr(service, "enabled", True):
+            info = {**info, "running": None}
         tick_age = (now - _utc(info.get("last_tick"))).total_seconds() if _utc(info.get("last_tick")) else None
-        if not info.get("running"):
+        if info.get("running") is None:
+            add("worker", "Alert monitor", "off", "Trade Desk is disabled")
+        elif not info.get("running"):
             add("worker", "Alert monitor", "error", "stopped")
         elif not info.get("leader"):
             add("worker", "Alert monitor", "warn", "another server holds the monitor lease")
@@ -143,13 +167,23 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
             else:
                 add("holdings", "Broker holdings", **{**_part(worker, "holdings", now),
                                                       "detail": f"synced {_ago(synced, now)}"})
-        for key, label, attr in (("pulse", "Market pulse", "_pulse"), ("opportunities", "Trade opportunities", "_opportunities")):
-            if getattr(worker, attr, None) is None:
-                add(key, label, "off", "not enabled")
-            else:
-                add(key, label, **_part(worker, key, now))
-        if getattr(worker, "_breakouts", None) is not None:
-            add("breakouts", "Breakout watch", **_part(worker, "breakouts", now))
+        for key, label, attr in (("pulse", "Market pulse", "_pulse"), ("opportunities", "Trade opportunities", "_opportunities"),
+                                 ("breakouts", "Breakout watch", "_breakouts")):
+            part = getattr(worker, attr, None)
+            if part is None:
+                if key != "breakouts":
+                    add(key, label, "off", "not enabled")
+                continue
+            state = _part(worker, key, now)
+            background = getattr(part, "last_error", None)  # work the tick hands to a background thread
+            if state["state"] == "ok" and background:
+                state = {"state": "error", "detail": f"last background run failed ({background})"}
+            add(key, label, **state)
+        other = {name: error for name, error in ((holdings.errors if holdings is not None else {}) or {}).items()
+                 if name != "sync"}
+        if other:
+            add("holdings_tasks", "Holdings background tasks", "warn",
+                ", ".join(f"{name} failing ({error})" for name, error in sorted(other.items())))
 
         tracker = getattr(worker, "_tracker", None)
         if tracker is None:
@@ -199,7 +233,8 @@ def _discord(service: Any, now: datetime) -> Dict[str, Any]:
     rows = service.repo.events(limit=500, newest=True, types=["discord_delivery"],
                                since=(now - timedelta(days=1)).isoformat())
     good = next((row for row in rows if row["payload"].get("success")), None)
-    failed = [row for row in rows if not row["payload"].get("success") and row["payload"].get("attempt", 0) >= 3]
+    failed = {row["payload"].get("batch_of") or row["payload"].get("event_id") for row in rows
+              if not row["payload"].get("success") and row["payload"].get("attempt", 0) >= 3}
     detail = f"last message {_ago(good['created_at'], now) if good else 'over a day ago'}"
     if failed:
         detail += f"; {len(failed)} gave up after 3 tries in the last day"
@@ -224,6 +259,7 @@ class StatusWatch:
         self._clock = clock or time.monotonic
         self._next = 0.0
         self._failing: Dict[str, int] = {}
+        self._reported_day: Dict[str, str] = {}  # component -> the day its failure was last posted
         self._reported_start = False
 
     def tick(self, now: datetime) -> None:
@@ -233,19 +269,21 @@ class StatusWatch:
         self._next = self._clock() + self.CHECK_SECONDS
         status = self._build(self.service, now)
         if not self._reported_start:
-            self._reported_start = True
             problems = [item for item in status["components"] if item["state"] in ("error", "warn")]
             lines = [f"{'✅' if not problems else '⚠️'} **Server started** · {getattr(self.service, 'version', None) or 'unknown version'}"
                      + (" · all systems working" if not problems else f" · {len(problems)} need attention")]
             lines += [f"{ICONS[item['state']]} {item['label']}: {item['detail']}" for item in problems]
             self._emit("system_status", {"underlying": "", "message": "\n".join(lines)},
                        f"status-start:{getattr(self.service, 'started_at', '')}")
+            self._reported_start = True  # only once stored: a locked database retries at the next check
         day = now.astimezone(_NEW_YORK).date().isoformat()
         for item in status["components"]:
             if item["state"] != "error":
                 self._failing.pop(item["key"], None)
                 continue
             self._failing[item["key"]] = self._failing.get(item["key"], 0) + 1
-            if self._failing[item["key"]] == 2:  # still failing five minutes later: not a blip
+            # Still failing five minutes later (not a blip); posted again each day it lasts.
+            if self._failing[item["key"]] >= 2 and self._reported_day.get(item["key"]) != day:
                 self._emit("system_status", {"underlying": "", "message": f"🔴 **{item['label']}** · {item['detail']}"},
                            f"status:{item['key']}:{day}")
+                self._reported_day[item["key"]] = day

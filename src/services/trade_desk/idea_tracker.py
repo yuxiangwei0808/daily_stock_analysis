@@ -52,6 +52,8 @@ COST_BPS = 5.0
 WINDOW_DAYS = 90
 VERDICT_HORIZONS = (5, 10)
 HORIZONS = {"verdict": VERDICT_HORIZONS, "social": (5, 10, 20), "influencer": (5, 10, 20)}
+ENTRY_AT_CLOSE = {"social", "influencer"}  # entered at the signal day's close, read from the bars
+HALTED_SESSIONS = 5  # a ticker this many sessions behind SPY's latest bar has stopped trading
 VERDICT_DAYS = 45  # how far back the after-close job reads the report history
 NO_DATA_DAYS = 30  # a record still without bars this long after its signal closes as "no_data"
 BULLISH_ACTIONS, BEARISH_ACTIONS = {"buy", "add", "hold"}, {"reduce", "sell", "avoid"}
@@ -166,16 +168,18 @@ def sync_verdicts(repo: Any, reports: List[Any]) -> int:
 
 
 def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: List[Dict[str, Any]],
-                   today: date, horizons: tuple = VERDICT_HORIZONS) -> Optional[Dict[str, Any]]:
+                   today: date, horizons: tuple = VERDICT_HORIZONS, halted: bool = False) -> Optional[Dict[str, Any]]:
     """Returns after each horizon (stock and SPY); "closed" once the last one is in.
 
-    A record without an entry price enters at the close of its signal day.
+    A record of a kind that enters at the close (social, YouTube) reads that close from the same
+    download every time, so a later split rescaling the history cannot skew it. ``halted`` closes a
+    record whose prices stopped: the horizons not reached take the last price.
     """
     path = [bar for bar in bars if record["signal_day"] < bar["date"] <= today.isoformat()]
     if not path:
         return None
     update: Dict[str, Any] = {}
-    entry = record.get("entry")
+    entry = None if record.get("kind") in ENTRY_AT_CLOSE else record.get("entry")
     if entry is None:
         signal_bar = [bar for bar in bars if bar["date"] == record["signal_day"]]
         if not signal_bar:
@@ -187,16 +191,16 @@ def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: L
     update.update({"days": min(len(path), last),
                    "mark_return_pct": round((path[min(len(path), last) - 1]["close"] / entry - 1) * 100, 3)})
     for horizon in horizons:
-        if len(path) < horizon:
+        if len(path) < horizon and not halted:
             continue
-        end = path[horizon - 1]
+        end = path[min(horizon, len(path)) - 1]
         update[f"return_{horizon}d_pct"] = round((end["close"] / entry - 1) * 100, 3)
         spy = [bar for bar in market if record["signal_day"] < bar["date"] <= end["date"]]
         if spy and before:
             update[f"spy_{horizon}d_pct"] = round((spy[-1]["close"] / before[-1]["close"] - 1) * 100, 3)
-    if len(path) >= last:
-        update.update(status="closed", return_pct=update[f"return_{last}d_pct"], reason="time",
-                      exit_day=path[last - 1]["date"], spy_return_pct=update.get(f"spy_{last}d_pct"))
+    if len(path) >= last or halted:
+        update.update(status="closed", return_pct=update[f"return_{last}d_pct"], reason="time" if not halted else "halted",
+                      exit_day=path[min(last, len(path)) - 1]["date"], spy_return_pct=update.get(f"spy_{last}d_pct"))
     return update
 
 
@@ -279,10 +283,20 @@ def settle_open(repo: Any, today: date,
             logger.info("Idea tracker NX bars unavailable: %s", type(exc).__name__)
     for record in open_records:
         kind = record.get("kind")
+        stock_bars = bars_for(history, record["ticker"]) or []
+        halted = _halted(stock_bars, market, record["signal_day"], today)
+        priced, ref_update = _split_safe(record, stock_bars)
         if kind in HORIZONS:
-            update = settle_verdict(record, bars_for(history, record["ticker"]) or [], market, today, HORIZONS[kind])
+            update = settle_verdict(priced, stock_bars, market, today, HORIZONS[kind], halted=halted)
         else:
-            update = settle(record, bars_for(history, record["ticker"]) or [], market, today)
+            update = settle(priced, stock_bars, market, today)
+            if update is not None and halted and update.get("status") != "closed":
+                update.update(status="closed", reason="halted", exit=update.get("mark"),
+                              exit_day=stock_bars[-1]["date"])
+        if update is not None:
+            update.update(ref_update)
+            if kind not in ENTRY_AT_CLOSE:
+                update.pop("entry", None)  # the stored alert price stays as it was printed
         nx_update = {}
         entry = record.get("entry") or (update or {}).get("entry")
         if "nx" not in record and entry and bars_for(long_history, record["ticker"]):
@@ -303,6 +317,35 @@ def settle_open(repo: Any, today: date,
         repo.update_tracked_idea(record["id"], {**payload, **update}, status)
         closed += status == "closed"
     return closed
+
+
+def _halted(bars: List[Dict[str, Any]], market: List[Dict[str, Any]], signal_day: str, today: date) -> bool:
+    """The ticker's prices stopped (a halt, a delisting) while SPY's went on for HALTED_SESSIONS sessions."""
+    if not bars or not market or bars[-1]["date"] <= signal_day:
+        return False
+    return sum(1 for bar in market if bars[-1]["date"] < bar["date"] <= today.isoformat()) >= HALTED_SESSIONS
+
+
+def _split_safe(record: Dict[str, Any], bars: List[Dict[str, Any]]) -> tuple:
+    """(record priced on today's download, fields to store). A split or dividend adjusts the whole
+    downloaded history, so a price stored earlier no longer matches it: the signal-day close is kept as
+    ``ref_close`` at the first settle, and later settles scale the stored levels by how that close moved."""
+    if record.get("kind") in ENTRY_AT_CLOSE:
+        return record, {}  # read from the bars each time
+    close = next((float(bar["close"]) for bar in bars if bar["date"] == record["signal_day"]), None)
+    if close is None or close <= 0:
+        return record, {}
+    reference = record.get("ref_close")
+    if not reference:
+        return record, {"ref_close": round(close, 6)}
+    scale = close / float(reference)
+    if abs(scale - 1) < 1e-6:
+        return record, {}
+    priced = dict(record)
+    for key in ("entry", "stop", "target"):
+        if priced.get(key) is not None:
+            priced[key] = float(priced[key]) * scale
+    return priced, {}
 
 
 def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = WINDOW_DAYS) -> Dict[str, Any]:

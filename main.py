@@ -1160,6 +1160,8 @@ def run_full_analysis(
                 if pipeline.notifier.is_available():
                     if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):
                         logger.info("已合并推送（个股+大盘复盘）")
+                        from src.services.runtime_scheduler import mark_run_pushed
+                        mark_run_pushed()  # a restart must not re-run and re-send this scheduled brief
                     else:
                         logger.warning("合并推送失败")
 

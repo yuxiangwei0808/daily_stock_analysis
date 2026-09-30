@@ -14,7 +14,7 @@ describe('TradeJournalCard', () => {
       builtAt: '2026-09-30T15:00:00Z', fills: 42, firstFill: '2025-10-02', total: stats(12, 1840),
       byType: [{ label: 'Long calls', ...stats(8, 2100) }, { label: 'Long stock', ...stats(4, -260) }],
       byHold: [{ key: 'same_day', label: 'Same day', ...stats(5, 900) }, { key: 'over_20', label: 'Over 20 days', ...stats(0, 0) }],
-      bySignal: [{ key: 'agreed', label: 'Agreed with a system signal', ...stats(3, 700) }],
+      bySignal: [{ key: 'agreed', label: 'Agreed with a signal', ...stats(3, 700) }],
       byUnderlying: [],
       best: [{ code: 'MU', ticker: 'MU', kind: 'call', position: 'long', opened: '2026-09-05T10:00:00', closed: '2026-09-25T10:00:00', pnl: 900, returnPct: 150, how: 'closed' }],
       worst: [],

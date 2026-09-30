@@ -150,7 +150,9 @@ def hot_list(limit: int = HOT_LIMIT) -> List[Dict[str, Any]]:
         on = [name for name, row in entry.items() if row and row["rank"] <= TOP]
         rows.append({"ticker": ticker, **entry, "sources": on,
                      "name": next((row.get("name") for row in entry.values() if row and row.get("name")), "")})
-    rows.sort(key=lambda row: (-len(row["sources"]), -((row["reddit"] or {}).get("mentions") or 0), row["ticker"]))
+    # Then the best rank on any source: with Reddit's counts missing, alphabetical order must not decide.
+    rows.sort(key=lambda row: (-len(row["sources"]), -((row["reddit"] or {}).get("mentions") or 0),
+                               min(row[name]["rank"] for name in row["sources"]), row["ticker"]))
     return rows[:limit]
 
 
@@ -160,7 +162,7 @@ def flag(ticker: str) -> str:
     tables = sources()
     bits = [f"{label} #{row['rank']}" for name, label in (("reddit", "Reddit"), ("wsb", "WSB"), ("stocktwits", "Stocktwits"))
             for row in [(tables.get(name) or {}).get(symbol)] if row and row["rank"] <= TOP]
-    return ("🔥 Much discussed: " + " · ".join(bits) + " (crowded; such names have tended to lag)") if bits else ""
+    return ("🔥 Much discussed: " + " · ".join(bits) + " (crowded; context only, not a signal)") if bits else ""
 
 
 # -- wording ---------------------------------------------------------------------------
@@ -210,7 +212,7 @@ def prompt_section(context: Optional[Dict[str, Any]]) -> str:
 ### 社交媒体热度（Reddit / WSB / Stocktwits，免费公开数据，仅作背景）
 - {summary_line(context, "zh")}
 - 数据时间 {context['as_of']}{"；不可用：" + "、".join(context["unavailable"]) if context.get("unavailable") else ""}。
-> 散户关注度只是背景，不是信号：被热议的股票之后往往跑输而不是跑赢。可以用它提示拥挤、情绪过热或消息驱动的波动风险；不得仅凭它调整评分或买卖结论，也不要把帖子观点当作事实。
+> 散户关注度只是背景，不是信号：它对之后走势的预测力尚无定论，系统正在跟踪检验。可以用它提示拥挤、情绪过热或消息驱动的波动风险；不得据此调整评分或买卖结论，也不要把帖子观点当作事实。
 """
 
 
@@ -261,12 +263,13 @@ def format_digest(hot: List[Dict[str, Any]], picks: List[Dict[str, Any]], day: d
         for pick in picks[:15]:
             lines.append(f"• {pick['channel']}: {'🟢' if pick['group'] == 'bullish' else '🔴'} **{pick['ticker']}** "
                          f"{pick['group']}" + (f" — {pick['reason']}" if pick.get("reason") else ""))
-    lines.append("Heavily discussed names have tended to lag afterwards; each is tracked in the weekly record.")
+    lines.append("Context, not a signal: whether heavily discussed names lead or lag is being tested in the weekly record.")
     return "\n".join(lines)
 
 
 def records(hot: List[Dict[str, Any]], day: date) -> List[tuple]:
-    """(id, record) for each hot name, followed from the day's close (idea tracker kind ``social``)."""
+    """(id, record) for each hot name, followed from ``day``'s close (idea tracker kind ``social``);
+    the digest passes the session after the one it was chosen in."""
     out = []
     for position, row in enumerate(hot, 1):
         out.append((f"social:{day.isoformat()}:{row['ticker']}", {
@@ -317,15 +320,25 @@ class DigestJob:
     def run(self, day: date, now: datetime) -> None:
         from datetime import timedelta
         try:
+            if self._already_sent(day):
+                self._done_day, self._retry_at, self.last_error = day, None, None
+                return  # sent (and its names tracked) before a restart
+            answered = {name: table is not None for name, table in sources().items()} if self._hot is hot_list else {}
             hot = self._hot()
             if not hot:
                 raise LookupError("no social source answered")
-            picks = self._today_picks()
-            event = self._emit("social_digest", {"underlying": "", "message": format_digest(hot, picks, day)},
-                               f"social-digest:{day.isoformat()}")
-            if event is not None:  # already sent before a restart: the names were recorded then
-                added = sum(bool(self.repo.track_idea(*item)) for item in records(hot, day))
-                logger.info("Social scan: digest sent, %d names tracked", added)
+            if all(answered.values()):
+                # Tracked first (the ids are idempotent), so a failure here retries before anything is sent.
+                # Chosen after the close: they enter at the next session's close (no look-ahead).
+                entry_day = _next_trading_day(day, self._trading_day or _trading_day)
+                added = sum(bool(self.repo.track_idea(*item)) for item in records(hot, entry_day))
+                logger.info("Social scan: %d names tracked", added)
+            else:  # a partial list is not the most-discussed names: sent as context, not tracked
+                logger.info("Social scan: %s unavailable; the digest is not tracked today",
+                            ", ".join(name for name, ok in answered.items() if not ok))
+            self._emit("social_digest", {"underlying": "", "day": day.isoformat(),
+                                         "message": format_digest(hot, self._today_picks(), day)},
+                       f"social-digest:{day.isoformat()}")
             self._done_day, self._retry_at, self.last_error = day, None, None
         except Exception as exc:  # retried shortly; the digest is keyed per day
             self.last_error = type(exc).__name__
@@ -333,6 +346,21 @@ class DigestJob:
             self._retry_at = now + timedelta(minutes=self.RETRY_MINUTES)
 
 
+    def _already_sent(self, day: date) -> bool:
+        from datetime import timedelta
+        since = (datetime.combine(day, datetime.min.time()) - timedelta(days=1)).isoformat()
+        return any(event["payload"].get("day") == day.isoformat()
+                   for event in self.repo.events(limit=10, newest=True, types=["social_digest"], since=since))
+
+
 def _trading_day(day: date) -> bool:
     from src.services.trade_desk.holdings import _trading_day as trading
     return trading(day)
+
+
+def _next_trading_day(day: date, trading: Callable[[date], bool]) -> date:
+    from datetime import timedelta
+    following = day + timedelta(days=1)
+    while not trading(following):
+        following += timedelta(days=1)
+    return following

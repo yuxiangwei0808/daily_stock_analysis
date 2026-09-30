@@ -845,31 +845,48 @@ def preexpiry_curves(
     risk_free_rate: float = 0.0,
     dividend_yield: float = 0.0,
     fees: float = 0.0,
-    count: int = 33,
-    steps: int = 40,
+    breakevens: Sequence[float] = (),
+    count: int = 41,
 ) -> dict[str, Any]:
     """P/L if the position is closed before expiry, on a price grid: at the quote time and halfway
-    to expiry (CRR with each leg's IV, held fixed), and the value lost to one day of time at today's
-    price. Empty when there is no time left or a leg has no IV."""
+    to expiry, each leg at its IV held fixed, and the value lost to one day of time at today's price.
+
+    Black-Scholes (European) values: smooth in price and time, which the chart and the daily
+    difference need (a coarse binomial tree's own error can flip a small theta's sign). The grid
+    is dense within ±4 standard moves of the price (IV × √time), so a short-dated option's bend is
+    drawn, plus the strikes, breakevens and the ±5/10/20% moves the table reads. Empty when there
+    is no time left or a leg has no IV.
+    """
     start, end = _utc(as_of), _utc(expiry)
     if start is None or end is None or end <= start or not _finite(spot) or spot <= 0:
         return {}
-    strikes = [float(leg.strike) for leg in legs if leg.strike is not None and leg.right != "stock"]
-    if not strikes:
+    options = [leg for leg in legs if leg.right != "stock"]
+    if not options or any(leg.strike is None or leg.iv is None or not _finite(leg.iv) or leg.iv <= 0 for leg in options):
         return {}
-    low, high = min(spot * 0.7, min(strikes) * 0.9), max(spot * 1.3, max(strikes) * 1.1)
-    grid = _dedupe_sorted([low + (high - low) * i / (count - 1) for i in range(count)] + strikes + [float(spot)])
+    strikes = [float(leg.strike) for leg in options]
+    width = max(float(leg.iv) for leg in options) * math.sqrt(max(_year_fraction(start, end), 1e-6))
+    dense = [spot * math.exp(width * (-4 + 8 * i / (count - 1))) for i in range(count)]
+    coarse = [spot * (0.7 + 0.05 * i) for i in range(13)]
+    moves = [spot * (1 + pct / 100) for pct in (-20, -10, -5, 5, 10, 20)]
+    grid = _dedupe_sorted([price for price in [*dense, *coarse, *moves, *strikes, *breakevens, float(spot)]
+                           if _finite(price) and price > 0])
 
     def value(price: float, at: datetime) -> float:
-        return mark_to_market_payoff(legs, price, at, risk_free_rate=risk_free_rate,
-                                     dividend_yield=dividend_yield, fees=fees, steps=steps)
+        total = -float(fees)
+        for leg in legs:
+            size = (1.0 if leg.side == "buy" else -1.0) * int(leg.quantity) * int(leg.multiplier)
+            if leg.right == "stock":
+                total += size * (price - float(leg.entry_price))
+                continue
+            remaining = _year_fraction(at, _utc(leg.expiry)) if leg.expiry is not None else 0.0
+            worth = black_scholes_price(price, float(leg.strike), max(0.0, remaining), float(leg.iv),
+                                        risk_free_rate, dividend_yield, leg.right)
+            total += size * (worth - float(leg.entry_price))
+        return total
     curves = []
     for label, at in (("now", start), ("halfway", start + (end - start) / 2)):
-        points = [{"price": float(price), "pnl": value(price, at)} for price in grid]
-        if not all(_finite(point["pnl"]) for point in points):
-            return {}
-        curves.append({"label": label, "at": at.isoformat(), "points": [
-            {"price": point["price"], "pnl": round(point["pnl"], 4)} for point in points]})
+        curves.append({"label": label, "at": at.isoformat(),
+                       "points": [{"price": float(price), "pnl": round(value(price, at), 4)} for price in grid]})
     tomorrow = start + timedelta(days=1)
     theta = value(spot, tomorrow) - value(spot, start) if tomorrow < end else None
     return {"curves": curves, "theta_per_day": round(theta, 4) if theta is not None and _finite(theta) else None}
@@ -1736,7 +1753,7 @@ def _candidate_from_legs(
         return None
     payoff = payoff.model_copy(update=preexpiry_curves(
         legs, snapshot.spot, as_of, group_expiry, risk_free_rate=request.risk_free_rate,
-        dividend_yield=request.dividend_yield, fees=fees))
+        dividend_yield=request.dividend_yield, fees=fees, breakevens=payoff.breakevens))
     all_expiry_verified = all(
         quote.expiry_verified for quote in quotes if quote.contract_id in {leg.contract_id for leg in legs if leg.right != "stock"}
     )

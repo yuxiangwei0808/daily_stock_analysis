@@ -42,8 +42,9 @@ def test_the_journal_groups_by_type_hold_and_whether_a_signal_agreed():
     deals = [deal("NVDA", "BUY", 10, 100.0, "2026-09-01 10:00:00"), deal("NVDA", "SELL", 10, 90.0, "2026-09-02 10:00:00"),
              deal("MU", "BUY", 10, 100.0, "2026-09-05 10:00:00"), deal("MU", "SELL", 10, 130.0, "2026-09-25 10:00:00"),
              deal("AMD261016P150000", "BUY", 1, 2.0, "2026-09-08 10:00:00"), deal("AMD261016P150000", "SELL", 1, 3.0, "2026-09-08 14:00:00")]
-    signals = [{"ticker": "MU", "signal_day": "2026-09-03", "direction": "long", "kind": "idea"},
-               {"ticker": "AMD", "signal_day": "2026-09-08", "direction": "long", "kind": "verdict"},  # long puts go against it
+    signals = [{"ticker": "MU", "signal_day": "2026-09-03", "direction": "long", "kind": "idea",
+                "created_at": "2026-09-03T15:00:00+00:00"},
+               {"ticker": "AMD", "signal_day": "2026-09-07", "direction": "long", "kind": "verdict"},  # long puts go against it
                {"ticker": "NVDA", "signal_day": "2026-08-01", "direction": "long", "kind": "idea"}]  # too old to count
     result = j.build(deals, signals, TODAY)
     assert result["total"] == {"trades": 3, "total_pnl": 300.0, "win_rate": pytest.approx(66.7), "avg_pnl": pytest.approx(100.0),
@@ -55,3 +56,31 @@ def test_the_journal_groups_by_type_hold_and_whether_a_signal_agreed():
     assert hold == {"same_day": 1, "days_1_5": 1, "days_6_20": 1, "over_20": 0}
     assert [row["label"] for row in result["by_type"]] == ["Long stock", "Long puts"]
     assert result["best"][0]["ticker"] == "MU" and result["worst"][0]["ticker"] == "NVDA"
+
+
+def test_sales_of_shares_held_before_the_history_close_them_instead_of_opening_shorts():
+    # The reviewer's case: 100 AAPL bought in 2024 and sold in January, then a new round trip.
+    deals = [deal("AAPL", "SELL", 100, 200.0, "2026-01-10 10:00:00"), deal("AAPL", "BUY", 100, 180.0, "2026-03-02 10:00:00"),
+             deal("AAPL", "SELL", 100, 190.0, "2026-05-01 10:00:00")]
+    result = j.build(deals, [], TODAY, current={})  # nothing held today
+    assert result["total"]["trades"] == 1 and result["total"]["total_pnl"] == 1000.0
+    assert result["by_type"][0]["label"] == "Long stock" and result["unmatched_closes"] == 1
+    # Shares delivered by an assignment (no fill) and sold afterwards: no fake short either.
+    assigned = [deal("MU", "SELL", 100, 97.0, "2026-06-01 10:00:00")]
+    assert j.build(assigned, [], TODAY, current={})["total"]["trades"] == 0
+    # A short opened and covered in the window still counts.
+    short = [deal("TSLA", "SELL_SHORT", 5, 300.0, "2026-09-03 10:00:00"), deal("TSLA", "BUY_BACK", 5, 280.0, "2026-09-04 10:00:00")]
+    assert j.build(short, [], TODAY, current={})["by_type"][0]["label"] == "Short stock"
+
+
+def test_a_signal_counts_only_if_it_existed_before_the_trade():
+    trip = {"ticker": "MU", "opened": "2026-09-10T10:05:00", "view": "long"}
+    after_close = {"ticker": "MU", "signal_day": "2026-09-10", "direction": "long", "kind": "social",
+                   "created_at": "2026-09-10T20:25:00+00:00"}
+    morning = {**after_close, "created_at": "2026-09-10T13:45:00+00:00"}  # 09:45 New York
+    same_day_report = {"ticker": "MU", "signal_day": "2026-09-10", "direction": "long", "kind": "verdict",
+                       "created_at": "2026-09-11T20:30:00+00:00"}
+    assert j.signal_match(trip, [after_close]) == "none"
+    assert j.signal_match(trip, [morning]) == "agreed"
+    assert j.signal_match(trip, [same_day_report]) == "none"
+    assert j.signal_match(trip, [{**same_day_report, "signal_day": "2026-09-09"}]) == "agreed"

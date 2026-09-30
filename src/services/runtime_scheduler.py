@@ -375,6 +375,10 @@ class RuntimeSchedulerService:
         self._lock = threading.RLock()
         self._run_lock = _RUNTIME_ANALYSIS_LOCK
         self._scheduler: Optional[Scheduler] = None
+        # A slot missed while the server was down is caught up only at the first start after launch;
+        # later starts come from schedule edits in Settings, which must not re-run a finished slot.
+        self._launch_checked = False
+        self._catch_up_label: Optional[str] = None  # the slot a catch-up was approved for
         self._thread: Optional[threading.Thread] = None
         self._enabled = False
         self._last_run_at: Optional[str] = None
@@ -588,7 +592,8 @@ class RuntimeSchedulerService:
             process = context.Process(
                 target=self._analysis_process_target,
                 args=(result_queue, stock_codes, {**self._schedule_args_overrides,
-                                                  "scheduled_slot": _slot_label(self._current_times(), datetime.now())
+                                                  "scheduled_slot": (self._take_catch_up_label()
+                                                                     or _slot_label(self._current_times(), datetime.now()))
                                                   if scheduled else None}),
                 name="runtime-scheduled-analysis",
             )
@@ -839,25 +844,35 @@ class RuntimeSchedulerService:
             self._thread = thread
             self._enabled = True
             thread.start()
-            if not run_immediately and self._interrupted_slot(times):
+            launch, self._launch_checked = not self._launch_checked, True
+            if not run_immediately and self._interrupted_slot(times, launch=launch):
+                label = _latest_slot(times, datetime.now())[-5:]
+
                 def catch_up() -> None:
                     # After a schedule edit the stopped run's watchdog can hold the lock for a
                     # moment while it drains; wait briefly instead of recording a busy skip.
                     deadline = time.monotonic() + 15
                     while self._run_lock.locked() and time.monotonic() < deadline:
                         time.sleep(0.2)
+                    self._catch_up_label = label  # the child keeps the approved slot even if it starts late
                     scheduled_analysis()
                 self._run_in_background_thread(catch_up)
 
-    def _interrupted_slot(self, times: List[str]) -> bool:
-        """Whether the latest scheduled run was cut off by a restart (or missed while the server
-        was down) and should start now."""
+    def _take_catch_up_label(self) -> Optional[str]:
+        label, self._catch_up_label = self._catch_up_label, None
+        return label
+
+    def _interrupted_slot(self, times: List[str], launch: bool = True) -> bool:
+        """Whether the latest scheduled run was cut off by a restart (or, at ``launch``, missed while
+        the server was down) and should start now."""
         record = _read_run_record()
         now = datetime.now()
         slot = _latest_slot(times, now)
         if not slot:
             return False
         if record.get("slot") != slot:
+            if not launch:
+                return False  # a schedule edit: the new slot list is for the coming runs
             # No run at all for the latest slot: the server was down at that time. Start it if
             # the slot is recent; the schedule library would otherwise wait until tomorrow.
             if _slot_label(times, now) != slot[-5:]:

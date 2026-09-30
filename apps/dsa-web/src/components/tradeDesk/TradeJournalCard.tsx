@@ -16,16 +16,16 @@ function StatsTable({ title, rows }: { title: string; rows: Array<TradeJournalSt
     <div>
       <h3 className="text-xs font-semibold uppercase tracking-wide text-secondary-text">{title}</h3>
       <table className="mt-1 w-full text-xs">
-        <thead className="text-muted-text"><tr><th className="py-1 text-left font-normal" /><th className="text-right font-normal">Trades</th>
-          <th className="text-right font-normal">Win</th><th className="text-right font-normal">P&amp;L</th><th className="text-right font-normal">Avg</th></tr></thead>
+        <thead className="text-muted-text"><tr><th className="py-1 text-left font-normal" /><th className="pl-2 text-right font-normal">Trades</th>
+          <th className="pl-2 text-right font-normal">Win</th><th className="pl-2 text-right font-normal">P&amp;L</th><th className="pl-2 text-right font-normal">Avg</th></tr></thead>
         <tbody className="divide-y divide-border/40">
           {shown.map((row) => (
             <tr key={row.label}>
               <td className="py-1 text-foreground">{row.label}</td>
-              <td className="text-right">{row.trades}</td>
-              <td className="text-right">{pct(row.winRate, false)}</td>
-              <td className="text-right font-mono" style={{ color: tone(row.totalPnl) }}>{money(row.totalPnl)}</td>
-              <td className="text-right font-mono" style={{ color: tone(row.avgReturnPct) }}>{pct(row.avgReturnPct)}</td>
+              <td className="pl-2 text-right">{row.trades}</td>
+              <td className="pl-2 text-right">{pct(row.winRate, false)}</td>
+              <td className="whitespace-nowrap pl-2 text-right font-mono" style={{ color: tone(row.totalPnl) }}>{money(row.totalPnl)}</td>
+              <td className="whitespace-nowrap pl-2 text-right font-mono" style={{ color: tone(row.avgReturnPct) }}>{pct(row.avgReturnPct)}</td>
             </tr>
           ))}
         </tbody>

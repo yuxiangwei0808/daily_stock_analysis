@@ -14,6 +14,7 @@ import hashlib
 from contextlib import ExitStack, contextmanager
 from functools import lru_cache
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,8 @@ from src.llm.generation_backend import (
     GenerationErrorCode,
     GenerationResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS = 300
@@ -2760,6 +2763,10 @@ class LocalCliGenerationBackend(GenerationBackend):
         diagnostics: Dict[str, Any],
     ) -> GenerationError:
         combined = f"{stdout}\n{stderr}".lower()
+        # The reason below is a keyword guess ("permission" in a 403 reads as approval_required);
+        # keep the CLI's own words in the log so a failure can be diagnosed afterwards.
+        tail = " ".join(f"{stderr} {stdout}".split())[-400:]
+        logger.warning("%s exited %s: %s", self._preset.preset_id, returncode, tail or "(no output)")
         code = GenerationErrorCode.NON_ZERO_EXIT
         reason = "non_zero_exit"
         if _is_cli_contract_unsupported(combined):

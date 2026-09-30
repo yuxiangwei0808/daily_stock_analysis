@@ -85,7 +85,7 @@ def test_a_ticker_context_reads_every_source_and_the_message_tags(web):
     assert line.endswith("Stocktwits says: Earnings beat.")
     assert "Reddit 提及第 1 名（325 次，较前一日 +81%）" in ss.summary_line(context, "zh")
     section = ss.prompt_section(context)
-    assert "不得仅凭它调整评分或买卖结论" in section and "Reddit 提及第 1 名" in section
+    assert "不得据此调整评分或买卖结论" in section and "Reddit 提及第 1 名" in section
 
 
 def test_a_quiet_ticker_says_so_and_a_dead_source_is_named(web):
@@ -110,18 +110,18 @@ def test_report_lines_and_idea_flags(web):
     lines = ss.report_lines(result.dashboard["data_perspective"], "en")
     assert lines[0].startswith("**Social attention**: Reddit #1") and lines[1] == ""
     assert ss.report_lines({}, "zh") == []
-    assert ss.flag("MU") == "🔥 Much discussed: Reddit #1 · WSB #2 · Stocktwits #3 (crowded; such names have tended to lag)"
+    assert ss.flag("MU") == "🔥 Much discussed: Reddit #1 · WSB #2 · Stocktwits #3 (crowded; context only, not a signal)"
     assert ss.flag("ZZZ") == ""
 
 
 def test_the_digest_goes_out_once_after_the_close_and_tracks_the_names(web, repo):
     sent = []
 
-    def emit(event_type, payload, key):
-        if any(item[2] == key for item in sent):
-            return None
-        sent.append((event_type, payload, key))
-        return {"id": len(sent)}
+    def emit(event_type, payload, key):  # stored like the worker's: a restart sees it
+        event = repo.event(event_type, payload, dedup_key=key)
+        if event is not None:
+            sent.append((event_type, payload, key))
+        return event
     picks = [{"channel": "Meet Kevin", "group": "bullish", "ticker": "MU", "reason": "memory upcycle"}]
     job = ss.DigestJob(repo, emit, today_picks=lambda: picks, trading_day=lambda day: True)
     job.tick(datetime(2026, 9, 29, 19, 0, tzinfo=timezone.utc))  # 15:00 New York
@@ -135,7 +135,8 @@ def test_the_digest_goes_out_once_after_the_close_and_tracks_the_names(web, repo
     assert "• Meet Kevin: 🟢 **MU** bullish — memory upcycle" in payload["message"]
     tracked = {row["ticker"]: row for row in repo.tracked_ideas()}
     assert set(tracked) == {"MU", "AAPL", "NVDA", "CAPR"} and tracked["MU"]["entry"] is None
-    assert tracked["MU"]["signal_day"] == "2026-09-29" and tracked["MU"]["reddit_change_pct"] == 80.6
+    # Chosen after the 09-29 close: entered at the next session's close.
+    assert tracked["MU"]["signal_day"] == "2026-09-30" and tracked["MU"]["reddit_change_pct"] == 80.6
     restarted = ss.DigestJob(repo, emit, trading_day=lambda day: True, hot=lambda: [{**ss.hot_list()[0], "ticker": "NEW"}])
     restarted.run(date(2026, 9, 29), evening)
     assert len(sent) == 1 and "NEW" not in {row["ticker"] for row in repo.tracked_ideas()}
@@ -191,3 +192,12 @@ def test_reports_and_trade_desk_answers_get_both_references(web, repo, monkeypat
     assert [item["kind"] for item in items] == ["social_scan", "youtube_picks"]
     assert items[1]["picks"][0]["reason"] == "memory"
     assert TradeDeskService._references(service, SimpleNamespace(data_mode="replay", ticker="MU")) == []
+
+
+def test_without_reddit_the_order_follows_rank_and_nothing_is_tracked(web, repo):
+    web.answers["apewisdom"] = RuntimeError("down")
+    hot = ss.hot_list()
+    assert [row["ticker"] for row in hot][:2] == ["MU", "AAPL"]  # both on two sources; MU ranks higher
+    job = ss.DigestJob(repo, lambda *a: {"id": 1}, trading_day=lambda day: True)
+    job.run(date(2026, 9, 29), datetime(2026, 9, 29, 20, 25, tzinfo=timezone.utc))
+    assert repo.tracked_ideas() == [] and job.last_error is None  # sent as context, not tracked

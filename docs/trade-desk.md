@@ -239,10 +239,13 @@ state — working, needs attention, failing, or off — and a one-line detail, r
 restart is needed), moomoo OpenD quotes, scheduled reports (next run, last success, last
 error), the alert monitor, plan monitoring, broker holdings sync, market pulse, trade
 opportunities, breakout watch, idea tracker, YouTube picks (including a caption rate limit),
-social scan and Discord delivery. The worker's watchdog (`trade_desk/status.py`) posts
-`system_status` messages to the digest category: a summary two minutes after each start
-("✅ Server started · <version> · all systems working", or the components that need
-attention), and a component still failing five minutes later, once per component per day.
+social scan and Discord delivery. Work a component hands to a background thread (the opportunity
+scan, breakout levels, holdings tasks) reports its last failure too. The OpenD check runs on its own
+thread and reads as failing after 5 seconds (the moomoo SDK otherwise retries a lost connection
+forever). The worker's watchdog (`trade_desk/status.py`) posts `system_status` messages to the
+digest category: a summary two minutes after each start ("✅ Server started · <version> · all
+systems working", or the components that need attention), and a component still failing five
+minutes later, once per component per day for as long as it lasts.
 
 ## Discord channels, categories and batching
 
@@ -261,7 +264,9 @@ The Journal tab's settings switch each category off or on (`discord_categories` 
 preferences; a missing key means on). Moves and news on names you do not hold come in bursts
 at the open, so they are sent together once the oldest has waited 15 minutes, as one "📊 Market
 moves & news" message; alerts on names you hold, or when holdings are unknown, still go out
-at once. The scheduled stock reports are not Trade Desk messages and keep the main channel.
+at once. A batch is one Discord message: what does not fit waits for the next one, so a retry
+never repeats part of a message. A category with no webhook of its own and no main Discord setting
+is skipped. The scheduled stock reports are not Trade Desk messages and keep the main channel.
 
 ## Asking from Discord (/ask)
 
@@ -409,6 +414,12 @@ opposite is *against*, inside it is *neutral*. The weekly summary and the Journa
 card split closed ideas and breakouts by alignment; with under 20 closed records
 they say it is too early to judge.
 
+A split or dividend adjusts the whole downloaded price history, so a price stored at the signal no
+longer matches later bars: the signal day's close is kept as `ref_close` at the first settle and later
+settles scale the stored levels by how that close moved (social and YouTube records read their entry
+close from the bars every time). A ticker whose prices stop while SPY's go on for five sessions (a
+halt, a delisting) closes at its last price (`reason: halted`) instead of staying open.
+
 The stock reports' own calls are tracked the same way (`kind: verdict`): one per US
 stock and day (the first report of the day, at its price), grouped as bullish
 (buy/add/hold), watch, or bearish (reduce/sell/avoid). They settle on the close 5 and
@@ -438,9 +449,10 @@ X has no free API and Reddit's own JSON refuses this client, so neither is read 
 - Trade Desk answers: a `social_scan` evidence item, shown under the answer.
 - Trade opportunities: "🔥 Much discussed: Reddit #3 · WSB #5" on ideas in a source's top 20.
 - After 16:20 New York time on trading days: "📣 Social scan" to Discord (the 10 most-discussed
-  stocks, index funds excluded, plus the day's YouTube picks). Each name is tracked from that
-  day's close (`kind: social`), 5/10/20 sessions against SPY. Heavily discussed stocks have
-  tended to lag afterwards; the weekly track record shows whether that holds here.
+  stocks, index funds excluded, plus the day's YouTube picks). The names are chosen after the
+  close, so each is tracked from the next session's close (`kind: social`), 5/10/20 sessions
+  against SPY — only on days all three sources answered. Whether attention leads or lags is
+  what the weekly track record tests.
 
 **YouTube picks** (`YOUTUBE_CHANNELS=Name=UC…,…`, channel ids, not handles, because a handle
 search can land on a clips or fan channel). Every 3 hours the worker reads each channel's RSS
@@ -462,7 +474,11 @@ left by a killed process is removed on the next pass, and a server stop ends a t
 at its next segment. The model (about 1.6 GB) downloads on first use into
 `YOUTUBE_WHISPER_DIR` (default: the Hugging Face cache) and is released after each pass.
 Titles and descriptions say too little to read a call from: a video without a transcript is
-retried on the next two passes and then skipped. When YouTube rate-limits caption downloads
+retried on the next two passes and then skipped. Only a clean answer from YouTube counts as "no
+captions": a bot check, a refused request or an empty caption file is treated as a block, and an
+upcoming or live stream waits until it has aired. When the model fails, the transcript is kept for
+the next pass (the video is dropped after three failures); two failures in a row end the pass, and
+no audio is transcribed while the model is failing. When YouTube rate-limits caption downloads
 (HTTP 429), captioned videos are not transcribed from audio: caption requests pause for 6 hours
 and the videos wait for a later pass; only captions refused for a whole day fall back to the
 audio. Audio is transcribed only for videos of the last 7 days, so the first pass after a restart
@@ -471,7 +487,9 @@ transcribed. yt-dlp downloads go against YouTube's terms for automated access an
 working when YouTube changes; captioned channels are unaffected. yt-dlp needs a JavaScript
 runtime for YouTube's player challenges: `pip install deno yt-dlp-ejs` puts `deno` in the venv,
 where the scan finds it (or on `PATH`). Caption downloads are spaced 10 seconds apart and capped
-at 25 per pass, since bursts are what trip YouTube's rate limit; the rest wait for the next pass.
+at 25 per pass, and every YouTube request is spaced the same way (60 per pass), since bursts are
+what trip YouTube's rate limit; the rest wait for the next pass. The evening digest reads the day's
+picks from the database, so a restart does not lose them.
 
 - Each pick is tracked (`kind: influencer`, id `influencer:<video>:<ticker>`) from the first
   close after the video was published: during the session, that day's close; after 16:00 or
@@ -579,12 +597,17 @@ The daily portfolio summary on Discord adds one line in percentages only, e.g. "
 The Journal tab's **Your trades** card reads a year of your filled trades from moomoo
 (`POST /holdings/journal/refresh`; read-only: `history_deal_list_query` in 90-day windows plus
 today's `deal_list_query`, trading is never unlocked) and builds round trips per contract, first in,
-first out (`trade_desk/journal.py`). Options still open after expiry settle at intrinsic value from
-the underlying's close on the expiry day (worthless when that close is unknown, flagged); open
-positions are not counted; spreads count as their legs; amounts are gross of commissions. The card
+first out (`trade_desk/journal.py`). What was already held when the history begins (today's
+quantity less the net fills: shares bought over a year ago, or delivered by an assignment) is
+seeded at an unknown cost, so selling it closes it without a round trip ("unmatched closes")
+instead of looking like a new short. Corrected fills (status CHANGED) count; cancelled ones do
+not. Options still open after expiry settle at intrinsic value from the underlying's actual close
+on the expiry day (no dividend adjustment, later splits undone; worthless when that close is
+unknown, flagged); open positions are not counted; spreads count as their legs; amounts are gross of commissions. The card
 shows realized P&L, win rate and average hold, grouped by type (long/short stock, calls, puts), by
 holding time, and by whether the trade agreed with one of the system's tracked signals (idea,
-breakout, report call, social pick, YouTube call) on the ticker in the five days before it opened,
+breakout, report call, social pick, YouTube call) on the ticker in the five days before it opened
+— only signals stored before the trade count (report calls from the day after their report),
 plus the best and worst trades. The result is kept (`GET /holdings/journal`); it is web-only and never
 sent to Discord.
 

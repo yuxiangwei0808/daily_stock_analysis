@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 代码复查修复：状态页的 OpenD 检查改为限时（OpenD 断开时不再卡住提醒线程），故障提醒每天重复、启动摘要写入失败会重试；Settings 中修改定时不再补跑已完成的时段；交易日志用当前持仓推算窗口前已持有的仓位（不再把卖出旧股票算成做空）、保留更正成交、只计开仓前已存在的系统信号、到期期权按未复权收盘价结算；跟踪记录对拆股与停牌稳健（停牌按最后价格结束）；社交热议股在次日收盘入场、需三源齐全才跟踪；YouTube 字幕拒绝/直播/空文件不再当作无字幕、模型失败保留转写；提前平仓曲线改用 Black-Scholes 与按波动率加密的价格网格（时间损耗不再出现符号错误）；Discord 合并消息只发一条、无去处的类别跳过、备注中的成交价进一步隐藏；/ask 先应答再排队、15 分钟内回复、关闭时不阻塞；Claude CLI 出错时记录原始输出
 - [新功能] 在 Discord 用 `/ask` 向 Trade Desk 提问：自建 Bot（`DISCORD_BOT_TOKEN`）并用 `TRADE_DESK_DISCORD_ASK_USERS` 限定提问人，Bot 主动连接 Discord（无需公网地址），回答完成后贴出结论、摘要与链接；不使用持仓信息
 - [新功能] 个人交易日志（「日志」页「Your trades」）：只读读取 moomoo 近一年成交，按先进先出配对成往返交易，统计已实现盈亏、胜率、持有时间，按类型、持有期、是否与系统信号一致分组，并列出最佳/最差交易；仅在网页显示，不发送到 Discord
 - [改进] YouTube 扫描更稳：yt-dlp 使用 venv 中的 deno 解析播放器（需 `pip install deno yt-dlp-ejs`）；字幕下载间隔 10 秒、每轮最多 25 个，避免触发限流

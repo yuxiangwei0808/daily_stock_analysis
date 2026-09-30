@@ -261,3 +261,29 @@ def test_moves_on_names_you_do_not_hold_are_batched(repo, monkeypatch):
     assert "📉 AMD down 5.1% today" in batch and "📰 TSLA: recall (Reuters)" in batch and "https://x" not in batch
     desk._deliver()
     assert len(sent) == 1  # sent once
+
+
+def test_a_big_batch_goes_out_as_whole_messages_and_the_rest_waits(repo, monkeypatch):
+    sent = []
+    desk = _delivery_desk(repo, monkeypatch, sent)
+    for i in range(40):
+        repo.event("market_news", {"underlying": f"T{i}", "held": False, "message": f"T{i}: " + "headline words " * 12}, f"n{i}")
+    later = worker_module.utcnow() + timedelta(minutes=16)
+    monkeypatch.setattr(worker_module, "utcnow", lambda: later)
+    desk._deliver()
+    assert len(sent) == 1 and len(sent[0][1]) <= worker_module.DISCORD_PART_LIMIT
+    first_batch = sent[0][1].count("📰")
+    desk._deliver()  # the rest goes in the next message; nothing is repeated
+    assert len(sent) == 2 and first_batch + sent[1][1].count("📰") <= 40
+    assert not set(sent[0][1].split("\n")[1:]) & set(sent[1][1].split("\n")[1:])
+
+
+def test_a_category_with_nowhere_to_go_is_skipped(repo, monkeypatch):
+    sent = []
+    desk = _delivery_desk(repo, monkeypatch, sent, TRADE_DESK_DISCORD_WEBHOOKS="holdings=https://discord.test/h")
+    monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url=None))
+    repo.event("breakout", {"underlying": "MU", "kind": "breakout", "message": "MU broke out"}, "b1")
+    repo.event("holding_alert", {"underlying": "NVDA", "kind": "loss", "message": "Down 40%"}, "h1")
+    desk._deliver()
+    assert [target for target, _ in sent] == ["https://discord.test/h"]
+    assert not [e for e in repo.events() if e["event_type"] == "discord_attempt" and e["payload"]["event_id"] != 2]

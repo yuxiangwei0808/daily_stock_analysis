@@ -2,6 +2,8 @@
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from src.services.trade_desk import status as st
 
 NOW = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
@@ -96,3 +98,55 @@ def test_the_watchdog_reports_the_start_and_a_lasting_failure_once_a_day():
     clock["t"] += st.StatusWatch.CHECK_SECONDS
     watch.tick(NOW + timedelta(minutes=12))
     assert len(sent) == 2  # reported once
+
+
+def test_a_stuck_opend_check_times_out_instead_of_freezing(monkeypatch):
+    import threading
+    monkeypatch.setattr(st, "code_version", lambda root=None: "abc12345")
+    monkeypatch.setattr(st, "PROBE_TIMEOUT", 0.2)
+    monkeypatch.setattr(st, "_probe", None)
+    release = threading.Event()
+    calls = []
+
+    def hanging():
+        calls.append(1)
+        release.wait(5)
+        return {"live": {"available": True}}
+    service = _service(health=hanging)
+    states = {item["key"]: item for item in st.build(service, NOW)["components"]}
+    assert states["opend"]["state"] == "error" and "not answering" in states["opend"]["detail"]
+    st.build(service, NOW)
+    assert len(calls) == 1  # a stuck check is not started again
+    release.set()
+    st._probe.result(timeout=5)
+    assert {item["key"]: item for item in st.build(service, NOW)["components"]}["opend"]["state"] == "ok"
+
+
+def test_a_lasting_failure_is_posted_each_day_and_a_failed_start_summary_retries():
+    sent, fail_first = [], {"armed": True}
+
+    def emit(kind, payload, key):
+        if fail_first["armed"]:
+            fail_first["armed"] = False
+            raise RuntimeError("database is locked")
+        sent.append(key)
+    clock = {"t": 0.0}
+    failing = {"components": [{"key": "opend", "label": "moomoo OpenD quotes", "state": "error", "detail": "down"}]}
+    service = SimpleNamespace(started_at=(NOW - timedelta(minutes=10)).isoformat(), version="abc12345")
+    watch = st.StatusWatch(service, emit, build_status=lambda svc, now: failing, clock=lambda: clock["t"])
+    with pytest.raises(RuntimeError):
+        watch.tick(NOW)
+    for hours in (0.1, 0.2, 24, 24.1, 48):
+        clock["t"] += st.StatusWatch.CHECK_SECONDS
+        watch.tick(NOW + timedelta(hours=hours))
+    assert sent[0].startswith("status-start:")  # retried after the locked database
+    assert [key for key in sent if key.startswith("status:")] == [
+        "status:opend:2026-09-30", "status:opend:2026-10-01", "status:opend:2026-10-02"]
+
+
+def test_trade_desk_switched_off_reads_as_off(monkeypatch):
+    monkeypatch.setattr(st, "code_version", lambda root=None: "abc12345")
+    service = _service(enabled=False)
+    service.worker.status = lambda: {"running": False, "leader": False, "last_tick": None}
+    states = {item["key"]: item["state"] for item in st.build(service, NOW)["components"]}
+    assert states["worker"] == "off"

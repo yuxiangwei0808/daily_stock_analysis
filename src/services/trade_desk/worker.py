@@ -87,7 +87,7 @@ class TradeDeskWorker:
             from .idea_tracker import TrackerJob
             self._tracker = TrackerJob(self.repo, self._emit)  # settles their records and posts the weekly record
         self._social = (social_scan.DigestJob(self.repo, self._emit, today_picks=(
-            (lambda: list(self._youtube.today_picks)) if self._youtube is not None else (lambda: [])))
+            (lambda: youtube_picks.picks_since(self.repo)) if self._youtube is not None else (lambda: [])))
             if social_scan.enabled() else None)
         from .status import StatusWatch
         self._status = StatusWatch(service, self._emit)
@@ -397,25 +397,31 @@ class TradeDeskWorker:
         oldest = min(datetime.fromisoformat(event["created_at"]) for event in batch)
         if utcnow() - oldest < timedelta(minutes=routes.MARKET_BATCH_MINUTES):
             return
-        first = min(event["id"] for event in batch)
-        attempt = max((deliveries[event["id"]]["payload"]["attempt"] for event in batch if event["id"] in deliveries), default=0)
+        batch.sort(key=lambda event: event["id"])
+        # One Discord message at most: a retry then re-sends the whole message or nothing, never a
+        # part twice. What does not fit waits for the next batch.
+        batch = routes.fit_batch(batch, DISCORD_PART_LIMIT)
+        first = batch[0]["id"]
+        attempts = {event["id"]: (deliveries[event["id"]]["payload"]["attempt"] if event["id"] in deliveries else 0)
+                    for event in batch}
         last_try = max((datetime.fromisoformat(deliveries[event["id"]]["created_at"]) for event in batch
                         if event["id"] in deliveries), default=None)
         if last_try is not None and utcnow() - last_try < timedelta(seconds=60):
             return
+        attempt = max(attempts.values())
         claim = self.repo.event("discord_attempt", {"event_id": first, "attempt": attempt + 1, "success": False,
                                                     "batch": [event["id"] for event in batch]},
                                 dedup_key=f"discord-batch:{first}:{attempt + 1}")
         if claim is None:
             return  # another worker view is sending it
-        text = routes.batch_message(batch)
         try:
-            success = all(routes.send("market", part) for part in discord_parts(text))
+            success = bool(routes.send("market", routes.batch_message(batch)))
         except Exception as exc:
             logger.info("Market batch delivery failed: %s", type(exc).__name__)
             success = False
-        for event in batch:
-            self.repo.event("discord_delivery", {"event_id": event["id"], "attempt": attempt + 1, "success": success,
+        for event in batch:  # each event counts its own tries: one joining late is not dropped early
+            self.repo.event("discord_delivery", {"event_id": event["id"], "attempt": attempts[event["id"]] + 1,
+                                                 "success": success, "batch_of": first,
                                                  "diagnostic": "delivered in a batch" if success else "Discord delivery failed",
                                                  "sent_parts": [0] if success else [], "parts": 1})
 
@@ -440,13 +446,14 @@ class TradeDeskWorker:
                 # A crash after the claim leaves the claim newest; parts sent come from deliveries.
                 delivered_parts.setdefault(event["payload"].get("event_id"), set(event["payload"].get("sent_parts", [])))
         wanted = set().union(*routes.CATEGORIES.values())
-        self._deliver_market_batch(events, deliveries, preferences)
+        main = bool(getattr(config, "discord_webhook_url", None) or
+                    (getattr(config, "discord_bot_token", None) and getattr(config, "discord_main_channel_id", None)))
         for event in reversed(events):
             if event["event_type"] not in wanted or routes.batchable(event):
                 continue
             name = routes.category(event["event_type"])
-            if not routes.enabled(preferences, name):
-                continue  # switched off in the Trade Desk preferences
+            if not routes.enabled(preferences, name) or not routes.routed(name, main):
+                continue  # switched off in the Trade Desk preferences, or nowhere to send it
             prior = deliveries.get(event["id"])
             attempt = prior["payload"]["attempt"] if prior else 0
             if prior and (prior["payload"].get("success") or attempt >= 3):
@@ -520,3 +527,5 @@ class TradeDeskWorker:
             self.repo.event("discord_delivery", {"event_id": event["id"], "attempt": attempt + 1,
                             "success": success, "diagnostic": diagnostic if not success else "delivered",
                             "sent_parts": sorted(sent), "parts": len(parts)})
+        if routes.routed("market", main):
+            self._deliver_market_batch(events, deliveries, preferences)  # after the per-event (held) alerts

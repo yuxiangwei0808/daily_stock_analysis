@@ -28,7 +28,7 @@ export function ReferencesUsed({ job }: { job: TradeAdviceJob }) {
           <p className="mt-1 text-secondary-text">{item.summary}</p>
         </div>
       ))}
-      <p className="mt-1 text-xs text-muted-text">Background only: heavily discussed names have tended to lag afterwards, and the hosts' calls are untested (tracked in the weekly record).</p>
+      <p className="mt-1 text-xs text-muted-text">Background only: neither social attention nor the hosts' calls has a tested edge yet; both are tracked in the weekly record.</p>
     </section>
   );
 }

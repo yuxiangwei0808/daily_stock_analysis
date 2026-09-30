@@ -98,16 +98,20 @@ def betas(bars: Dict[str, List[Dict[str, Any]]], tickers: List[str]) -> Dict[str
 
 
 def _cached_betas(tickers: List[str], download: Callable[..., Dict[str, List[Dict[str, Any]]]], day: str) -> Dict[str, Dict[str, Optional[float]]]:
+    """Betas for the day; only measured ones are kept, so a failed or partial download is retried
+    (an assumed 1.0 would flip the sign of an inverse fund for the rest of the day)."""
     with _lock:
-        hit = _beta_cache.get(day)
-        if hit and set(tickers) <= set(hit[0]):
-            return hit[1]
-    bars = download(list(dict.fromkeys([*tickers, "SPY", "QQQ"])), period="1y")
-    result = betas(bars, tickers)
-    with _lock:
-        _beta_cache.clear()
-        _beta_cache[day] = (set(tickers), result)
-    return result
+        known = dict(_beta_cache.get(day, ({}, {}))[1]) if day in _beta_cache else {}
+    missing = [ticker for ticker in tickers if ticker not in known]
+    if missing:
+        bars = download(list(dict.fromkeys([*missing, "SPY", "QQQ"])), period="1y")
+        measured = betas(bars, missing) if bars.get("SPY") and bars.get("QQQ") else {t: {} for t in missing}
+        with _lock:
+            kept = {ticker: value for ticker, value in measured.items() if value.get("SPY") is not None}
+            _beta_cache.clear()
+            _beta_cache[day] = (set(), {**known, **kept})
+        known = {**known, **measured}
+    return {ticker: known.get(ticker, {}) for ticker in tickers}
 
 
 def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dict[str, List[Dict[str, Any]]]]] = None,

@@ -3705,10 +3705,10 @@ class StockAnalysisPipeline:
                 self._send_notifications(results, report_type, skip_push=True)
             else:
                 self._send_notifications(results, report_type)
-                if getattr(self, "scheduled_slot", None):
-                    # A restart from here on must not re-run and re-send this brief.
-                    from src.services.runtime_scheduler import mark_run_pushed
-                    mark_run_pushed()
+                # A restart from here on must not re-run and re-send this brief (a no-op unless
+                # this process is the scheduled run in the run record).
+                from src.services.runtime_scheduler import mark_run_pushed
+                mark_run_pushed()
         
         return results
 

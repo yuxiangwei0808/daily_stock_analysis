@@ -32,8 +32,11 @@ interface Basis { amount: number; label: string }
 /** What a P/L percentage is measured against: the debit paid, or the most a credit trade can lose. */
 function basisOf(candidate: StrategyCandidate): Basis | null {
   const { entryDebit, fees, lossBound, maxLoss } = candidate.payoff;
-  if (entryDebit > 0) return { amount: entryDebit + (fees || 0), label: 'of cost' };
-  if (lossBound === 'bounded' && maxLoss && maxLoss > 0) return { amount: maxLoss, label: 'of max loss' };
+  const cost = entryDebit > 0 ? entryDebit + (fees || 0) : 0;
+  const risk = lossBound === 'bounded' && maxLoss && maxLoss > 0 ? maxLoss : 0;
+  // Owned shares or a short leg can put more at stake than the debit (a protective put, a risk reversal).
+  if (risk > cost) return { amount: risk, label: 'of max loss' };
+  if (cost > 0) return { amount: cost, label: 'of cost' };
   return null;
 }
 

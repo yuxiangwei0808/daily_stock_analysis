@@ -73,6 +73,12 @@ def test_picks_are_validated_and_capped():
         yp.extract_picks("x", video, "t", lambda prompt: "I cannot help with that")
 
 
+def test_an_early_close_day_counts_its_own_close():
+    early = lambda day: yp.dtime(13, 0) if day == date(2026, 11, 27) else yp.dtime(16, 0)  # noqa: E731
+    published = datetime(2026, 11, 27, 19, 0, tzinfo=timezone.utc)  # 14:00 New York, after the 13:00 close
+    assert yp.signal_day(published, _weekday, early) == date(2026, 11, 30)
+
+
 def test_the_entry_is_the_first_close_after_publication():
     assert yp.signal_day(datetime(2026, 9, 29, 14, 0, tzinfo=timezone.utc), _weekday) == date(2026, 9, 29)  # 10:00 NY
     assert yp.signal_day(datetime(2026, 9, 29, 21, 0, tzinfo=timezone.utc), _weekday) == date(2026, 9, 30)  # 17:00 NY
@@ -259,7 +265,7 @@ def test_caption_downloads_are_spaced_and_capped_per_pass(repo, monkeypatch):
                             trading_day=_weekday)
     job._stopping.wait = lambda seconds: waits.append(seconds)
     job.run(NOW)
-    assert [fetch for _, fetch in asked] == [True, True, False, False] and waits == [yp.CAPTION_SPACING_SECONDS]
+    assert [fetch for _, fetch in asked] == [True, True, False, False] and waits == [yp.CAPTION_SPACING_SECONDS] * 3
     assert len(repo.setting(yp.PROCESSED_KEY)) == 2  # the other two wait for the next pass, not for the audio
     job.run(NOW + timedelta(days=2))
     assert len(repo.setting(yp.PROCESSED_KEY)) == 4
@@ -273,3 +279,48 @@ def test_audio_downloads_use_the_venv_deno(monkeypatch, tmp_path):
     (tmp_path / "deno").write_text("")
     assert yp._deno_path() == str(tmp_path / "deno")
 
+
+
+def test_captions_tell_a_refusal_or_a_live_stream_from_no_captions(monkeypatch):
+    import requests
+
+    class Reply:
+        def __init__(self, status=200, data=None, text=""):
+            self.status_code, self._data, self.text = status, data or {}, text
+
+        def json(self):
+            return self._data
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+    track = {"captions": {"playerCaptionsTracklistRenderer": {"captionTracks": [{"languageCode": "en", "baseUrl": "u"}]}}}
+    cases = [
+        (Reply(data={"playabilityStatus": {"status": "LOGIN_REQUIRED"}}), None, yp.CaptionsBlocked),
+        (Reply(data={"playabilityStatus": {"status": "OK"}, "videoDetails": {"isUpcoming": True}}), None, yp.VideoNotReady),
+        (Reply(data={"playabilityStatus": {"status": "LIVE_STREAM_OFFLINE"}}), None, yp.VideoNotReady),
+        (Reply(data={"playabilityStatus": {"status": "OK"}, **track}), Reply(text="  "), yp.CaptionsBlocked),
+    ]
+    for player, body, error in cases:
+        monkeypatch.setattr(requests, "post", lambda *a, **k: player)
+        monkeypatch.setattr(requests, "get", lambda *a, **k: body)
+        with pytest.raises(error):
+            yp.captions("v")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Reply(data={"playabilityStatus": {"status": "OK"}}))
+    assert yp.captions("v") == ""  # a clean answer with no tracks: really no captions
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Reply(data={"playabilityStatus": {"status": "OK"}, **track}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Reply(text="<p>buy &amp; hold</p>"))
+    assert yp.captions("v") == "buy & hold"
+
+
+def test_a_failing_model_keeps_the_transcript_and_gives_up_after_three_passes(repo):
+    feed = [_video("v1", 5, "v1")]
+    reads = []
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: feed,
+                            read_captions=lambda vid, fetch=True: reads.append(vid) or "words",
+                            generate=lambda prompt: (_ for _ in ()).throw(RuntimeError("model down")), trading_day=_weekday)
+    job._spacing = 0
+    for _ in range(3):
+        job.run(NOW)
+    assert reads == ["v1"]  # read once; the retries reuse the transcript
+    assert "v1" in repo.setting(yp.PROCESSED_KEY)  # dropped after the third failure

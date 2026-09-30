@@ -49,3 +49,23 @@ def test_the_reply_carries_the_verdict_a_short_explanation_and_a_link():
     assert "prices moved since" in stale and "adviceId" not in stale
     assert "failed" in da.format_answer({"id": "a1", "status": "failed", "error": "quotes unavailable"}, "NVDA")
     assert "still working" in da.format_answer(None, "NVDA")
+
+
+def test_a_reply_never_exceeds_discords_limit_even_with_many_mentions():
+    job = {"id": "a1", "status": "stale", "assessment": "wait", "explanation": "@ " * 3000, "candidates": []}
+    text = da.format_answer(job, "NVDA", "https://" + "x" * 150 + ".example")
+    assert len(text) <= da.DISCORD_LIMIT and "@everyone" not in text
+
+
+def test_stopping_ends_a_wait_and_a_bot_that_never_logged_in_stops_cleanly():
+    import asyncio
+    import threading
+    stopping = threading.Event()
+    stopping.set()
+    busy = SimpleNamespace(repo=SimpleNamespace(advice=lambda advice_id: {"status": "running"}))
+    assert da.wait_for(busy, "a1", stopping=stopping) is None
+    bot = da.DiscordAskBot(SimpleNamespace(), "token", {1})
+    bot._loop = asyncio.new_event_loop()
+    bot._client = SimpleNamespace(close=lambda: None)
+    bot._loop.close()  # the login failed and the loop was closed
+    bot.stop()  # no RuntimeError

@@ -69,7 +69,9 @@ def _breakout_group(ticker: str, name: str) -> str:
     if geared_fund(name):
         # Single-stock funds ("Direxion Daily TSLA Bull 2X") group with their stock.
         for word in re.findall(r"\b[A-Z]{2,5}\b", name or ""):
-            if word not in {"ETF", "ETN", "USD", "SHARES", "DAILY", "BULL", "BEAR", "LONG", "SHORT"}:
+            # Index providers name many unrelated funds (EDC and DRN are both "MSCI"; EURL and YINN "FTSE").
+            if word not in {"ETF", "ETN", "USD", "SHARES", "DAILY", "BULL", "BEAR", "LONG", "SHORT",
+                            "MSCI", "FTSE", "CSI", "NYSE", "DOW", "ICE", "INDEX", "US", "USA", "TR", "ETFS"}:
                 return word
     return ticker  # names outside the watchlist; watchlist breakouts are not capped
 
@@ -435,6 +437,7 @@ class BreakoutWatch:
                  track: Optional[Callable[..., Any]] = None):
         import time
         self._held_side = held_side
+        self.last_error: Optional[str] = None  # the background level load's last failure (Status page)
         self._track = track  # records each alert for the forward track record
         self._confirm = max(1, confirm_checks)
         self._earnings_date = earnings_date
@@ -513,8 +516,10 @@ class BreakoutWatch:
                 if requested and len(loaded) < requested / 2:  # keep what loaded; try again for the rest
                     logger.warning("Breakout levels for only %d/%d tickers; retrying", len(loaded), requested)
                     self._retry_at = clock + LEVELS_RETRY_SECONDS
+                self.last_error = None
             except Exception as exc:  # retried in a few minutes; scans still add names
                 logger.warning("Breakout levels unavailable: %s", exc)
+                self.last_error = f"levels: {type(exc).__name__}"
                 self._retry_at = clock + LEVELS_RETRY_SECONDS
             self._loading = None
         if not self._levels or (shared and quotes is None) or (not shared and clock < self._next):
@@ -672,6 +677,7 @@ class OpportunityRunner:
                  held: Optional[Callable[[str], str]] = None,
                  schedule_times: Optional[Callable[[], List[str]]] = None,
                  held_side: Optional[Callable[[str], Optional[str]]] = None):
+        self.last_error: Optional[str] = None  # the background scan's last failure (Status page)
         self.service = service
         self._held = held
         self._held_side = held_side
@@ -725,7 +731,9 @@ class OpportunityRunner:
                 scan, self._scan = self._scan, None
                 try:
                     self._publish(scan.result(), regular_session)
+                    self.last_error = None
                 except Exception as exc:  # the next run scans again
+                    self.last_error = f"scan: {type(exc).__name__}"
                     logger.warning("Trade opportunities scan failed: %s", type(exc).__name__, exc_info=True)
             return
         if self._pending is not None:

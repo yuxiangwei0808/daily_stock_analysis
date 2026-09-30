@@ -43,6 +43,21 @@ def enabled(preferences: Dict[str, Any], name: str) -> bool:
     return bool((preferences.get("discord_categories") or {}).get(name, True))
 
 
+def routed(name: str, main: bool) -> bool:
+    """Whether the category has somewhere to go: its own webhook or the main Discord setting."""
+    return main or name in webhooks()
+
+
+def fit_batch(events: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    """The oldest events whose batch message fits in one Discord message (at least one)."""
+    kept: List[Dict[str, Any]] = []
+    for event in events:
+        if kept and len(batch_message([*kept, event])) > limit:
+            break
+        kept.append(event)
+    return kept
+
+
 def batchable(event: Dict[str, Any]) -> bool:
     """A move or news alert on a name you do not hold (``held`` is False, not unknown)."""
     return event["event_type"] in CATEGORIES["market"] and event["payload"].get("held") is False
