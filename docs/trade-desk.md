@@ -133,6 +133,18 @@ exceed that recorded coverage. Owned shares alone do not open a plan: it stays
 flat and the owned shares are back at the supplied quantity (or were delivered by
 exercise/assignment). A paper close never sells explicitly owned shares.
 
+Each candidate's **Expiry payoff** panel reads the exact P/L at any price: the
+server sends the payoff's corner points (0, each strike, far tail samples) and the
+page interpolates between them, which is exact because the expiry payoff is linear
+between strikes. It shows each breakeven with its distance from the current price,
+where the maximum gain and loss hold (e.g. "at or below 35.00", or both tails of an
+iron condor), and the P/L if the option expired at today's price. The chart shades
+profit green and loss red and marks the current price, breakevens and strikes;
+hovering reads P/L in dollars and as a percentage of the debit paid (or, for a
+credit, of the maximum loss). A table lists the P/L at moves of ±5/10/20% from the
+current price and at each breakeven and strike (the percentage column is hidden on
+phones).
+
 Pre-expiry scenarios are theoretical American-option binomial estimates using
 fractional remaining time. The probability field is a **model-implied probability**
 under a stated IV-based lognormal, risk-neutral distribution and stated horizon.

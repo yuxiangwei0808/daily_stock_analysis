@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] Trade Desk 到期收益图重做：盈亏区分别着色，标出现价、盈亏平衡点与行权价；悬停可读任意价格的盈亏（金额与占成本/最大亏损的百分比）；顶部列出盈亏平衡点距现价的涨跌幅、最大盈利/亏损出现的价格区间与按现价到期的盈亏；下方表格列出现价 ±5/10/20% 及各关键价位的到期盈亏
 - [改进] YouTube 博主观点只读完整字幕，不再用标题与简介推断观点；无字幕的视频（如美投讲美股、视野环球财经）可开启 `YOUTUBE_TRANSCRIBE_AUDIO` 在本机用 faster-whisper 转写（音频下载到临时目录、用完即删），否则跳过
 - [新功能] 免费社交媒体扫描（`SOCIAL_SCAN_ENABLED`，默认关闭，仅美股）：ApeWisdom（Reddit 提及）、Stocktwits（热门榜与帖子看多/看空）、Tradestie（WSB）；个股报告与 Trade Desk 回答附“社交媒体热度”背景（不改变评分或结论），交易机会标注热议股票，交易日收盘后推送“📣 Social scan”，热议股票从当日收盘起跟踪 5/10/20 个交易日对比 SPY
 - [新功能] YouTube 博主观点（`YOUTUBE_CHANNELS`、`YOUTUBE_PICKS_BACKEND`）：每 3 小时读取所关注频道的 RSS，新视频字幕（无字幕时用标题与简介）由模型提取明确的买入/卖出观点，从发布后的第一个收盘价起跟踪并在周度跟踪记录中按频道统计；报告与 Trade Desk 回答显示近 30 天观点作参考

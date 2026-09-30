@@ -1,47 +1,11 @@
 import { useState } from 'react';
 import { AlertTriangle, Check, ShieldCheck } from 'lucide-react';
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { focusPayoffPoints } from '../../utils/payoff';
 import { Badge, Button, Card } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { CreateTradePlanRequest, StrategyCandidate, TradeAdviceJob, TradeCandidateTrigger, TradeLedger, TradeQuoteSnapshot } from '../../types/tradeDesk';
 import { MetricList, ModeBadge } from './AnswerParts';
+import { PayoffPanel } from './PayoffPanel';
 import { parseNumber, formatMoney, formatNumber, formatDate, formatPercent, textValue, formatQuoteAge, localDateTimeValue } from './deskFormat';
-
-function PayoffChart({ candidate }: { candidate: StrategyCandidate }) {
-  const anchors = [
-    ...candidate.legs.filter((leg) => leg.right !== 'stock').map((leg) => Number(leg.strike)),
-    ...(candidate.payoff.breakevens || []).map(Number),
-  ];
-  const points = focusPayoffPoints(candidate.payoff.points || [], anchors);
-  if (points.length < 2) return <p className="text-sm text-secondary-text">No payoff curve is available.</p>;
-  return (
-    <div className="h-48 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={points} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-          <XAxis
-            type="number"
-            dataKey="price"
-            domain={['dataMin', 'dataMax']}
-            tickFormatter={(value: number) => formatNumber(value, 0)}
-            stroke="var(--muted-text)"
-            tick={{ fill: 'var(--muted-text)' }}
-            fontSize={10}
-          />
-          <YAxis
-            tickFormatter={(value: number) => formatNumber(value, 0)}
-            stroke="var(--muted-text)"
-            tick={{ fill: 'var(--muted-text)' }}
-            fontSize={10}
-          />
-          <Tooltip formatter={(value) => formatMoney(Number(value))} labelFormatter={(value) => `Underlying ${formatNumber(Number(value))}`} />
-          <Line type="linear" dataKey="pnl" stroke="var(--color-cyan)" strokeWidth={2} dot={false} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
 
 export function CandidateCard({ candidate, advice, onMonitor, monitoring }: { candidate: StrategyCandidate; advice: TradeAdviceJob; onMonitor: (request: CreateTradePlanRequest) => Promise<void>; monitoring: boolean }) {
   const { t } = useUiLanguage();
@@ -98,25 +62,23 @@ export function CandidateCard({ candidate, advice, onMonitor, monitoring }: { ca
         </div>
       </div>
 
-      <div className="mt-4 grid gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2">
-          <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-secondary-text">{t('tradeDesk.legs')}</h4>
-          <div className="mt-2 overflow-x-auto rounded-xl border border-border/50">
-            <table className="w-full min-w-[620px] text-left text-xs">
-              <thead className="bg-elevated/50 text-secondary-text"><tr><th className="px-3 py-2">{t('tradeDesk.contract')}</th><th className="px-3 py-2">{t('tradeDesk.side')}</th><th className="px-3 py-2">{t('tradeDesk.quantity')}</th><th className="px-3 py-2">Strike</th><th className="px-3 py-2">Expiry</th><th className="px-3 py-2">Entry</th></tr></thead>
-              <tbody>{candidate.legs.map((leg) => <tr key={`${leg.contractId}-${leg.side}`} className="border-t border-border/40"><td className="px-3 py-2 font-mono text-foreground">{leg.contractId}<span className="ml-2 text-secondary-text">{leg.right}</span></td><td className="px-3 py-2 text-foreground">{leg.side}</td><td className="px-3 py-2 text-foreground">{leg.quantity} × {leg.multiplier}</td><td className="px-3 py-2 text-foreground">{formatNumber(leg.strike)}</td><td className="px-3 py-2 text-secondary-text">{leg.expiry?.slice(0, 10) || '—'}</td><td className="px-3 py-2 font-mono text-foreground">{formatMoney(leg.entryPrice)}</td></tr>)}</tbody>
-            </table>
-          </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <div className="rounded-xl bg-elevated/50 p-3"><span className="text-xs text-secondary-text">{t('tradeDesk.cost')}</span><div className="mt-1 text-sm text-foreground">{payoff.entryDebit < 0 ? t('tradeDesk.credit') : t('tradeDesk.debit')} {formatMoney(Math.abs(payoff.entryDebit))} · Fees {formatMoney(payoff.fees)}</div><div className="mt-1 text-xs text-secondary-text">Capital {formatMoney(payoff.capitalRequired)} · {payoff.capitalNote || '—'}</div>{candidate.quantityForAllocation != null ? <div className="mt-1 text-xs text-secondary-text">{t('tradeDesk.quantityEstimate')}: {candidate.quantityForAllocation}</div> : null}</div>
-            <div className="rounded-xl bg-elevated/50 p-3"><span className="text-xs text-secondary-text">Breakevens</span><div className="mt-1 text-sm text-foreground">{payoff.breakevens.length ? payoff.breakevens.map((value) => formatMoney(value)).join(' · ') : '—'}</div><div className="mt-1 text-xs text-secondary-text">Assignment: {payoff.assignmentNote || '—'}</div></div>
-          </div>
+      <div className="mt-4">
+        <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-secondary-text">{t('tradeDesk.legs')}</h4>
+        <div className="mt-2 overflow-x-auto rounded-xl border border-border/50">
+          <table className="w-full min-w-[620px] text-left text-xs">
+            <thead className="bg-elevated/50 text-secondary-text"><tr><th className="px-3 py-2">{t('tradeDesk.contract')}</th><th className="px-3 py-2">{t('tradeDesk.side')}</th><th className="px-3 py-2">{t('tradeDesk.quantity')}</th><th className="px-3 py-2">Strike</th><th className="px-3 py-2">Expiry</th><th className="px-3 py-2">Entry</th></tr></thead>
+            <tbody>{candidate.legs.map((leg) => <tr key={`${leg.contractId}-${leg.side}`} className="border-t border-border/40"><td className="px-3 py-2 font-mono text-foreground">{leg.contractId}<span className="ml-2 text-secondary-text">{leg.right}</span></td><td className="px-3 py-2 text-foreground">{leg.side}</td><td className="px-3 py-2 text-foreground">{leg.quantity} × {leg.multiplier}</td><td className="px-3 py-2 text-foreground">{formatNumber(leg.strike)}</td><td className="px-3 py-2 text-secondary-text">{leg.expiry?.slice(0, 10) || '—'}</td><td className="px-3 py-2 font-mono text-foreground">{formatMoney(leg.entryPrice)}</td></tr>)}</tbody>
+          </table>
         </div>
-        <div>
-          <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-secondary-text">{t('tradeDesk.payoff')}</h4>
-          <div className="mt-2 rounded-xl border border-border/50 bg-card/30 p-2"><PayoffChart candidate={candidate} /></div>
-          <div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div className="rounded-xl bg-elevated/50 p-3"><span className="text-secondary-text">Max gain</span><strong className="mt-1 block text-foreground">{payoff.gainBound === 'unbounded' ? t('tradeDesk.unlimited') : payoff.gainBound === 'unknown' ? t('tradeDesk.unknown') : formatMoney(payoff.maxGain)}</strong></div><div className="rounded-xl bg-elevated/50 p-3"><span className="text-secondary-text">Max loss</span><strong className="mt-1 block text-foreground">{payoff.lossBound === 'unbounded' ? t('tradeDesk.unlimited') : payoff.lossBound === 'unknown' ? t('tradeDesk.unknown') : formatMoney(payoff.maxLoss)}</strong></div></div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <div className="rounded-xl bg-elevated/50 p-3"><span className="text-xs text-secondary-text">{t('tradeDesk.cost')}</span><div className="mt-1 text-sm text-foreground">{payoff.entryDebit < 0 ? t('tradeDesk.credit') : t('tradeDesk.debit')} {formatMoney(Math.abs(payoff.entryDebit))} · Fees {formatMoney(payoff.fees)}</div><div className="mt-1 text-xs text-secondary-text">Capital {formatMoney(payoff.capitalRequired)} · {payoff.capitalNote || '—'}</div>{candidate.quantityForAllocation != null ? <div className="mt-1 text-xs text-secondary-text">{t('tradeDesk.quantityEstimate')}: {candidate.quantityForAllocation}</div> : null}</div>
+          <div className="rounded-xl bg-elevated/50 p-3"><span className="text-xs text-secondary-text">Assignment</span><div className="mt-1 text-sm text-foreground">{payoff.assignmentNote || '—'}</div></div>
         </div>
+      </div>
+
+      <div className="mt-4 border-t border-border/50 pt-4">
+        <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-secondary-text">{t('tradeDesk.payoff')}</h4>
+        <PayoffPanel candidate={candidate} spot={snapshot?.spot ?? null} />
       </div>
 
       <div className="mt-4 grid gap-4 border-t border-border/50 pt-4 md:grid-cols-3">
