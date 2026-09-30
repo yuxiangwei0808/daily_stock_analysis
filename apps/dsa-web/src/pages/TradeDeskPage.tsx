@@ -11,7 +11,7 @@ import type { DecisionSignalItem } from '../types/decisionSignals';
 import { HoldingsPanel } from '../components/tradeDesk/HoldingsPanel';
 import { TrackRecordCard } from '../components/tradeDesk/TrackRecordCard';
 import { AdviceForm } from '../components/tradeDesk/AdviceForm';
-import { NxUsed, PositionUsed, ModeBadge, AdviceVerdict, ModelPanel } from '../components/tradeDesk/AnswerParts';
+import { NxUsed, ReferencesUsed, PositionUsed, ModeBadge, AdviceVerdict, ModelPanel } from '../components/tradeDesk/AnswerParts';
 import { CandidateCard } from '../components/tradeDesk/CandidateCard';
 import { PositionCard } from '../components/tradeDesk/PositionCard';
 import { QuestionList } from '../components/tradeDesk/QuestionList';
@@ -456,6 +456,7 @@ const TradeDeskPage: React.FC = () => {
       {job.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={job.planError} /> : null}
       <PositionUsed job={job} />
       <NxUsed job={job} />
+      <ReferencesUsed job={job} />
       {job.panel?.opinions?.length ? <ModelPanel panel={job.panel} /> : null}
       {job.explanation ? <AdviceVerdict job={job} /> : null}
       {job.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(job, job.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}

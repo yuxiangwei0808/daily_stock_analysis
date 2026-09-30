@@ -1596,6 +1596,10 @@ class NotificationService(
                     # NX 通道（用户的 moomoo 指标，数据由系统计算）
                     from src.services.nx_tunnel import report_lines as nx_report_lines
                     report_lines.extend(nx_report_lines(data_persp, report_language))
+                    from src.services.social_scan import report_lines as social_report_lines
+                    from src.services.youtube_picks import report_lines as picks_report_lines
+                    report_lines.extend(social_report_lines(data_persp, report_language))
+                    report_lines.extend(picks_report_lines(data_persp, report_language))
                     # 价格位置
                     if price_data:
                         bias_status = price_data.get('bias_status', 'N/A')

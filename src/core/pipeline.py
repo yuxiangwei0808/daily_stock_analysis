@@ -667,6 +667,8 @@ class StockAnalysisPipeline:
                     nx_context = for_ticker(normalize_stock_code(code))
             except Exception as e:
                 logger.info(f"{stock_name}({code}) NX 通道不可用: {type(e).__name__}")
+            # Social attention and the followed YouTube channels' picks: context only.
+            references = self._reference_context(code)
 
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
@@ -687,6 +689,7 @@ class StockAnalysisPipeline:
                     market_structure_context=market_structure_context,
                     analysis_target=analysis_target,
                     nx_context=nx_context,
+                    references=references,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -808,6 +811,7 @@ class StockAnalysisPipeline:
                 enhanced_context["market_structure_context"] = market_structure_context
             if nx_context:
                 enhanced_context["nx_tunnel"] = nx_context
+            enhanced_context.update(references)
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
@@ -916,6 +920,7 @@ class StockAnalysisPipeline:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 from src.services.nx_tunnel import attach as attach_nx
                 attach_nx(result, nx_context)
+                self._attach_references(result, references)
                 action_source_advice = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
                 adjustments = apply_phase_decision_guardrails(
@@ -1530,10 +1535,12 @@ class StockAnalysisPipeline:
         market_structure_context: Optional[Dict[str, Any]] = None,
         analysis_target: Optional[AnalysisTarget] = None,
         nx_context: Optional[Dict[str, Any]] = None,
+        references: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
         """
+        references = references or {}
         try:
             from src.agent.factory import build_agent_executor
             report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
@@ -1586,6 +1593,7 @@ class StockAnalysisPipeline:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
             if nx_context:
                 initial_context["nx_tunnel"] = nx_context
+            initial_context.update(references)
 
             # Agent path: inject social sentiment as news_context so both
             # executor (_build_user_message) and orchestrator (ctx.set_data)
@@ -1769,6 +1777,7 @@ class StockAnalysisPipeline:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 from src.services.nx_tunnel import attach as attach_nx
                 attach_nx(result, nx_context)
+                self._attach_references(result, references)
                 realtime_data = initial_context.get("realtime_quote", {})
                 if isinstance(realtime_data, dict):
                     AnalysisResult.set_realtime_quote(result, realtime_data)
@@ -3880,6 +3889,30 @@ class StockAnalysisPipeline:
         except Exception as exc:  # pragma: no cover - defensive fallback
             logger.error("回退写入报告失败: %s", exc)
             return None
+
+    def _reference_context(self, code: str) -> Dict[str, Any]:
+        """Social attention and YouTube picks for a US stock (context only); {} when off or unavailable."""
+        references: Dict[str, Any] = {}
+        try:
+            if get_market_for_stock(normalize_stock_code(code)) != "us":
+                return references
+            from src.services import social_scan, youtube_picks
+            if social_scan.enabled():
+                social = social_scan.ticker_context(normalize_stock_code(code))
+                if social:
+                    references["social_scan"] = social
+            picks = youtube_picks.for_report(normalize_stock_code(code), self.db)
+            if picks:
+                references["youtube_picks"] = picks
+        except Exception as e:  # references never block a report
+            logger.info(f"{code} 社交/YouTube 参考不可用: {type(e).__name__}")
+        return references
+
+    @staticmethod
+    def _attach_references(result: Any, references: Dict[str, Any]) -> None:
+        from src.services import social_scan, youtube_picks
+        social_scan.attach(result, references.get("social_scan"))
+        youtube_picks.attach(result, references.get("youtube_picks") or [])
 
     def _send_notifications(
         self,

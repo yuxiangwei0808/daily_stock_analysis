@@ -28,6 +28,12 @@ bearish (reduce/sell/avoid). They have no stop or target, so they settle on the
 close 5 and 10 sessions later against SPY, and the summary splits them by the NX
 slow tunnel at the report (above / inside / below). The after-close job reads the
 report history itself, so older reports are picked up too.
+
+``social`` records are the evening social scan's most-discussed names and
+``influencer`` records the picks of the YouTube channels you follow
+(``src/services/social_scan.py``, ``src/services/youtube_picks.py``). They enter at
+the close of their signal day (read from the bars; no look-ahead) and settle like
+the report calls, 5, 10 and 20 sessions later against SPY.
 """
 from __future__ import annotations
 
@@ -45,6 +51,7 @@ MAX_DAYS = 15
 COST_BPS = 5.0
 WINDOW_DAYS = 90
 VERDICT_HORIZONS = (5, 10)
+HORIZONS = {"verdict": VERDICT_HORIZONS, "social": (5, 10, 20), "influencer": (5, 10, 20)}
 VERDICT_DAYS = 45  # how far back the after-close job reads the report history
 NO_DATA_DAYS = 30  # a record still without bars this long after its signal closes as "no_data"
 BULLISH_ACTIONS, BEARISH_ACTIONS = {"buy", "add", "hold"}, {"reduce", "sell", "avoid"}
@@ -159,16 +166,27 @@ def sync_verdicts(repo: Any, reports: List[Any]) -> int:
 
 
 def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: List[Dict[str, Any]],
-                   today: date) -> Optional[Dict[str, Any]]:
-    """Returns after 5 and 10 sessions (stock and SPY); "closed" once the 10th session is in."""
+                   today: date, horizons: tuple = VERDICT_HORIZONS) -> Optional[Dict[str, Any]]:
+    """Returns after each horizon (stock and SPY); "closed" once the last one is in.
+
+    A record without an entry price enters at the close of its signal day.
+    """
     path = [bar for bar in bars if record["signal_day"] < bar["date"] <= today.isoformat()]
     if not path:
         return None
-    entry = float(record["entry"])
+    update: Dict[str, Any] = {}
+    entry = record.get("entry")
+    if entry is None:
+        signal_bar = [bar for bar in bars if bar["date"] == record["signal_day"]]
+        if not signal_bar:
+            return None  # no close on the signal day (a gap in the data): no fair entry
+        entry = update["entry"] = round(float(signal_bar[0]["close"]), 4)
+    entry = float(entry)
     before = [bar for bar in market if bar["date"] <= record["signal_day"]]
-    update: Dict[str, Any] = {"days": min(len(path), max(VERDICT_HORIZONS)),
-                              "mark_return_pct": round((path[min(len(path), max(VERDICT_HORIZONS)) - 1]["close"] / entry - 1) * 100, 3)}
-    for horizon in VERDICT_HORIZONS:
+    last = max(horizons)
+    update.update({"days": min(len(path), last),
+                   "mark_return_pct": round((path[min(len(path), last) - 1]["close"] / entry - 1) * 100, 3)})
+    for horizon in horizons:
         if len(path) < horizon:
             continue
         end = path[horizon - 1]
@@ -176,7 +194,6 @@ def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: L
         spy = [bar for bar in market if record["signal_day"] < bar["date"] <= end["date"]]
         if spy and before:
             update[f"spy_{horizon}d_pct"] = round((spy[-1]["close"] / before[-1]["close"] - 1) * 100, 3)
-    last = max(VERDICT_HORIZONS)
     if len(path) >= last:
         update.update(status="closed", return_pct=update[f"return_{last}d_pct"], reason="time",
                       exit_day=path[last - 1]["date"], spy_return_pct=update.get(f"spy_{last}d_pct"))
@@ -261,14 +278,18 @@ def settle_open(repo: Any, today: date,
         except Exception as exc:  # NX is filled on a later day; settling goes on
             logger.info("Idea tracker NX bars unavailable: %s", type(exc).__name__)
     for record in open_records:
+        kind = record.get("kind")
+        if kind in HORIZONS:
+            update = settle_verdict(record, bars_for(history, record["ticker"]) or [], market, today, HORIZONS[kind])
+        else:
+            update = settle(record, bars_for(history, record["ticker"]) or [], market, today)
         nx_update = {}
-        if "nx" not in record and bars_for(long_history, record["ticker"]):
+        entry = record.get("entry") or (update or {}).get("entry")
+        if "nx" not in record and entry and bars_for(long_history, record["ticker"]):
             nx_update["nx"] = nx_snapshot(bars_for(long_history, record["ticker"]), record["signal_day"],
-                                          float(record.get("entry") or 0), record["direction"])
+                                          float(entry), record["direction"])
             if nx_update["nx"] and record["direction"] == "none":
                 nx_update["nx"]["alignment"] = None  # "watch" takes no side
-        settle_one = settle_verdict if record.get("kind") == "verdict" else settle
-        update = settle_one(record, bars_for(history, record["ticker"]) or [], market, today)
         if update is None and (today - date.fromisoformat(str(record["signal_day"])[:10])).days > NO_DATA_DAYS:
             update = {"status": "closed", "reason": "no_data"}  # delisted or unknown: stop re-downloading it
         if update is None:
@@ -289,7 +310,7 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
     since = ((now or datetime.now(_NEW_YORK)) - timedelta(days=window_days)).astimezone(timezone.utc).isoformat()
     everything = repo.tracked_ideas(since=since, limit=1_000_000)
     verdicts = [r for r in everything if r.get("kind") == "verdict"]
-    records = [r for r in everything if r.get("kind") != "verdict"]
+    records = [r for r in everything if r.get("kind") in (None, "idea", "breakout")]
     groups = {}
     for key, label in GROUPS:
         rows = [r for r in records if r.get("verdict") == key]
@@ -318,8 +339,25 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
     recent = [{**{key: r.get(key) for key in ("ticker", "direction", "verdict", "signal_day", "status", "reason",
                                               "return_pct", "r", "spy_return_pct", "days", "kind")},
                "nx_alignment": (r.get("nx") or {}).get("alignment")} for r in records[:60]]
+    from src.services.youtube_picks import channel_stats
     return {"window_days": window_days, "groups": groups, "by_nx": by_nx, "recent": recent,
-            "verdicts": verdict_stats(verdicts)}
+            "verdicts": verdict_stats(verdicts),
+            "social": social_stats([r for r in everything if r.get("kind") == "social"]),
+            "influencers": channel_stats([r for r in everything if r.get("kind") == "influencer"])}
+
+
+def social_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The social scan's names: how many, and their average return and return vs SPY after 5/10/20 sessions."""
+    def average(values):
+        values = [v for v in values if v is not None]
+        return sum(values) / len(values) if values else None
+    out: Dict[str, Any] = {"names": len(rows), "closed": sum(1 for r in rows if r["status"] == "closed"
+                                                              and r.get("return_20d_pct") is not None)}
+    for horizon in (5, 10, 20):
+        done = [r for r in rows if r.get(f"return_{horizon}d_pct") is not None and r.get(f"spy_{horizon}d_pct") is not None]
+        out[f"{horizon}d"] = {"count": len(done), "avg_pct": average([r[f"return_{horizon}d_pct"] for r in done]),
+                              "vs_spy_pct": average([r[f"return_{horizon}d_pct"] - r[f"spy_{horizon}d_pct"] for r in done])}
+    return out
 
 
 def verdict_stats(verdicts: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -386,6 +424,22 @@ def format_track_record(stats: Dict[str, Any]) -> str:
                 lines.append(f"• {group['label']}: " + " | ".join(parts))
         if closed_verdicts < 60:
             lines.append("Few closed calls so far; read this as a first look.")
+    social = stats.get("social") or {}
+    if social.get("5d", {}).get("count"):
+        parts = [f"{h} sessions {social[f'{h}d']['count']} · vs SPY {_pct(social[f'{h}d']['vs_spy_pct'])}"
+                 for h in (5, 10, 20) if social[f"{h}d"]["count"]]
+        lines.append("Most-discussed names on social media (from the close they were listed): " + " | ".join(parts)
+                     + ("" if social["5d"]["count"] >= 50 else " — too few to judge yet"))
+    influencers = stats.get("influencers") or {}
+    counted = [(name, row) for name, row in influencers.items() if row["counted"][5]]
+    if counted:
+        lines.append("YouTube picks, in the call's direction vs SPY (5 / 10 / 20 sessions):")
+        for name, row in sorted(counted, key=lambda item: -item[1]["picks"]):
+            lines.append(f"• {name}: {row['picks']} picks ({row['bullish']} bullish, {row['bearish']} bearish) · "
+                         + " / ".join(_pct(row["vs_spy"][h]) for h in (5, 10, 20))
+                         + f" · {row['closed']} closed")
+        if sum(row["closed"] for _name, row in counted) < 30:
+            lines.append("Few closed picks so far; read this as a first look.")
     return "\n".join(lines)
 
 
@@ -436,7 +490,9 @@ class TrackerJob:
                 stats = track_record(self.repo, now)
                 verdicts = (stats.get("verdicts") or {}).values()
                 if any(group["closed"] or group["open"] for group in stats["groups"].values()) or any(
-                        group["by_nx"]["all"]["closed"] for group in verdicts):
+                        group["by_nx"]["all"]["closed"] for group in verdicts) or (
+                        (stats.get("social") or {}).get("5d", {}).get("count")) or any(
+                        row["counted"][5] for row in (stats.get("influencers") or {}).values()):
                     iso = day.isocalendar()
                     self._emit("track_record", {"underlying": "", "message": format_track_record(stats)},
                                f"track-record:{iso[0]}-{iso[1]}")

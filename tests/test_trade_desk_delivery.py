@@ -181,3 +181,32 @@ def test_a_slow_discord_does_not_hold_up_the_monitor(repo, monkeypatch):
     desk._deliver_in_background()
     desk._delivery.join(5)
     assert len(passes) == 2
+
+
+def test_the_social_digest_goes_out_with_its_own_header(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    repo.set_preferences({"discord_enabled": True})
+    monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid"))
+    sent = []
+    monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(c) or True)
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
+    repo.event("social_digest", {"underlying": "", "message": "📣 **Social scan** · Sep 29"}, "social-digest:2026-09-29")
+    desk._deliver()
+    assert sent == ["📣 **Social scan** · Sep 29"]
+
+
+def test_the_worker_starts_the_scans_only_when_configured(repo, monkeypatch):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    service = SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None)
+    desk = worker_module.TradeDeskWorker(service)
+    assert desk._social is None and desk._youtube is None and desk._tracker is None
+    monkeypatch.setenv("SOCIAL_SCAN_ENABLED", "true")
+    monkeypatch.setenv("YOUTUBE_CHANNELS", "Meet Kevin=UCUvvj5lwue7PspotMDjk5UA")
+    desk = worker_module.TradeDeskWorker(service)
+    assert desk._social is not None and desk._youtube is not None
+    assert desk._tracker is not None  # their records settle even with trade opportunities off
+    for part in (desk._social, desk._youtube, desk._tracker):
+        part.stop()

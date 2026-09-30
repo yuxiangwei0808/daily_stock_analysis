@@ -529,6 +529,14 @@ def test_candidates_keep_room_for_the_watchlist_and_skip_stretched_setups():
     assert "MINE" in picked and "HOT" not in picked and len(picked) == 6
 
 
+def test_ideas_carry_social_and_youtube_notes():
+    idea = {"ticker": "MU", "direction": "long", "conviction": "medium", "strength": 80, "source": "scan",
+            "price": 100.0, "stop": 95.0, "targets": [110.0],
+            "reference_notes": ["🔥 Much discussed: Reddit #1", "📺 YouTube: Meet Kevin bullish (09-29)"]}
+    text = opp.format_message([idea], [], "", options_follow=set())
+    assert "🔥 Much discussed: Reddit #1\n📺 YouTube: Meet Kevin bullish (09-29)" in text
+
+
 def test_the_message_shows_risk_reward_and_risks():
     idea = {"ticker": "AAA", "direction": "long", "conviction": "medium", "strength": 80, "source": "scan",
             "price": 100.0, "stop": 95.0, "targets": [110.0, 115.0], "risks": "Extended after a gap."}

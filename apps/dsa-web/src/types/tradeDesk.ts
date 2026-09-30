@@ -210,6 +210,8 @@ export interface TradeAdviceJob {
     toFastBottomPct: number;
     summary?: string;
   } | null;
+  /** Social attention and the followed YouTube channels' picks at the answer (context only). */
+  references?: { kind: 'social_scan' | 'youtube_picks' | string; title: string; summary: string }[] | null;
   [key: string]: unknown;
 }
 

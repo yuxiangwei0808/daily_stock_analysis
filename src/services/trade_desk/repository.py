@@ -395,6 +395,14 @@ class TradeDeskRepository:
             return [{"id": row.id, "status": row.status, "created_at": row.created_at, **json.loads(row.payload)}
                     for row in rows]
 
+    def tracked_ideas_like(self, pattern):
+        """Tracked records whose id matches a SQL LIKE ``pattern`` (e.g. ``influencer:%:NVDA``)."""
+        with self.db.get_session() as session:
+            rows = session.execute(select(TrackedIdeaRecord).where(TrackedIdeaRecord.id.like(pattern))
+                                   .order_by(TrackedIdeaRecord.created_at.desc()).limit(500)).scalars().all()
+            return [{"id": row.id, "status": row.status, "created_at": row.created_at, **json.loads(row.payload)}
+                    for row in rows]
+
     def tracked_idea_ids(self, prefix=""):
         """Ids of tracked records (only the id column), optionally those starting with ``prefix``."""
         with self.db.get_session() as session:

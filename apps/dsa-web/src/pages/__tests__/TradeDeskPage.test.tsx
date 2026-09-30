@@ -341,6 +341,20 @@ describe('TradeDeskPage', () => {
     expect(panel).toHaveTextContent('no tested edge');
   });
 
+  it('shows the social and YouTube references an answer used', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Crowded trade',
+      references: [
+        { kind: 'social_scan', title: 'Social attention on MU', summary: 'Reddit #1 by mentions (325, +81% vs a day earlier)' },
+        { kind: 'youtube_picks', title: 'YouTube picks on MU, last 30 days', summary: 'Meet Kevin bullish (09-29)' },
+      ] }] });
+    renderPage();
+    const panel = await screen.findByTestId('references-used');
+    expect(panel).toHaveTextContent('Social attention on MU');
+    expect(panel).toHaveTextContent('Reddit #1 by mentions');
+    expect(panel).toHaveTextContent('Meet Kevin bullish (09-29)');
+    expect(panel).toHaveTextContent('Background only');
+  });
+
   it('keeps the answer you are reading when it leaves the current list', async () => {
     const reading = { ...queuedJob, id: 'reading', status: 'completed', explanation: 'The answer I am reading' };
     api.listAdvice.mockResolvedValueOnce({ items: [reading], counts: { active: 1, archive: 0 } })

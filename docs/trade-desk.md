@@ -345,6 +345,54 @@ stock and day (the first report of the day, at its price), grouped as bullish
 history, so reports made before this existed are included. The weekly summary adds
 "Report calls, 10 sessions later vs SPY" and the Journal card a table of the same.
 
+## Social media scan and YouTube picks
+
+Two optional, free references (`src/services/social_scan.py`, `src/services/youtube_picks.py`).
+Neither changes a report's score or action, a Trade Desk candidate, or an alert: the
+prompts say so, and both are tracked forward to test them before anyone leans on them.
+
+**Social scan** (`SOCIAL_SCAN_ENABLED=true`, US tickers). Sources, keyless and cached
+15 minutes; a source that fails is skipped for 2 minutes and named in the report:
+
+| Source | What it gives |
+| --- | --- |
+| ApeWisdom | Mentions across the stock subreddits over 24 hours, with the count and rank a day earlier |
+| Stocktwits | The trending list with its own "why it is trending" summary; per ticker, the bullish/bearish tags on the latest 30 posts |
+| Tradestie | WallStreetBets' 50 most-commented tickers with a sentiment tag |
+
+X has no free API and Reddit's own JSON refuses this client, so neither is read directly.
+
+- Stock reports: a "Social attention" line in the data section and the same context in the prompt.
+- Trade Desk answers: a `social_scan` evidence item, shown under the answer.
+- Trade opportunities: "🔥 Much discussed: Reddit #3 · WSB #5" on ideas in a source's top 20.
+- After 16:20 New York time on trading days: "📣 Social scan" to Discord (the 10 most-discussed
+  stocks, index funds excluded, plus the day's YouTube picks). Each name is tracked from that
+  day's close (`kind: social`), 5/10/20 sessions against SPY. Heavily discussed stocks have
+  tended to lag afterwards; the weekly track record shows whether that holds here.
+
+**YouTube picks** (`YOUTUBE_CHANNELS=Name=UC…,…`, channel ids, not handles, because a handle
+search can land on a clips or fan channel). Every 3 hours the worker reads each channel's RSS
+feed. A new video's captions (YouTube's own, uploaded before automatic, English or Chinese),
+or its title and description when it has none, go to `YOUTUBE_PICKS_BACKEND` (default: the
+routine `GENERATION_BACKEND`). The model returns only explicit calls as JSON: ticker, bullish or
+bearish, conviction, horizon and a short reason. Tickers are validated and at most 10 picks
+per video are kept. A video is marked read once its picks are stored (setting
+`youtube_processed`), so a restart never pays for it twice; a failed model call is retried on
+the next pass. The first pass reads the last 30 days to seed the record.
+
+- Each pick is tracked (`kind: influencer`, id `influencer:<video>:<ticker>`) from the first
+  close after the video was published: during the session, that day's close; after 16:00 or
+  on a non-trading day, the next session's close. It settles 5/10/20 sessions later against
+  SPY; bearish calls count in their own direction.
+- The weekly "📒 Idea track record" adds a line per channel: picks, bullish/bearish, average
+  result vs SPY at 5/10/20 sessions, closed count.
+- Reports ("YouTube picks, last 30 days") and Trade Desk answers show a ticker's calls from
+  the last 30 days; trade ideas show calls from the last 14 days.
+
+Cost: the social sources and RSS are free. Only the pick extraction uses a model, about one
+call per video; a transcript is typically 3–8k tokens, so a low-cost LiteLLM model costs a
+fraction of a cent per video.
+
 ## Broker holdings and your alerts
 
 With `TRADE_DESK_BROKER_ACCOUNT` set (a real moomoo account id or its last

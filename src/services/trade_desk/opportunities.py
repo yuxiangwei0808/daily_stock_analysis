@@ -402,6 +402,7 @@ def format_message(ideas: List[Dict[str, Any]], repeats: List[Dict[str, Any]], r
                   + (f" · R:R {_reward_risk(idea):.1f}" if _reward_risk(idea) else "")]
         if idea.get("held_note"):
             lines.append(idea["held_note"])
+        lines += [note for note in idea.get("reference_notes") or [] if note]
         if idea.get("earnings_note"):
             lines.append(idea["earnings_note"])
         if idea.get("thesis"):
@@ -874,6 +875,19 @@ class OpportunityRunner:
                 "scored": len(scores), "candidates": len(candidates)}
 
     # publishing (worker thread) -----------------------------------------------
+    def _reference_notes(self, ticker: str) -> List[str]:
+        """Social attention and followed YouTube calls on an idea (context lines, when those scans are on)."""
+        from src.services import social_scan, youtube_picks
+        notes = []
+        try:
+            if social_scan.enabled():
+                notes.append(social_scan.flag(ticker))
+            if youtube_picks.enabled():
+                notes.append(youtube_picks.flag(self.service.repo, ticker))
+        except Exception as exc:  # context only; the idea goes out without it
+            logger.info("Idea references unavailable for %s: %s", ticker, type(exc).__name__)
+        return [note for note in notes if note]
+
     def _publish(self, result: Dict[str, Any], regular_session: bool) -> None:
         if self.breakouts is not None:
             self.breakouts.add(result["watch_bars"], result["day"], result["notes"])
@@ -890,6 +904,7 @@ class OpportunityRunner:
                 idea["held_note"] = self._held(idea["ticker"])  # None when holdings are unknown
             if self._held_side is not None:
                 idea["held_side"] = self._held_side(idea["ticker"])
+            idea["reference_notes"] = self._reference_notes(idea["ticker"])
             previous = self._announced.get(idea["ticker"])
             (repeats if previous == f"{idea['direction']}:{idea['conviction']}" else fresh).append(idea)
         if not fresh:

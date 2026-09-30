@@ -304,3 +304,10 @@ def _offline_nx_tunnel(request, monkeypatch):
     if request.module.__name__.endswith("test_nx_tunnel"):
         return
     monkeypatch.setattr("src.services.nx_tunnel.for_ticker", lambda ticker: None)
+
+
+@pytest.fixture(autouse=True)
+def _social_scans_off(monkeypatch):
+    """The social scan and YouTube picks read the web; a local .env turning them on must not reach tests."""
+    monkeypatch.delenv("SOCIAL_SCAN_ENABLED", raising=False)
+    monkeypatch.delenv("YOUTUBE_CHANNELS", raising=False)

@@ -4538,6 +4538,13 @@ Unavailable changes must not be inferred. Extended-hours prices are not regular 
         if context.get('nx_tunnel'):
             from src.services.nx_tunnel import prompt_section
             prompt += prompt_section(context['nx_tunnel'])
+        # Social attention and YouTube picks: background, never a scoring input.
+        if context.get('social_scan'):
+            from src.services.social_scan import prompt_section as social_section
+            prompt += social_section(context['social_scan'])
+        if context.get('youtube_picks'):
+            from src.services.youtube_picks import prompt_section as picks_section
+            prompt += picks_section(context['youtube_picks'])
 
         # 添加昨日对比数据
         if 'yesterday' in context:

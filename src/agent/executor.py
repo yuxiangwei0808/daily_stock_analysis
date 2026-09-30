@@ -902,6 +902,12 @@ class AgentExecutor:
             if context.get("nx_tunnel"):
                 from src.services.nx_tunnel import prompt_section
                 parts.append(prompt_section(context["nx_tunnel"]))
+            if context.get("social_scan"):
+                from src.services.social_scan import prompt_section as social_section
+                parts.append(social_section(context["social_scan"]))
+            if context.get("youtube_picks"):
+                from src.services.youtube_picks import prompt_section as picks_section
+                parts.append(picks_section(context["youtube_picks"]))
             if context.get("news_context"):
                 parts.append(f"\n[系统已获取的新闻与舆情情报]\n{context['news_context']}")
 

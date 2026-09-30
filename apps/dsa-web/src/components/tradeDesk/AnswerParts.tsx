@@ -17,6 +17,22 @@ export function NxUsed({ job }: { job: TradeAdviceJob }) {
   );
 }
 
+export function ReferencesUsed({ job }: { job: TradeAdviceJob }) {
+  const references = job.references ?? [];
+  if (!references.length) return null;
+  return (
+    <section className="mt-4 rounded-xl border border-border/40 bg-card/30 p-3 text-sm" data-testid="references-used">
+      {references.map((item) => (
+        <div key={item.kind} className="mt-1 first:mt-0">
+          <h3 className="text-sm font-semibold text-foreground">{item.title}</h3>
+          <p className="mt-1 text-secondary-text">{item.summary}</p>
+        </div>
+      ))}
+      <p className="mt-1 text-xs text-muted-text">Background only: heavily discussed names have tended to lag afterwards, and the hosts' calls are untested (tracked in the weekly record).</p>
+    </section>
+  );
+}
+
 export function PositionUsed({ job }: { job: TradeAdviceJob }) {
   const position = job.position;
   if (!position) return null;

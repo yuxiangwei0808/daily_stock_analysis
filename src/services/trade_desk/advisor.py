@@ -85,6 +85,10 @@ _RULES = (
     "(EMA of highs/lows, 26) and a slow one (89), with where the price sits. It is how the user reads the chart, "
     "not a tested edge: use its edges as reference levels for triggers, invalidation and stops where they fit, "
     "and mention them, but never choose or reject a trade because of NX alone. "
+    "An evidence item with kind 'social_scan' is retail attention (Reddit, WallStreetBets, Stocktwits) and one "
+    "with kind 'youtube_picks' lists recent calls by YouTube hosts the user follows. Both are background: mention "
+    "crowding or a host's call where relevant, but heavily discussed names have tended to lag afterwards and the "
+    "hosts' calls are untested, so never choose or reject a trade because of them. "
 )
 
 

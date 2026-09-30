@@ -259,6 +259,30 @@ class TradeDeskService:
             logger.info("Trade Desk NX tunnel unavailable: %s", type(exc).__name__)
             return None
 
+    def _references(self, request):
+        """Social attention and the followed YouTube channels' picks for a live ticker (context only)."""
+        if request.data_mode != "live":
+            return []
+        items = []
+        try:
+            from src.services import social_scan, youtube_picks
+            if social_scan.enabled():
+                social = social_scan.ticker_context(request.ticker)
+                if social:
+                    items.append({"kind": "social_scan", "title": f"Social attention on {request.ticker}",
+                                  "summary": social_scan.summary_line(social, "en"), "as_of": social["as_of"]})
+            if youtube_picks.enabled():
+                picks = youtube_picks.recent_picks(self.repo, request.ticker)
+                if picks:
+                    items.append({"kind": "youtube_picks",
+                                  "title": f"YouTube picks on {request.ticker}, last {youtube_picks.RECENT_DAYS} days",
+                                  "summary": youtube_picks.summary_line(picks, "en"),
+                                  "picks": [{key: pick.get(key) for key in ("channel", "group", "published_at", "reason",
+                                                                             "title")} for pick in picks[:6]]})
+        except Exception as exc:  # the answer goes on without them
+            logger.info("Trade Desk social references unavailable: %s", type(exc).__name__)
+        return items
+
     def _fresh_news(self, request):
         """Latest headlines from FREE_NEWS_SOURCES, fetched when the user asks (not for automatic scans)."""
         from src.config import get_config
@@ -338,6 +362,8 @@ class TradeDeskService:
             if nx:
                 snapshot.evidence.append({"kind": "nx_tunnel", "title": f"Your NX tunnel on {request.ticker} (daily)",
                                           **nx})
+            references = self._references(request)
+            snapshot.evidence.extend(references)
             candidates = build_candidates(snapshot, request)
             plan_error = ""
             if request.plan_legs and not any(c.strategy == PLAN_STRATEGY for c in candidates):
@@ -345,6 +371,7 @@ class TradeDeskService:
                     "Your held position could not be priced." if request.plan_source == "position"
                     else "Your plan could not be priced.")
             changes = {"plan_error": plan_error, "position": position, "nx_tunnel": nx,
+                       "references": [{key: item.get(key) for key in ("kind", "title", "summary")} for item in references],
                        # The request as run (position shares, strategies, plan legs filled in): re-pricing
                        # and plans fall back to it, never to the bare request as typed.
                        "run_request": request.model_dump(mode="json"),

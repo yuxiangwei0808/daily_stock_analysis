@@ -79,6 +79,15 @@ class TradeDeskWorker:
             self._opportunities = opportunities.OpportunityRunner(
                 service, self._emit, watchlist=watched, breakouts=self._breakouts, held=held_note,
                 held_side=held_side)
+        # Social scan and the followed YouTube channels: evening digest, picks tracked forward.
+        from src.services import social_scan, youtube_picks
+        self._youtube = youtube_picks.YouTubeScanJob(self.repo) if youtube_picks.enabled() else None
+        if self._tracker is None and (social_scan.enabled() or self._youtube is not None):
+            from .idea_tracker import TrackerJob
+            self._tracker = TrackerJob(self.repo, self._emit)  # settles their records and posts the weekly record
+        self._social = (social_scan.DigestJob(self.repo, self._emit, today_picks=(
+            (lambda: list(self._youtube.today_picks)) if self._youtube is not None else (lambda: [])))
+            if social_scan.enabled() else None)
 
     def _watched(self):
         """The watchlist plus held stocks and option underlyings."""
@@ -178,7 +187,8 @@ class TradeDeskWorker:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
-        for part in (self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker):
+        for part in (self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker,
+                     self._youtube, self._social):
             if part is not None:
                 part.stop()
         self.repo.release(self.owner)
@@ -232,6 +242,12 @@ class TradeDeskWorker:
                 self._tracker.tick(now)
             except Exception as exc:  # optional; plan monitoring continues
                 logger.warning("Idea tracker failed: %s", type(exc).__name__)
+        for name, part in (("YouTube scan", self._youtube), ("Social digest", self._social)):
+            if part is not None:
+                try:
+                    part.tick(now)
+                except Exception as exc:  # optional; plan monitoring continues
+                    logger.warning("%s failed: %s", name, type(exc).__name__)
         if self._opportunities is not None:
             try:
                 self._breakouts.tick(now, session_window(now)[0], quotes=quotes, shared=True)
@@ -386,7 +402,7 @@ class TradeDeskWorker:
                 delivered_parts.setdefault(event["payload"].get("event_id"), set(event["payload"].get("sent_parts", [])))
         wanted = {"price_trigger", "invalidation", "target", "time_exit", "data_outage", "position_reconciliation", "monitor_capacity",
                   "market_move", "market_news", "options_ideas", "trade_opportunities", "breakout",
-                  "holding_alert", "portfolio_summary", "track_record"}
+                  "holding_alert", "portfolio_summary", "track_record", "social_digest"}
         for event in reversed(events):
             if event["event_type"] not in wanted:
                 continue
@@ -417,7 +433,7 @@ class TradeDeskWorker:
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
             ticker = payload.get("underlying", "")
-            if event["event_type"] in {"trade_opportunities", "portfolio_summary", "track_record"}:
+            if event["event_type"] in {"trade_opportunities", "portfolio_summary", "track_record", "social_digest"}:
                 content = message  # carries its own header
             elif event["event_type"] == "options_ideas":
                 content = f"🧭 **Options ideas** · for today's high-conviction trades\n{message}"
