@@ -1,13 +1,14 @@
-import { Area, CartesianGrid, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-import type { PayoffPoint, StrategyCandidate } from '../../types/tradeDesk';
-import { extremeRange, focusPayoffPoints, niceTicks, payoffTable, pnlAt, samplePayoff } from '../../utils/payoff';
+import type { StrategyCandidate } from '../../types/tradeDesk';
+import { curveAt, extremeRange, focusPayoffPoints, niceTicks, payoffTable, pnlAt, samplePayoff } from '../../utils/payoff';
 
 const GAIN = 'hsl(var(--color-success))';
 const LOSS = 'hsl(var(--color-danger))';
 const LEVEL = 'hsl(var(--color-warning))';
 const NOW = 'hsl(var(--primary))';
 const MUTED = 'hsl(var(--muted-text))';
+const HALFWAY = 'hsl(var(--color-purple))';
 
 const price = (value: number) => value.toFixed(2);
 const signedPct = (value: number) => (Math.abs(value) < 0.05 ? '0.0%' : `${value > 0 ? '+' : '−'}${Math.abs(value).toFixed(1)}%`);
@@ -22,6 +23,9 @@ const axisMoney = (value: number) => {
   return `${value < 0 ? '−' : ''}$${text}`;
 };
 const tone = (value: number) => (value > 0.004 ? GAIN : value < -0.004 ? LOSS : MUTED);
+const shortDate = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+interface ChartPoint { price: number; pnl: number; now?: number | null; halfway?: number | null }
 
 interface Basis { amount: number; label: string }
 
@@ -33,17 +37,19 @@ function basisOf(candidate: StrategyCandidate): Basis | null {
   return null;
 }
 
-function PayoffTooltip({ active, payload, now, basis }: {
-  active?: boolean; payload?: Array<{ payload: PayoffPoint }>; now: number | null; basis: Basis | null;
+function PayoffTooltip({ active, payload, now, basis, halfwayLabel }: {
+  active?: boolean; payload?: Array<{ payload: ChartPoint }>; now: number | null; basis: Basis | null; halfwayLabel: string;
 }) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
   return (
-    <div className="max-w-[240px] rounded-lg border border-border/60 bg-card px-3 py-2 text-xs shadow-lg">
-      <div className="text-secondary-text">At expiry, price {price(point.price)}{now ? ` (${signedPct((point.price / now - 1) * 100)} from now)` : ''}</div>
+    <div className="max-w-[260px] rounded-lg border border-border/60 bg-card px-3 py-2 text-xs shadow-lg">
+      <div className="text-secondary-text">Price {price(point.price)}{now ? ` (${signedPct((point.price / now - 1) * 100)} from now)` : ''}</div>
       <div className="mt-0.5 font-semibold" style={{ color: tone(point.pnl) }}>
-        {pnlText(point.pnl)}{basis ? ` · ${signedPct((point.pnl / basis.amount) * 100)} ${basis.label}` : ''}
+        At expiry {pnlText(point.pnl)}{basis ? ` · ${signedPct((point.pnl / basis.amount) * 100)} ${basis.label}` : ''}
       </div>
+      {point.now != null ? <div className="mt-0.5" style={{ color: tone(point.now) }}>If closed now {pnlText(point.now)}</div> : null}
+      {point.halfway != null ? <div className="mt-0.5" style={{ color: tone(point.halfway) }}>If closed {halfwayLabel} {pnlText(point.halfway)}</div> : null}
     </div>
   );
 }
@@ -61,11 +67,19 @@ export function PayoffPanel({ candidate, spot }: { candidate: StrategyCandidate;
   if (window.length < 2) return <p className="text-sm text-secondary-text">No payoff curve is available.</p>;
   const from = window[0].price;
   const to = window[window.length - 1].price;
-  const data = samplePayoff(points, from, to, [...strikes, ...breakevens, ...(now ? [now] : [])]);
-  const values = data.map((point) => point.pnl);
+  const early = candidate.payoff.curves ?? [];
+  const nowCurve = early.find((curve) => curve.label === 'now')?.points ?? [];
+  const halfway = early.find((curve) => curve.label === 'halfway');
+  const halfwayLabel = halfway ? shortDate(halfway.at) : '';
+  const data: ChartPoint[] = samplePayoff(points, from, to, [...strikes, ...breakevens, ...(now ? [now] : [])]).map((point) => ({
+    ...point, now: curveAt(nowCurve, point.price), halfway: halfway ? curveAt(halfway.points, point.price) : null,
+  }));
+  const values = data.flatMap((point) => [point.pnl, point.now ?? point.pnl, point.halfway ?? point.pnl]);
   const high = Math.max(...values, 0);
   const low = Math.min(...values, 0);
-  const zero = high - low > 0 ? high / (high - low) : 0.5;  // where 0 sits in the shaded area, top to bottom
+  const expiryHigh = Math.max(...data.map((point) => point.pnl), 0);
+  const expiryLow = Math.min(...data.map((point) => point.pnl), 0);
+  const zero = expiryHigh - expiryLow > 0 ? expiryHigh / (expiryHigh - expiryLow) : 0.5;  // where 0 sits in the shaded area
   const yTicks = niceTicks(low, high, 4, true);
   const id = candidate.id.replace(/[^a-zA-Z0-9_-]/g, '');
   const basis = basisOf(candidate);
@@ -95,6 +109,12 @@ export function PayoffPanel({ candidate, spot }: { candidate: StrategyCandidate;
           <span className="text-secondary-text">Max loss </span><strong style={{ color: LOSS }}>{bound(payoff.lossBound, payoff.maxLoss, -1)}</strong>
           {lossWhere ? <span className="text-secondary-text"> {lossWhere}</span> : null}
         </span>
+        {payoff.thetaPerDay != null ? (
+          <span className="max-w-full rounded-lg bg-elevated/60 px-2.5 py-1.5">
+            <span className="text-secondary-text">Time decay </span><strong style={{ color: tone(payoff.thetaPerDay) }}>{pnlText(payoff.thetaPerDay)}/day</strong>
+            <span className="text-secondary-text"> at today's price</span>
+          </span>
+        ) : null}
         {atNow != null && now ? (
           <span className="max-w-full rounded-lg bg-elevated/60 px-2.5 py-1.5">
             <span className="text-secondary-text">If it expired at today's {price(now)} </span><strong style={{ color: tone(atNow) }}>{pnlText(atNow)}</strong>
@@ -126,7 +146,7 @@ export function PayoffPanel({ candidate, spot }: { candidate: StrategyCandidate;
                 stroke={MUTED} tick={{ fill: MUTED }} fontSize={10} />
               <YAxis domain={[yTicks[0] ?? low, yTicks[yTicks.length - 1] ?? high]}
                 ticks={yTicks} tickFormatter={axisMoney} stroke={MUTED} tick={{ fill: MUTED }} fontSize={10} width={52} />
-              <Tooltip content={<PayoffTooltip now={now} basis={basis} />} cursor={{ stroke: MUTED, strokeDasharray: '3 3' }} />
+              <Tooltip content={<PayoffTooltip now={now} basis={basis} halfwayLabel={halfwayLabel} />} cursor={{ stroke: MUTED, strokeDasharray: '3 3' }} />
               {strikes.map((strike) => <ReferenceLine key={`k-${strike}`} x={strike} stroke={MUTED} strokeDasharray="2 4" opacity={0.6} />)}
               <ReferenceLine y={0} stroke={MUTED} strokeWidth={1.5} />
               {breakevens.filter((level) => level >= from && level <= to).map((level) => (
@@ -136,17 +156,28 @@ export function PayoffPanel({ candidate, spot }: { candidate: StrategyCandidate;
               {now ? <ReferenceLine x={now} stroke={NOW} strokeWidth={1.5} label={{ value: `Now ${price(now)}`, position: 'top', fill: NOW, fontSize: 10 }} /> : null}
               <Area type="linear" dataKey="pnl" baseValue={0} stroke={`url(#payoff-line-${id})`} strokeWidth={2}
                 fill={`url(#payoff-fill-${id})`} isAnimationActive={false} activeDot={{ r: 3 }} />
+              {halfway ? <Line type="monotone" dataKey="halfway" stroke={HALFWAY} strokeWidth={1.5} strokeDasharray="2 3" dot={false} isAnimationActive={false} activeDot={false} /> : null}
+              {nowCurve.length ? <Line type="monotone" dataKey="now" stroke={NOW} strokeWidth={1.5} strokeDasharray="6 4" dot={false} isAnimationActive={false} activeDot={false} /> : null}
             </ComposedChart>
           </ResponsiveContainer>
         </div>
+        {early.length ? (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-secondary-text" data-testid="payoff-legend">
+            <span><span className="mr-1 inline-block h-0.5 w-5 align-middle" style={{ background: GAIN }} />At expiry</span>
+            {nowCurve.length ? <span><span className="mr-1 inline-block w-5 border-t-2 border-dashed align-middle" style={{ borderColor: NOW }} />If closed now</span> : null}
+            {halfway ? <span><span className="mr-1 inline-block w-5 border-t-2 border-dotted align-middle" style={{ borderColor: HALFWAY }} />If closed {halfwayLabel} (halfway)</span> : null}
+            <span className="text-muted-text">Before expiry: estimated from today's implied volatility, which will change.</span>
+          </div>
+        ) : null}
         <div className="overflow-x-auto rounded-xl border border-border/50">
           <table className="w-full whitespace-nowrap text-left text-xs" data-testid="payoff-table">
             <thead className="bg-elevated/50 text-secondary-text">
               <tr>
-                <th className="px-2 py-2 sm:px-3">Price<span className="hidden sm:inline"> at expiry</span></th>
-                <th className="px-2 py-2 text-right sm:px-3">{now ? <>Move<span className="hidden sm:inline"> from now</span></> : ''}</th>
-                <th className="px-2 py-2 text-right sm:px-3">P/L</th>
+                <th className="px-2 py-2 sm:px-3">Price<span className="hidden sm:inline">{nowCurve.length ? '' : ' at expiry'}</span></th>
+                <th className="hidden px-2 py-2 text-right sm:table-cell sm:px-3">{now ? 'Move from now' : ''}</th>
+                <th className="px-2 py-2 text-right sm:px-3">{nowCurve.length ? 'At expiry' : 'P/L'}</th>
                 {basis ? <th className="hidden px-2 py-2 text-right sm:table-cell sm:px-3">%<span className="hidden sm:inline"> {basis.label}</span></th> : null}
+                {nowCurve.length ? <th className="px-2 py-2 text-right sm:px-3">Close now</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -155,17 +186,22 @@ export function PayoffPanel({ candidate, spot }: { candidate: StrategyCandidate;
                   <td className="px-2 py-1.5 font-mono text-foreground sm:px-3">
                     {price(row.price)}
                     {row.label ? <span className="block font-sans text-[10px] uppercase tracking-wide sm:ml-2 sm:inline" style={{ color: row.kind === 'now' ? NOW : row.kind === 'breakeven' ? LEVEL : MUTED }}>{row.label}</span> : null}
+                    {row.movePct != null && row.kind !== 'now' ? <span className="block font-sans text-[10px] text-secondary-text sm:hidden">{signedPct(row.movePct)}</span> : null}
                   </td>
-                  <td className="px-2 py-1.5 text-right text-secondary-text sm:px-3">{row.movePct == null ? '' : signedPct(row.movePct)}</td>
+                  <td className="hidden px-2 py-1.5 text-right text-secondary-text sm:table-cell sm:px-3">{row.movePct == null ? '' : signedPct(row.movePct)}</td>
                   <td className="px-2 py-1.5 text-right font-mono font-semibold sm:px-3" style={{ color: tone(row.pnl) }}>{pnlText(row.pnl)}</td>
                   {basis ? <td className="hidden px-2 py-1.5 text-right font-mono sm:table-cell sm:px-3" style={{ color: tone(row.pnl) }}>{signedPct((row.pnl / basis.amount) * 100)}</td> : null}
+                  {nowCurve.length ? (() => {
+                    const value = curveAt(nowCurve, row.price);
+                    return <td className="px-2 py-1.5 text-right font-mono sm:px-3" style={{ color: value == null ? MUTED : tone(value) }}>{value == null ? '—' : pnlText(value)}</td>;
+                  })() : null}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </div>
-      <p className="mt-2 text-[11px] text-muted-text">P/L per position as quoted, at expiration, after fees. Hover the chart for any other price.</p>
+      <p className="mt-2 text-[11px] text-muted-text">P/L per position as quoted, after entry fees. Hover the chart for any other price.</p>
     </div>
   );
 }

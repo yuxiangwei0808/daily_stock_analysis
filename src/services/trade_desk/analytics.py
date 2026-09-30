@@ -836,6 +836,45 @@ def mark_to_market_payoff(
     return float(result)
 
 
+def preexpiry_curves(
+    legs: Sequence[OptionLeg],
+    spot: float,
+    as_of: datetime,
+    expiry: datetime,
+    *,
+    risk_free_rate: float = 0.0,
+    dividend_yield: float = 0.0,
+    fees: float = 0.0,
+    count: int = 33,
+    steps: int = 40,
+) -> dict[str, Any]:
+    """P/L if the position is closed before expiry, on a price grid: at the quote time and halfway
+    to expiry (CRR with each leg's IV, held fixed), and the value lost to one day of time at today's
+    price. Empty when there is no time left or a leg has no IV."""
+    start, end = _utc(as_of), _utc(expiry)
+    if start is None or end is None or end <= start or not _finite(spot) or spot <= 0:
+        return {}
+    strikes = [float(leg.strike) for leg in legs if leg.strike is not None and leg.right != "stock"]
+    if not strikes:
+        return {}
+    low, high = min(spot * 0.7, min(strikes) * 0.9), max(spot * 1.3, max(strikes) * 1.1)
+    grid = _dedupe_sorted([low + (high - low) * i / (count - 1) for i in range(count)] + strikes + [float(spot)])
+
+    def value(price: float, at: datetime) -> float:
+        return mark_to_market_payoff(legs, price, at, risk_free_rate=risk_free_rate,
+                                     dividend_yield=dividend_yield, fees=fees, steps=steps)
+    curves = []
+    for label, at in (("now", start), ("halfway", start + (end - start) / 2)):
+        points = [{"price": float(price), "pnl": value(price, at)} for price in grid]
+        if not all(_finite(point["pnl"]) for point in points):
+            return {}
+        curves.append({"label": label, "at": at.isoformat(), "points": [
+            {"price": point["price"], "pnl": round(point["pnl"], 4)} for point in points]})
+    tomorrow = start + timedelta(days=1)
+    theta = value(spot, tomorrow) - value(spot, start) if tomorrow < end else None
+    return {"curves": curves, "theta_per_day": round(theta, 4) if theta is not None and _finite(theta) else None}
+
+
 def _preexpiry_profit_probability(
     legs: Sequence[OptionLeg],
     spot: float,
@@ -1695,6 +1734,9 @@ def _candidate_from_legs(
     if payoff.gain_bound == "bounded" and (payoff.max_gain is None or payoff.max_gain <= _MONEY_EPS):
         # E.g. sub-cent credits against fees; such a structure can only lose.
         return None
+    payoff = payoff.model_copy(update=preexpiry_curves(
+        legs, snapshot.spot, as_of, group_expiry, risk_free_rate=request.risk_free_rate,
+        dividend_yield=request.dividend_yield, fees=fees))
     all_expiry_verified = all(
         quote.expiry_verified for quote in quotes if quote.contract_id in {leg.contract_id for leg in legs if leg.right != "stock"}
     )

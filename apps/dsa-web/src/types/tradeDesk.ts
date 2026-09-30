@@ -70,6 +70,10 @@ export interface PayoffAnalysis {
   capitalNote: string;
   assignmentNote: string;
   points: PayoffPoint[];
+  /** P/L if closed before expiry (same IVs): "now" at the quote time and "halfway" to expiry. */
+  curves?: Array<{ label: 'now' | 'halfway' | string; at: string; points: PayoffPoint[] }>;
+  /** Value change over the next day at today's price (negative: the position loses to time). */
+  thetaPerDay?: number | null;
 }
 
 export interface ProbabilityEstimate {

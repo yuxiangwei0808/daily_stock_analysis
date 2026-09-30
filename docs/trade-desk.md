@@ -145,6 +145,15 @@ credit, of the maximum loss). A table lists the P/L at moves of ±5/10/20% from 
 current price and at each breakeven and strike (the percentage column is hidden on
 phones).
 
+Because short-term options are usually closed before expiry, each candidate also carries
+`payoff.curves`: the P/L if closed at the quote time ("now") and halfway to expiry, on a
+price grid, valued with the binomial (CRR) model at each leg's current IV held fixed, and
+`payoff.theta_per_day`, the value change over the next day at today's price. The chart
+draws them as dashed and dotted lines, the tooltip and a "Close now" table column read
+them, and a chip shows the daily time decay. They are estimates: implied volatility moves.
+The "now" curve at today's price is roughly the cost of getting in and out at once (the
+spread and fees). Answers made before this change have no curves and show the expiry view.
+
 Pre-expiry scenarios are theoretical American-option binomial estimates using
 fractional remaining time. The probability field is a **model-implied probability**
 under a stated IV-based lognormal, risk-neutral distribution and stated horizon.

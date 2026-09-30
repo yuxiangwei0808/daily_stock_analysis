@@ -131,3 +131,10 @@ export function niceTicks(from: number, to: number, count = 6, cover = false): n
   for (let x = first; x <= last + step * 1e-9; x += step) ticks.push(Number(x.toFixed(10)));
   return ticks;
 }
+
+/** A smooth pre-expiry curve read at ``price`` by interpolation; null outside the priced range. */
+export function curveAt(points: PayoffPoint[], price: number): number | null {
+  const sorted = sortedPoints(points);
+  if (sorted.length < 2 || price < sorted[0].price || price > sorted[sorted.length - 1].price) return null;
+  return pnlAt(sorted, price);
+}

@@ -30,11 +30,11 @@ describe('PayoffPanel', () => {
   it('tabulates the P/L at moves from now and at each level', () => {
     render(<PayoffPanel candidate={spread} spot={34.27} />);
     const rows = within(screen.getByTestId('payoff-table')).getAllByRole('row').slice(1);
-    const text = rows.map((row) => row.textContent);
+    const text = rows.map((row) => row.textContent);  // the move appears twice: its column and, on phones, under the price
     expect(text).toContain('34.27Now0.0%−$151−100.0%');
-    expect(text).toContain('36.51Breakeven+6.5%$0.000.0%');
-    expect(text).toContain('37.70+10.0%+$118+78.3%');
-    expect(text).toContain('40.00Strike+16.7%+$349+230.5%');
+    expect(text).toContain('36.51Breakeven+6.5%+6.5%$0.000.0%');
+    expect(text).toContain('37.70+10.0%+10.0%+$118+78.3%');
+    expect(text).toContain('40.00Strike+16.7%+16.7%+$349+230.5%');
   });
 
   it('works without a current price', () => {
@@ -44,4 +44,25 @@ describe('PayoffPanel', () => {
     expect(panel).not.toHaveTextContent('from now');
     expect(within(screen.getByTestId('payoff-table')).getAllByRole('row')).toHaveLength(4);  // header, 35, 36.51, 40
   });
+
+  it('adds the close-before-expiry curves and the daily time decay', () => {
+    const early = {
+      ...spread,
+      payoff: {
+        ...spread.payoff, thetaPerDay: -4.31,
+        curves: [
+          { label: 'now', at: '2026-09-29T16:00:00Z', points: [{ price: 30, pnl: -120 }, { price: 34.27, pnl: -21 }, { price: 40, pnl: 168 }] },
+          { label: 'halfway', at: '2026-10-04T18:00:00Z', points: [{ price: 30, pnl: -140 }, { price: 40, pnl: 250 }] },
+        ],
+      },
+    } as unknown as StrategyCandidate;
+    render(<PayoffPanel candidate={early} spot={34.27} />);
+    expect(screen.getByTestId('payoff-panel')).toHaveTextContent('Time decay −$4.31/day at today\'s price');
+    expect(screen.getByTestId('payoff-legend')).toHaveTextContent('If closed Oct 4 (halfway)');
+    const rows = within(screen.getByTestId('payoff-table')).getAllByRole('row');
+    expect(rows[0]).toHaveTextContent('Close now');
+    expect(rows.map((row) => row.textContent)).toContain('34.27Now0.0%−$151−100.0%−$21');
+    expect(rows.map((row) => row.textContent)).toContain('27.42−20.0%−20.0%−$151−100.0%—');  // outside the priced range
+  });
 });
+

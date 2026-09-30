@@ -421,3 +421,24 @@ def test_swing_never_uses_a_late_close_same_day_expiry() -> None:
     assert swing.legs[0].expiry > close + timedelta(minutes=15)
     intraday = build_candidates(snapshot, TradeAdviceRequest(ticker="TEST", horizon="intraday", strategies=["long_call"]))[0]
     assert intraday.legs[0].contract_id.endswith("-0dte")
+
+
+def test_preexpiry_curves_price_closing_early_and_the_daily_time_decay():
+    from datetime import datetime, timedelta, timezone
+    from src.services.trade_desk import analytics as a
+    from src.services.trade_desk.models import OptionLeg
+    now = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
+    expiry = now + timedelta(days=10)
+    call = OptionLeg(contract_id="US.X261010C35000", right="call", side="buy", quantity=1, strike=35.0, expiry=expiry,
+                     multiplier=100, entry_price=2.0, iv=0.5, exercise_style="american")
+    out = a.preexpiry_curves([call], 34.0, now, expiry)
+    assert [curve["label"] for curve in out["curves"]] == ["now", "halfway"]
+    now_curve = {round(p["price"], 2): p["pnl"] for p in out["curves"][0]["points"]}
+    assert 34.0 in now_curve and 35.0 in now_curve
+    # Before expiry a long call is worth more than its intrinsic value, less the more time passes.
+    at_strike_now = now_curve[35.0]
+    at_strike_half = {round(p["price"], 2): p["pnl"] for p in out["curves"][1]["points"]}[35.0]
+    assert at_strike_now > at_strike_half > -200.0
+    assert out["theta_per_day"] < 0  # a long option loses value each day
+    assert a.preexpiry_curves([call], 34.0, expiry, expiry) == {}  # no time left
+    assert a.preexpiry_curves([call.model_copy(update={"iv": None})], 34.0, now, expiry) == {}  # no IV

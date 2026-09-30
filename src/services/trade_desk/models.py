@@ -91,6 +91,9 @@ class PayoffAnalysis(Model):
     capital_note: str = ""
     assignment_note: str = ""
     points: list[dict[str, float]] = Field(default_factory=list)
+    # P/L if closed before expiry, same IVs: [{"label": "now"|"halfway", "at": iso, "points": [...]}].
+    curves: list[dict[str, Any]] = Field(default_factory=list)
+    theta_per_day: Optional[float] = None  # change in value over the next day at today's price
 
 
 class ProbabilityEstimate(Model):
