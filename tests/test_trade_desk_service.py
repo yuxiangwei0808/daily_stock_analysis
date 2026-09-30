@@ -1163,3 +1163,33 @@ def test_market_pulse_alerts_are_delivered_with_their_own_label(repo, monkeypatc
     assert sent == ['📈 **NVDA** · Big move\nNVDA up 5.2% today (past +5%) at 230.00.']
     worker.stop()
     svc.stop()
+
+
+def test_refresh_prices_reprices_the_contracts_without_the_model(repo):
+    snap = snapshot()
+    item = candidate(snap)
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', data_mode='live').model_dump(mode='json'))
+    repo.update_advice(job['id'], {'status': 'stale', 'explanation': 'Written at the old prices',
+                                   'candidates': [item.model_dump(mode='json')],
+                                   'snapshots': {snap.id: snap.model_dump(mode='json')}})
+    svc = service(repo)
+    fresh = snapshot()
+    repriced = item.model_copy(update={'payoff': item.payoff.model_copy(update={'entry_debit': 190.0})})
+    svc._refresh_candidate = lambda cand, request, spot, require_unchanged=True: (
+        (repriced, fresh) if not require_unchanged else (None, fresh))
+    updated = svc.reprice(job['id'])
+    assert updated['status'] == 'stale' and updated['explanation'] == 'Written at the old prices'
+    assert updated['candidates'][0]['payoff']['entry_debit'] == 190.0 and updated['reprice_failed'] == []
+    assert updated['repriced_at'] and fresh.id in updated['snapshots']
+
+    def unavailable(*args, **kwargs):
+        raise ValueError('Fresh verified quotes are required for recalculation')
+    svc._refresh_candidate = unavailable
+    with pytest.raises(ValueError, match='No candidate could be priced'):
+        svc.reprice(job['id'])
+    replay = repo.create_advice(TradeAdviceRequest(ticker='TEST', data_mode='replay').model_dump(mode='json'))
+    repo.update_advice(replay['id'], {'status': 'completed', 'candidates': [item.model_dump(mode='json')]})
+    with pytest.raises(ValueError, match='Only a finished live answer'):
+        svc.reprice(replay['id'])
+    with pytest.raises(KeyError):
+        svc.reprice('missing')

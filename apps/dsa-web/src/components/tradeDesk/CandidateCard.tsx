@@ -1,29 +1,20 @@
-import { useState } from 'react';
-import { AlertTriangle, Check, ShieldCheck } from 'lucide-react';
-import { Badge, Button, Card } from '../common';
+import { AlertTriangle } from 'lucide-react';
+import { Badge, Card } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-import type { CreateTradePlanRequest, StrategyCandidate, TradeAdviceJob, TradeCandidateTrigger, TradeLedger, TradeQuoteSnapshot } from '../../types/tradeDesk';
+import type { StrategyCandidate, TradeAdviceJob, TradeQuoteSnapshot } from '../../types/tradeDesk';
 import { MetricList, ModeBadge } from './AnswerParts';
 import { PayoffPanel } from './PayoffPanel';
-import { parseNumber, formatMoney, formatNumber, formatDate, formatPercent, textValue, formatQuoteAge, localDateTimeValue } from './deskFormat';
+import { formatMoney, formatNumber, formatDate, formatPercent, textValue, formatQuoteAge } from './deskFormat';
 
-export function CandidateCard({ candidate, advice, onMonitor, monitoring }: { candidate: StrategyCandidate; advice: TradeAdviceJob; onMonitor: (request: CreateTradePlanRequest) => Promise<void>; monitoring: boolean }) {
+export function CandidateCard({ candidate, advice }: { candidate: StrategyCandidate; advice: TradeAdviceJob }) {
   const { t } = useUiLanguage();
-  const [ledger, setLedger] = useState<TradeLedger>('paper');
-  const triggerDefaults = (advice.triggers?.[candidate.id] || {}) as TradeCandidateTrigger;
-  const [triggerDirection, setTriggerDirection] = useState<'above' | 'below'>(triggerDefaults.triggerDirection === 'below' ? 'below' : 'above');
-  const [triggerPrice, setTriggerPrice] = useState(triggerDefaults.triggerPrice == null ? '' : String(triggerDefaults.triggerPrice));
-  const [targetPrice, setTargetPrice] = useState(triggerDefaults.targetPrice == null ? '' : String(triggerDefaults.targetPrice));
-  const [invalidationPrice, setInvalidationPrice] = useState(triggerDefaults.invalidationPrice == null ? '' : String(triggerDefaults.invalidationPrice));
-  const [exitAt, setExitAt] = useState(triggerDefaults.exitAt ? localDateTimeValue(new Date(triggerDefaults.exitAt)) : '');
   const payoff = candidate.payoff;
   const probability = candidate.probability;
-  const replay = advice.request.dataMode === 'replay';
   const snapshot: TradeQuoteSnapshot | null = advice.snapshots?.[candidate.snapshotId] || advice.snapshot || null;
   const quoteTime = snapshot?.quotedAt || snapshot?.receivedAt || null;
   const sensitivity = probability.sensitivity || [];
   return (
-    <Card variant="bordered" padding="md" className="overflow-hidden">
+    <Card variant="bordered" padding="none" className="overflow-hidden p-3 sm:p-5">
       <div className="flex flex-col gap-3 border-b border-border/50 pb-4 md:flex-row md:items-start md:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -36,29 +27,6 @@ export function CandidateCard({ candidate, advice, onMonitor, monitoring }: { ca
             {t('tradeDesk.snapshot')}: {formatDate(quoteTime)} · {t('tradeDesk.quoteAge')}: {formatQuoteAge(quoteTime)}
             {snapshot?.provider ? ` · ${snapshot.provider}` : ''}{snapshot?.stale ? ' · stale' : ''}
           </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select aria-label={`${t('tradeDesk.ledger')} ${candidate.title}`} value={ledger} onChange={(event) => setLedger(event.target.value as TradeLedger)} className="input-surface h-9 rounded-lg border px-2 text-xs text-foreground">
-            <option value="paper">{t('tradeDesk.paper')}</option>
-            <option value="manual_live" disabled={replay}>{t('tradeDesk.manualLive')}{replay ? ' · disabled' : ''}</option>
-          </select>
-          <Button size="sm" variant="outline" disabled={monitoring || advice.status !== 'completed' || (ledger === 'manual_live' && replay)} onClick={() => {
-            // Send every displayed level, including cleared ones, so the saved
-            // plan never keeps an advice default the user did not see.
-            const request: CreateTradePlanRequest = {
-              adviceId: advice.id,
-              candidateId: candidate.id,
-              ledger,
-              triggerPrice: parseNumber(triggerPrice) ?? null,
-              triggerDirection,
-              invalidationPrice: parseNumber(invalidationPrice) ?? null,
-              targetPrice: parseNumber(targetPrice) ?? null,
-              exitAt: exitAt ? new Date(exitAt).toISOString() : null,
-            };
-            void onMonitor(request);
-          }}>
-            {monitoring ? <Check className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}{monitoring ? t('tradeDesk.monitoring') : t('tradeDesk.monitor')}
-          </Button>
         </div>
       </div>
 
@@ -112,7 +80,6 @@ export function CandidateCard({ candidate, advice, onMonitor, monitoring }: { ca
         <div><h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-secondary-text">{t('tradeDesk.exitConditions')}</h4>{candidate.exitConditions.length ? <ul className="mt-2 space-y-1 text-sm text-secondary-text">{candidate.exitConditions.map((condition) => <li key={condition}>• {condition}</li>)}</ul> : <p className="mt-2 text-sm text-secondary-text">{t('tradeDesk.noConditions')}</p>}</div>
       </div>
 
-      <div className="mt-4 grid gap-3 rounded-xl border border-border/40 bg-card/30 p-3 sm:grid-cols-3 lg:grid-cols-5"><label className="text-xs text-secondary-text">Trigger price<input value={triggerPrice} onChange={(event) => setTriggerPrice(event.target.value)} type="number" step="any" placeholder="optional" className="input-surface mt-1 h-9 w-full rounded-lg border px-2 text-xs text-foreground" /></label><label className="text-xs text-secondary-text">Trigger direction<select value={triggerDirection} onChange={(event) => setTriggerDirection(event.target.value as 'above' | 'below')} className="input-surface mt-1 h-9 w-full rounded-lg border px-2 text-xs text-foreground"><option value="above">above</option><option value="below">below</option></select></label><label className="text-xs text-secondary-text">Target price<input value={targetPrice} onChange={(event) => setTargetPrice(event.target.value)} type="number" step="any" placeholder="optional" className="input-surface mt-1 h-9 w-full rounded-lg border px-2 text-xs text-foreground" /></label><label className="text-xs text-secondary-text">Invalidation price<input value={invalidationPrice} onChange={(event) => setInvalidationPrice(event.target.value)} type="number" step="any" placeholder="optional" className="input-surface mt-1 h-9 w-full rounded-lg border px-2 text-xs text-foreground" /></label><label className="text-xs text-secondary-text">Exit at<input value={exitAt} onChange={(event) => setExitAt(event.target.value)} type="datetime-local" className="input-surface mt-1 h-9 w-full rounded-lg border px-2 text-xs text-foreground" /></label></div>
       <p className="mt-3 text-xs text-secondary-text">{candidate.reasons.slice(0, 2).join(' · ')}</p>
     </Card>
   );

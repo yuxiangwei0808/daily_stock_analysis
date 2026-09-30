@@ -545,7 +545,23 @@ is set; cached 10 minutes) into the snapshot evidence as dated `news` items.
 `about_ticker=false` marks general market stories from ticker feeds. Headlines
 are context, never verified catalysts; automatic scans do not fetch them.
 
+## Refreshing an answer's prices
+
+A live answer's prices age while you read it. **Refresh prices** (on every finished live
+answer, and on a stale one) re-prices the same contracts from current quotes without asking the
+model again (`POST /advice/{id}/reprice`): legs, payoff, close-early curves, probability and
+scenarios are recalculated, the reasoning is kept, and the answer notes when prices were
+refreshed and that the explanation was written at the earlier prices. A candidate that cannot be
+priced keeps its earlier numbers and is counted in the note. **Run again** still asks the model
+anew.
+
 ## Positions and operational behavior
+
+The web page no longer offers plan monitoring (the "Monitor" button, trigger/target inputs, the
+Positions tab and the paper/manual ledger results): it was never used, and price alerts on
+Holdings cover the same need. The plan, fill and position API below is unchanged for existing
+clients.
+
 
 Paper fills buy at ask and sell at bid with configured fees and displayed-size
 checks. A net-debit limit is compared with the **whole simulated fill in USD**;

@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   createAdvice: vi.fn(),
   listAdvice: vi.fn(),
   getAdvice: vi.fn(),
+  repriceAdvice: vi.fn(),
   cancelAdvice: vi.fn(),
   listPlans: vi.fn(),
   createPlan: vi.fn(),
@@ -392,7 +393,7 @@ describe('TradeDeskPage', () => {
     renderPage('/trade-desk?view=ask');
     const tab = await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ });
     expect(tab).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(3);  // plan monitoring (Positions) was removed
   });
 
   it('loads linked advice even when it is outside the latest advice list', async () => {
@@ -402,15 +403,6 @@ describe('TradeDeskPage', () => {
     expect((await screen.findAllByText('Linked saved advice')).length).toBeGreaterThan(0);
     expect(api.getAdvice).toHaveBeenCalledWith('older-advice');
     expect(screen.queryByText('Newest advice')).not.toBeInTheDocument();
-  });
-
-  it('opens and focuses the position referenced by a notification', async () => {
-    api.listPositions.mockResolvedValue({ items: [{ planId: 'saved-plan', underlying: 'AAPL',
-      ledger: 'paper', status: 'open', legs: [], realizedPnl: 0, fees: 0,
-      unrealizedPnl: null, valuationStatus: 'unavailable' }] });
-    renderPage('/trade-desk?planId=saved-plan');
-    await waitFor(() => expect(document.getElementById('trade-plan-saved-plan')).toHaveFocus());
-    expect(screen.getByRole('tab', { name: /^(Positions|持仓)$/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('blocks live submission when OpenD is not configured but allows a degraded provider', async () => {
@@ -450,31 +442,6 @@ describe('TradeDeskPage', () => {
     expect(row.textContent).toMatch(/Replay/);
     expect(row.textContent).toMatch(/ledger/);
   });
-  it('settles an expired paper position at the entered underlying price', async () => {
-    api.listPositions.mockResolvedValue({ items: [{ planId: 'expired-plan', underlying: 'AAPL',
-      ledger: 'paper', status: 'reconciliation_required', legs: [], realizedPnl: 0, fees: 0,
-      unrealizedPnl: null, valuationStatus: 'unavailable' }] });
-    renderPage('/trade-desk?view=positions');
-    fireEvent.click(await screen.findByRole('button', { name: /Settle expiry/ }));
-    expect(screen.queryByRole('button', { name: /^Reconcile$/ })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Underlying price at expiration'), { target: { value: '103' } });
-    fireEvent.click(screen.getAllByRole('button', { name: /Settle expiry/ }).at(-1) as HTMLElement);
-    await waitFor(() => expect(api.paperSettle).toHaveBeenCalledWith('expired-plan', 103));
-  });
-
-  it('rejects fractional or zero fill quantities instead of coercing them', async () => {
-    api.listPositions.mockResolvedValue({ items: [{ planId: 'paper-plan', underlying: 'AAPL',
-      ledger: 'paper', status: 'watching', legs: [], realizedPnl: 0, fees: 0,
-      unrealizedPnl: null, valuationStatus: 'no_position' }] });
-    renderPage('/trade-desk?view=positions');
-    fireEvent.click(await screen.findByRole('button', { name: /Paper fill|模拟成交/ }));
-    const quantity = screen.getAllByRole('spinbutton')[0];
-    fireEvent.change(quantity, { target: { value: '2.5' } });
-    // The open dialog renders before the position cards, so its submit comes first.
-    fireEvent.click(screen.getAllByRole('button', { name: /Paper fill|模拟成交/ })[0]);
-    expect(await screen.findByText(/whole-number quantity/)).toBeInTheDocument();
-    expect(api.paperFill).not.toHaveBeenCalled();
-  });
   it('offers to run a stale comparison again as a follow-up of the same conversation', async () => {
     const staleJob = { ...queuedJob, id: 'advice-stale', status: 'stale' as const,
       request: { ...baseRequest, dataMode: 'live' as const, message: 'Compare bullish spreads' }, candidates: [candidate] };
@@ -484,5 +451,17 @@ describe('TradeDeskPage', () => {
     await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({
       ticker: 'AAPL', dataMode: 'live', parentAdviceId: 'advice-stale', message: 'Compare bullish spreads',
     })));
+  });
+
+  it('refreshes the prices of a stale answer without asking the model again', async () => {
+    const staleJob = { ...queuedJob, id: 'advice-stale', status: 'stale' as const,
+      request: { ...baseRequest, dataMode: 'live' as const, message: 'Compare bullish spreads' }, candidates: [candidate] };
+    api.listAdvice.mockResolvedValue({ items: [staleJob] });
+    api.repriceAdvice.mockResolvedValue({ ...staleJob, repricedAt: '2026-09-30T15:02:00Z', repriceFailed: [] });
+    renderPage('/trade-desk');
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh prices' }));
+    await waitFor(() => expect(api.repriceAdvice).toHaveBeenCalledWith('advice-stale'));
+    expect(await screen.findByTestId('reprice-bar')).toHaveTextContent('the explanation was written at the earlier prices');
+    expect(api.createAdvice).not.toHaveBeenCalled();
   });
 });

@@ -1,12 +1,12 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Check, CircleDollarSign, FileQuestion, Play, RefreshCw, Settings2, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
+import { BookOpen, FileQuestion, RefreshCw, Settings2, Sparkles, Trash2 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { decisionSignalsApi } from '../api/decisionSignals';
 import { tradeDeskApi } from '../api/tradeDesk';
 import { AppPage, Badge, Button, Card, ConfirmDialog, EmptyState, InlineAlert, Loading, PageHeader } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import type { CreateTradePlanRequest, HoldingsView, StrategyCandidate, TradeAdviceJob, TradeAdviceRequest, TradeDeskCatalogItem, TradeDeskDataMode, TradeDeskHealth, TradeDeskPlan, TradeFillIntent, TradeJournalEvent, UpdateTradePlanRequest, TradeOutcomes, TradePosition, TradePreferences } from '../types/tradeDesk';
+import type { HoldingsView, StrategyCandidate, TradeAdviceJob, TradeAdviceRequest, TradeDeskCatalogItem, TradeDeskDataMode, TradeDeskHealth, TradeJournalEvent, TradePreferences } from '../types/tradeDesk';
 import type { DecisionSignalItem } from '../types/decisionSignals';
 import { HoldingsPanel } from '../components/tradeDesk/HoldingsPanel';
 import { TrackRecordCard } from '../components/tradeDesk/TrackRecordCard';
@@ -14,13 +14,12 @@ import { AdviceForm } from '../components/tradeDesk/AdviceForm';
 import { NxUsed, ReferencesUsed, PositionUsed, ModeBadge, AdviceVerdict, ModelPanel } from '../components/tradeDesk/AnswerParts';
 import { DiscordPreferences } from '../components/tradeDesk/DiscordPreferences';
 import { CandidateCard } from '../components/tradeDesk/CandidateCard';
-import { PositionCard } from '../components/tradeDesk/PositionCard';
 import { QuestionList } from '../components/tradeDesk/QuestionList';
-import { ARCHIVE_REASONS, DEFAULT_FORM, parseNumber, parseQuantity, parseInteger, formatMoney, localDateTimeValue, formatDate, formatPercent, heldSummary, liveIsBlocked, errorMessage, statusVariant, statusLabel, textValue } from '../components/tradeDesk/deskFormat';
-import type { AdviceFormState, ManualFillState } from '../components/tradeDesk/deskFormat';
+import { ARCHIVE_REASONS, DEFAULT_FORM, parseNumber, parseInteger, formatDate, heldSummary, liveIsBlocked, errorMessage, statusVariant, statusLabel, textValue } from '../components/tradeDesk/deskFormat';
+import type { AdviceFormState } from '../components/tradeDesk/deskFormat';
 
-type TradeDeskView = 'opportunities' | 'holdings' | 'positions' | 'journal';
-const TRADE_DESK_VIEWS: TradeDeskView[] = ['opportunities', 'holdings', 'positions', 'journal'];
+type TradeDeskView = 'opportunities' | 'holdings' | 'journal';
+const TRADE_DESK_VIEWS: TradeDeskView[] = ['opportunities', 'holdings', 'journal'];
 const DEFAULT_PREFERENCES: TradePreferences = {
   discordEnabled: false,
 };
@@ -30,12 +29,9 @@ const TradeDeskPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkTicker = searchParams.get('ticker')?.trim().toUpperCase() || '';
   const linkedAdviceId = searchParams.get('adviceId');
-  const linkedPlanId = searchParams.get('planId');
-  const focusedPlanId = useRef<string | null>(null);
   const sourceReportIdRaw = searchParams.get('sourceReportId');
   const sourceReportId = sourceReportIdRaw && /^\d+$/.test(sourceReportIdRaw) ? Number(sourceReportIdRaw) : undefined;
   const [view, setView] = useState<TradeDeskView>(() => {
-    if (linkedPlanId) return 'positions';
     const requested = searchParams.get('view');
     if (requested === 'ask') return 'opportunities';
     return TRADE_DESK_VIEWS.includes(requested as TradeDeskView) ? requested as TradeDeskView : 'opportunities';
@@ -58,10 +54,7 @@ const TradeDeskPage: React.FC = () => {
   const loadHoldings = useCallback(() => {
     tradeDeskApi.getHoldings().then((result) => setHeldView(result.view)).catch(() => undefined);
   }, []);
-  const [plans, setPlans] = useState<TradeDeskPlan[]>([]);
-  const [positions, setPositions] = useState<TradePosition[]>([]);
   const [journal, setJournal] = useState<TradeJournalEvent[]>([]);
-  const [outcomes, setOutcomes] = useState<TradeOutcomes | null>(null);
   const [preferences, setPreferences] = useState<TradePreferences>(DEFAULT_PREFERENCES);
   const [form, setForm] = useState<AdviceFormState>(() => ({ ...DEFAULT_FORM, ticker: deepLinkTicker }));
   const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
@@ -69,17 +62,6 @@ const TradeDeskPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [busyAdviceId, setBusyAdviceId] = useState<string | null>(null);
-  const [busyPlanId, setBusyPlanId] = useState<string | null>(null);
-  const [manualFillPosition, setManualFillPosition] = useState<TradePosition | null>(null);
-  const [paperFillPosition, setPaperFillPosition] = useState<TradePosition | null>(null);
-  const [paperFillIntent, setPaperFillIntent] = useState<'open' | 'close'>('open');
-  const [paperFillQuantity, setPaperFillQuantity] = useState('1');
-  const [paperFillLimit, setPaperFillLimit] = useState('');
-  const [manualFill, setManualFill] = useState<ManualFillState>({ contractId: '', side: 'buy', quantity: '1', price: '', fees: '0', intent: 'open', note: '', filledAt: localDateTimeValue() });
-  const [reconcilePosition, setReconcilePosition] = useState<TradePosition | null>(null);
-  const [reconcileNotes, setReconcileNotes] = useState('');
-  const [settlePosition, setSettlePosition] = useState<TradePosition | null>(null);
-  const [settlePrice, setSettlePrice] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const lastEventId = useRef('');
@@ -99,12 +81,9 @@ const TradeDeskPage: React.FC = () => {
 
   const refreshLedger = useCallback(async (includePreferences = false) => {
     // Preferences are an editable form; background refreshes must not revert unsaved edits.
-    const results = await Promise.allSettled([tradeDeskApi.listPlans(), tradeDeskApi.listPositions(), tradeDeskApi.listJournal(), tradeDeskApi.getOutcomes(), ...(includePreferences ? [tradeDeskApi.getPreferences()] : [])]);
-    if (results[0].status === 'fulfilled') setPlans(results[0].value.items || []);
-    if (results[1].status === 'fulfilled') setPositions(results[1].value.items || []);
-    if (results[2].status === 'fulfilled') setJournal(results[2].value.items || []);
-    if (results[3].status === 'fulfilled') setOutcomes(results[3].value);
-    if (results[4]?.status === 'fulfilled') setPreferences(results[4].value as TradePreferences);
+    const results = await Promise.allSettled([tradeDeskApi.listJournal(), ...(includePreferences ? [tradeDeskApi.getPreferences()] : [])]);
+    if (results[0].status === 'fulfilled') setJournal((results[0].value as { items?: TradeJournalEvent[] }).items || []);
+    if (results[1]?.status === 'fulfilled') setPreferences(results[1].value as TradePreferences);
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (rejected) setError(errorMessage(rejected.reason));
   }, []);
@@ -190,19 +169,8 @@ const TradeDeskPage: React.FC = () => {
   }, [health?.enabled, refreshData]);
 
   useEffect(() => {
-    if (linkedPlanId) setView('positions');
-    else if (linkedAdviceId) { setSelectedAdviceId(linkedAdviceId); setView('opportunities'); }
-  }, [linkedAdviceId, linkedPlanId]);
-
-  useEffect(() => {
-    if (view !== 'positions' || isLoading || !linkedPlanId || focusedPlanId.current === linkedPlanId) return;
-    const target = document.getElementById(`trade-plan-${linkedPlanId}`);
-    if (target) {
-      target.scrollIntoView?.({ block: 'center' });
-      target.focus({ preventScroll: true });
-      focusedPlanId.current = linkedPlanId;
-    }
-  }, [view, isLoading, linkedPlanId, positions]);
+    if (linkedAdviceId) { setSelectedAdviceId(linkedAdviceId); setView('opportunities'); }
+  }, [linkedAdviceId]);
 
   const activeAdviceIds = advice.filter((item) => item.status === 'queued' || item.status === 'running').map((item) => item.id).join(',');
   useEffect(() => {
@@ -210,14 +178,6 @@ const TradeDeskPage: React.FC = () => {
     const interval = window.setInterval(() => { void Promise.all(activeAdviceIds.split(',').map(async (id) => { try { const current = await tradeDeskApi.getAdvice(id); setAdvice((items) => items.map((item) => item.id === id ? current : item)); } catch { /* SSE and the next interval retry. */ } })); }, 2000);
     return () => window.clearInterval(interval);
   }, [activeAdviceIds]);
-
-  useEffect(() => {
-    if (view !== 'positions') return undefined;
-    const interval = window.setInterval(() => {
-      void tradeDeskApi.listPositions().then((result) => setPositions(result.items || [])).catch(() => undefined);
-    }, 5000);
-    return () => window.clearInterval(interval);
-  }, [view]);
 
   const selectedAdvice = useMemo(() => advice.find((item) => item.id === selectedAdviceId)
     || archive?.find((item) => item.id === selectedAdviceId) || (selectedAdviceId ? pinned[selectedAdviceId] : undefined) || null,
@@ -338,6 +298,18 @@ const TradeDeskPage: React.FC = () => {
     } catch (deleteError) { setError(errorMessage(deleteError)); } finally { setBusyAdviceId(null); }
   };
 
+  const [repricingId, setRepricingId] = useState<string | null>(null);
+  const reprice = async (job: TradeAdviceJob) => {
+    setRepricingId(job.id); setError('');
+    try {
+      const updated = await tradeDeskApi.repriceAdvice(job.id);
+      const swap = (items: TradeAdviceJob[]) => items.map((item) => (item.id === updated.id ? updated : item));
+      setAdvice(swap);
+      setArchive((items) => (items ? swap(items) : items));
+      setPinned((items) => (items[updated.id] ? { ...items, [updated.id]: updated } : items));
+    } catch (repriceError) { setError(errorMessage(repriceError)); } finally { setRepricingId(null); }
+  };
+
   const followUp = async (job: TradeAdviceJob, overrideMessage?: string) => {
     const content = (overrideMessage ?? followUpForm).trim();
     if (!content) return;
@@ -353,62 +325,6 @@ const TradeDeskPage: React.FC = () => {
     try { const child = await tradeDeskApi.createAdvice({ ...baseline, message: content, parentAdviceId: job.id }); adviceListSequence.current += 1; setAdvice((items) => [child, ...items]); setSelectedAdviceId(child.id); setFollowUpForm(''); } catch (followError) { setError(errorMessage(followError)); } finally { setIsSubmitting(false); }
   };
 
-  const monitorCandidate = async (request: CreateTradePlanRequest) => {
-    setBusyPlanId(request.candidateId); setError('');
-    try { const plan = await tradeDeskApi.createPlan(request); setPlans((items) => [plan, ...items.filter((item) => item.id !== plan.id)]); setMessage(t('tradeDesk.monitoring')); } catch (monitorError) { setError(errorMessage(monitorError)); } finally { setBusyPlanId(null); }
-  };
-
-  const openPaperFill = (position: TradePosition) => { setPaperFillPosition(position); setPaperFillIntent('open'); setPaperFillQuantity('1'); setPaperFillLimit(''); };
-  const submitPaperFill = async () => {
-    if (!paperFillPosition) return;
-    setBusyPlanId(paperFillPosition.planId); setError('');
-    const quantity = parseQuantity(paperFillQuantity);
-    if (quantity == null) { setError('Enter a whole-number quantity of at least 1.'); setBusyPlanId(null); return; }
-    try { await tradeDeskApi.paperFill(paperFillPosition.planId, { intent: paperFillIntent, quantity, limitPrice: parseNumber(paperFillLimit) }); setPaperFillPosition(null); await refreshLedger(); setMessage(t('tradeDesk.paperFill')); } catch (fillError) { setError(errorMessage(fillError)); } finally { setBusyPlanId(null); }
-  };
-
-  // Every field is reset per plan so a previous dialog's intent, quantity or
-  // note is never carried into another plan. Held legs default to closing.
-  const manualFillDefaults = (position: TradePosition, contractId: string): Pick<ManualFillState, 'side' | 'intent' | 'price'> => {
-    const plan = plans.find((item) => item.id === position.planId) || position.plan;
-    const held = position.legs.find((leg) => leg.contractId === contractId);
-    const opening = plan?.candidate.legs.find((leg) => leg.contractId === contractId);
-    const mark = held?.markPrice;
-    if (held && held.signedQuantity && position.status !== 'watching') {
-      return { side: held.signedQuantity > 0 ? 'sell' : 'buy', intent: 'close', price: mark == null ? '' : String(mark) };
-    }
-    return { side: opening?.side === 'sell' ? 'sell' : 'buy', intent: 'open', price: mark == null ? '' : String(mark) };
-  };
-  const openManualFill = (position: TradePosition) => {
-    const plan = plans.find((item) => item.id === position.planId) || position.plan;
-    const heldLeg = position.status !== 'watching' ? position.legs.find((leg) => !(leg.right === 'stock' && plan?.candidate.legs.some((item) => item.existing && item.contractId === leg.contractId))) : undefined;
-    const contractId = heldLeg?.contractId || plan?.candidate.legs.find((leg) => !leg.existing)?.contractId || plan?.candidate.underlying || '';
-    setManualFillPosition(position);
-    setManualFill({ contractId, quantity: '1', fees: '0', note: '', filledAt: localDateTimeValue(), ...manualFillDefaults(position, contractId) });
-  };
-  const submitManualFill = async () => {
-    if (!manualFillPosition || !manualFill.contractId || parseNumber(manualFill.price) == null) return;
-    const quantity = parseQuantity(manualFill.quantity);
-    if (quantity == null) { setError('Enter a whole-number quantity of at least 1.'); return; }
-    if (!manualFill.filledAt || Number.isNaN(new Date(manualFill.filledAt).getTime())) { setError('Enter the actual fill time.'); return; }
-    setBusyPlanId(manualFillPosition.planId); setError('');
-    try { await tradeDeskApi.createFill(manualFillPosition.planId, { contractId: manualFill.contractId, side: manualFill.side, quantity, price: parseNumber(manualFill.price) || 0, fees: parseNumber(manualFill.fees) || 0, filledAt: new Date(manualFill.filledAt).toISOString(), intent: manualFill.intent, note: manualFill.note }); setManualFillPosition(null); await refreshLedger(); } catch (fillError) { setError(errorMessage(fillError)); } finally { setBusyPlanId(null); }
-  };
-  const submitReconcile = async () => {
-    if (!reconcilePosition || !reconcileNotes.trim()) return;
-    setBusyPlanId(reconcilePosition.planId); setError('');
-    try { await tradeDeskApi.reconcilePlan(reconcilePosition.planId, { notes: reconcileNotes.trim() }); setReconcilePosition(null); setReconcileNotes(''); await refreshLedger(); } catch (reconcileError) { setError(errorMessage(reconcileError)); } finally { setBusyPlanId(null); }
-  };
-  const submitSettle = async () => {
-    const price = parseNumber(settlePrice);
-    if (!settlePosition || price == null || price <= 0) { setError('Enter the underlying price at expiration.'); return; }
-    setBusyPlanId(settlePosition.planId); setError('');
-    try { await tradeDeskApi.paperSettle(settlePosition.planId, price); setSettlePosition(null); setSettlePrice(''); await refreshLedger(); } catch (settleError) { setError(errorMessage(settleError)); } finally { setBusyPlanId(null); }
-  };
-  const updatePlan = async (planId: string, changes: UpdateTradePlanRequest) => {
-    setBusyPlanId(planId); setError('');
-    try { const plan = await tradeDeskApi.updatePlan(planId, changes); setPlans((items) => items.map((item) => item.id === plan.id ? plan : item)); await refreshLedger(); } catch (planError) { setError(errorMessage(planError)); } finally { setBusyPlanId(null); }
-  };
   const savePreferences = async () => {
     setError('');
     try { setPreferences(await tradeDeskApi.updatePreferences(preferences)); setMessage(t('tradeDesk.savePreferences')); } catch (preferenceError) { setError(errorMessage(preferenceError)); }
@@ -437,12 +353,12 @@ const TradeDeskPage: React.FC = () => {
       ? <QuestionList key={adviceScope} jobs={listedAdvice} selectedId={selectedAdviceId} heldTickers={heldTickers} busyId={busyAdviceId} onSelect={selectQuestion} onCancel={(job) => void cancelAdvice(job)} onDelete={(job) => setPendingDelete({ job })} />
       : <p className="px-1 py-6 text-center text-xs text-secondary-text">{adviceScope === 'archive' ? 'Nothing archived.' : 'No questions yet. Ask about a stock above.'}</p>}
   </Card>;
-  const candidateList = (items: StrategyCandidate[], job: TradeAdviceJob) => <div className="space-y-4">{items.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={job} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === job.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div>;
+  const candidateList = (items: StrategyCandidate[], job: TradeAdviceJob) => <div className="space-y-4">{items.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={job} />)}</div>;
   const renderAnswer = () => {
     if (!selectedAdvice) return <Card variant="bordered" padding="md"><EmptyState icon={<FileQuestion className="h-8 w-8" />} title={t('tradeDesk.yourQuestions')} description={t('tradeDesk.pickQuestion')} /></Card>;
     const job = selectedAdvice;
     const running = job.status === 'queued' || job.status === 'running';
-    return <Card variant="bordered" padding="md"><div id="advice-detail" className="scroll-mt-4">
+    return <Card variant="bordered" padding="none" className="p-3 sm:p-5"><div id="advice-detail" className="scroll-mt-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2"><h2 className="font-mono text-lg font-semibold text-foreground">{job.request.ticker}</h2><ModeBadge mode={job.request.dataMode} /><Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>{job.parentAdviceId ? <Badge variant="history">{t('tradeDesk.followUpBadge')}</Badge> : null}{job.archived ? <Badge variant="default">{ARCHIVE_REASONS[job.archived] || job.archived}</Badge> : null}</div>
@@ -460,7 +376,13 @@ const TradeDeskPage: React.FC = () => {
       <ReferencesUsed job={job} />
       {job.panel?.opinions?.length ? <ModelPanel panel={job.panel} /> : null}
       {job.explanation ? <AdviceVerdict job={job} /> : null}
-      {job.status === 'stale' ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(job, job.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button>} /> : null}
+      {job.status === 'stale' && !job.repricedAt ? <InlineAlert className="mt-3" variant="warning" message={t('tradeDesk.staleAdvice')} action={<div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" isLoading={repricingId === job.id} onClick={() => void reprice(job)}>Refresh prices</Button><Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(job, job.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button></div>} /> : null}
+      {job.request.dataMode === 'live' && job.candidates.length && ['completed', 'stale'].includes(job.status) && (job.status !== 'stale' || job.repricedAt) ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-secondary-text" data-testid="reprice-bar">
+          <span>{job.repricedAt ? `Prices refreshed ${formatDate(job.repricedAt)}; the explanation was written at the earlier prices.` : `Prices as of ${formatDate(job.updatedAt || job.createdAt)}.`}{job.repriceFailed?.length ? ` ${job.repriceFailed.length} candidate(s) could not be re-priced and keep their earlier numbers.` : ''}</span>
+          <Button size="xsm" variant="ghost" isLoading={repricingId === job.id} onClick={() => void reprice(job)}><RefreshCw className="h-3.5 w-3.5" />Refresh prices</Button>
+        </div>
+      ) : null}
       <div className="mt-5 space-y-5">
         {intradayCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.intraday')}</h3>{candidateList(intradayCandidates, job)}</section> : null}
         {swingCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.swing')}</h3>{candidateList(swingCandidates, job)}</section> : null}
@@ -473,29 +395,19 @@ const TradeDeskPage: React.FC = () => {
     </div></Card>;
   };
   const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
-  const manualFillContracts = manualFillPosition ? (() => {
-    const plan = plans.find((item) => item.id === manualFillPosition.planId) || manualFillPosition.plan;
-    const candidateContracts = plan?.candidate.legs.map((leg) => leg.contractId) || [];
-    const heldContracts = manualFillPosition.legs.map((leg) => leg.contractId);
-    return Array.from(new Set([...heldContracts, ...candidateContracts, plan?.candidate.underlying].filter((item): item is string => Boolean(item))));
-  })() : [];
-  const renderPositions = () => <div className="space-y-5"><InlineAlert variant="info" message={t('tradeDesk.noLiveOrders')} />{paperFillPosition ? <Card variant="gradient" padding="md"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.paperFill')} · {paperFillPosition.underlying}</h2><Button size="sm" variant="ghost" onClick={() => setPaperFillPosition(null)}><X className="h-4 w-4" />{t('tradeDesk.close')}</Button></div><div className="mt-4 grid gap-3 md:grid-cols-3"><label className="text-xs text-secondary-text">{t('tradeDesk.intent')}<select value={paperFillIntent} onChange={(event) => setPaperFillIntent(event.target.value as 'open' | 'close')} className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground"><option value="open">{t('tradeDesk.open')}</option><option value="close">{t('tradeDesk.closeIntent')}</option></select></label><label className="text-xs text-secondary-text">{t('tradeDesk.quantity')}<input value={paperFillQuantity} onChange={(event) => setPaperFillQuantity(event.target.value)} type="number" min="1" step="1" className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label><label className="text-xs text-secondary-text">Net debit limit (whole fill, USD; negative = minimum credit)<input value={paperFillLimit} onChange={(event) => setPaperFillLimit(event.target.value)} type="number" step="any" placeholder="optional" className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label></div><Button className="mt-3" onClick={() => void submitPaperFill()} isLoading={busyPlanId === paperFillPosition.planId} disabled={!paperFillQuantity.trim()}><Play className="h-4 w-4" />{t('tradeDesk.paperFill')}</Button></Card> : null}{plans.length ? <Card variant="bordered" padding="md"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.monitoring')}</h2><div className="mt-3 grid gap-2 md:grid-cols-2">{plans.map((plan) => <div key={plan.id} className="rounded-xl border border-border/50 p-3 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-mono text-foreground">{plan.candidate.underlying}</span><div className="flex gap-1"><ModeBadge mode={plan.dataMode} /><Badge variant={plan.ledger === 'paper' ? 'info' : 'warning'}>{plan.ledger}</Badge></div></div><p className="mt-1 text-xs text-secondary-text">{plan.candidate.title} · {plan.status} · {plan.monitoring ? t('tradeDesk.monitoring') : 'paused'}</p></div>)}</div></Card> : null}{positions.length ? <div className="space-y-4">{positions.map((position) => <div key={position.planId} id={`trade-plan-${position.planId}`} tabIndex={-1}><PositionCard position={position} plans={plans} onPaperFill={openPaperFill} onManualFill={openManualFill} onUpdatePlan={(planId, changes) => void updatePlan(planId, changes)} onSettle={(item) => { setSettlePosition(item); setSettlePrice(''); }} onReconcile={(item) => setReconcilePosition(item)} /></div>)}</div> : <EmptyState icon={<ShieldCheck className="h-8 w-8" />} title={t('tradeDesk.noPositions')} description={t('tradeDesk.noLiveOrders')} />}{manualFillPosition ? <Card variant="gradient" padding="md"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.manualFill')} · {manualFillPosition.underlying}</h2><Button size="sm" variant="ghost" onClick={() => setManualFillPosition(null)}><X className="h-4 w-4" />{t('tradeDesk.close')}</Button></div><div className="mt-4 grid gap-3 md:grid-cols-3"><label className="text-xs text-secondary-text">{t('tradeDesk.contract')}<select value={manualFill.contractId} onChange={(event) => { const contractId = event.target.value; setManualFill((current) => ({ ...current, contractId, ...(manualFillPosition ? manualFillDefaults(manualFillPosition, contractId) : {}) })); }} className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground">{manualFillContracts.map((contractId) => <option key={contractId} value={contractId}>{contractId}</option>)}</select></label><label className="text-xs text-secondary-text">{t('tradeDesk.side')}<select value={manualFill.side} onChange={(event) => setManualFill((current) => ({ ...current, side: event.target.value as 'buy' | 'sell' }))} className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground"><option value="buy">buy</option><option value="sell">sell</option></select></label><label className="text-xs text-secondary-text">{t('tradeDesk.quantity')}<input value={manualFill.quantity} onChange={(event) => setManualFill((current) => ({ ...current, quantity: event.target.value }))} type="number" min="1" className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label><label className="text-xs text-secondary-text">{t('tradeDesk.price')}<input value={manualFill.price} onChange={(event) => setManualFill((current) => ({ ...current, price: event.target.value }))} type="number" step="any" className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label><label className="text-xs text-secondary-text">{t('tradeDesk.fees')}<input value={manualFill.fees} onChange={(event) => setManualFill((current) => ({ ...current, fees: event.target.value }))} type="number" min="0" step="any" className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label><label className="text-xs text-secondary-text">{t('tradeDesk.intent')}<select value={manualFill.intent} onChange={(event) => setManualFill((current) => ({ ...current, intent: event.target.value as TradeFillIntent }))} className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground"><option value="open">{t('tradeDesk.open')}</option><option value="close">{t('tradeDesk.closeIntent')}</option><option value="assignment">assignment</option><option value="exercise">exercise</option></select></label><label className="text-xs text-secondary-text">Filled at<input aria-label="Filled at" type="datetime-local" value={manualFill.filledAt} onChange={(event) => setManualFill((current) => ({ ...current, filledAt: event.target.value }))} className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label></div><label className="mt-3 block text-xs text-secondary-text">{t('tradeDesk.note')}<textarea value={manualFill.note} onChange={(event) => setManualFill((current) => ({ ...current, note: event.target.value }))} rows={2} className="input-surface mt-1 w-full rounded-lg border px-3 py-2 text-sm text-foreground" /></label><Button className="mt-3" onClick={() => void submitManualFill()} isLoading={busyPlanId === manualFillPosition.planId} disabled={!manualFill.contractId || parseNumber(manualFill.price) == null}><CircleDollarSign className="h-4 w-4" />{t('tradeDesk.submitFill')}</Button></Card> : null}{settlePosition ? <Card variant="gradient" padding="md"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">Settle expiry · {settlePosition.underlying}</h2><Button size="sm" variant="ghost" onClick={() => setSettlePosition(null)}><X className="h-4 w-4" />{t('tradeDesk.close')}</Button></div><p className="mt-2 text-xs text-secondary-text">Expired paper option legs close at intrinsic value for this underlying price. Share delivery is not simulated.</p><label className="mt-3 block text-xs text-secondary-text">Underlying price at expiration (USD)<input aria-label="Underlying price at expiration" value={settlePrice} onChange={(event) => setSettlePrice(event.target.value)} type="number" min="0" step="any" className="input-surface mt-1 h-10 w-full rounded-lg border px-2 text-sm text-foreground" /></label><Button className="mt-3" onClick={() => void submitSettle()} isLoading={busyPlanId === settlePosition.planId} disabled={!(parseNumber(settlePrice) && (parseNumber(settlePrice) ?? 0) > 0)}><Check className="h-4 w-4" />Settle expiry</Button></Card> : null}{reconcilePosition ? <Card variant="gradient" padding="md"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold text-foreground">Reconcile {reconcilePosition.underlying}</h2><Button size="sm" variant="ghost" onClick={() => setReconcilePosition(null)}><X className="h-4 w-4" />{t('tradeDesk.close')}</Button></div><textarea value={reconcileNotes} onChange={(event) => setReconcileNotes(event.target.value)} rows={3} placeholder="Record broker assignment/exercise details" className="input-surface mt-3 w-full rounded-xl border px-3 py-2 text-sm text-foreground" /><Button className="mt-3" onClick={() => void submitReconcile()} isLoading={busyPlanId === reconcilePosition.planId} disabled={!reconcileNotes.trim()}><Check className="h-4 w-4" />Reconcile</Button></Card> : null}</div>;
   // Replay events must never read as live: resolve each event's data mode from
-  // its payload, plan or advice so the journal can label it.
+  // its payload or advice so the journal can label it.
   const journalMode = (event: TradeJournalEvent): string | undefined => {
     const payload = event.payload || {};
     if (typeof payload.dataMode === 'string') return payload.dataMode;
-    const planId = event.planId || (typeof payload.planId === 'string' ? payload.planId : undefined);
-    const plan = planId ? plans.find((item) => item.id === planId) : undefined;
-    if (plan) return plan.dataMode;
     const adviceId = event.adviceId || (typeof payload.adviceId === 'string' ? payload.adviceId : undefined);
     return adviceId ? advice.find((item) => item.id === adviceId)?.request.dataMode : undefined;
   };
-  const renderJournal = () => <div className="space-y-5"><TrackRecordCard /><div className="grid gap-4 md:grid-cols-2"><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><BookOpen className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.outcomes')}</h2></div><div className="mt-4 grid gap-4 sm:grid-cols-2">{(['paper', 'paperReplay', 'manualLive'] as const).map((ledger) => { const bucket = outcomes?.[ledger]; return <div key={ledger} className="rounded-xl bg-elevated/50 p-3"><div className="flex items-center justify-between gap-2"><span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">{ledger === 'manualLive' ? t('tradeDesk.manualLive') : t('tradeDesk.paper')}{ledger === 'paperReplay' ? <ModeBadge mode="replay" /> : null}</span><Badge variant={ledger === 'paper' ? 'info' : 'warning'}>{bucket?.closedTrades ?? 0}</Badge></div><p className="mt-2 text-sm text-secondary-text">{t('tradeDesk.realizedPnl')}: <strong className="text-foreground">{formatMoney(bucket?.realizedPnl)}</strong></p><p className="mt-1 text-xs text-secondary-text">{t('tradeDesk.winRate')}: {formatPercent(bucket?.winRate)}</p>{typeof bucket?.note === 'string' ? <p className="mt-1 text-xs text-muted-text">{bucket.note}</p> : null}</div>; })}</div></Card><DiscordPreferences preferences={preferences} onChange={setPreferences} onSave={() => void savePreferences()} /></div>{journal.length ? <Card variant="bordered" padding="md"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.journal')}</h2><div className="mt-3 divide-y divide-border/40">{journal.map((event) => <div key={String(event.id)} className="grid min-w-0 gap-2 py-3 text-sm md:grid-cols-[150px_minmax(0,1fr)_180px]"><div className="flex min-w-0 flex-wrap items-start gap-2 font-medium text-foreground [overflow-wrap:anywhere]">{event.eventType}{journalMode(event) ? <ModeBadge mode={journalMode(event) as TradeDeskDataMode} /> : null}</div><div className="min-w-0 text-secondary-text [overflow-wrap:anywhere]">{Object.entries(event.payload || {}).map(([key, value]) => <span key={key} className="mr-3 inline-block max-w-full"><span className="text-muted-text">{key}</span>: {textValue(value)}</span>)}</div><div className="text-xs text-muted-text">{formatDate(event.createdAt)}</div></div>)}</div></Card> : <EmptyState icon={<BookOpen className="h-8 w-8" />} title={t('tradeDesk.noJournal')} description={t('tradeDesk.description')} />}</div>;
+  const renderJournal = () => <div className="space-y-5"><TrackRecordCard /><div className="grid gap-4 md:grid-cols-2"><DiscordPreferences preferences={preferences} onChange={setPreferences} onSave={() => void savePreferences()} /></div>{journal.length ? <Card variant="bordered" padding="md"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.journal')}</h2><div className="mt-3 divide-y divide-border/40">{journal.map((event) => <div key={String(event.id)} className="grid min-w-0 gap-2 py-3 text-sm md:grid-cols-[150px_minmax(0,1fr)_180px]"><div className="flex min-w-0 flex-wrap items-start gap-2 font-medium text-foreground [overflow-wrap:anywhere]">{event.eventType}{journalMode(event) ? <ModeBadge mode={journalMode(event) as TradeDeskDataMode} /> : null}</div><div className="min-w-0 text-secondary-text [overflow-wrap:anywhere]">{Object.entries(event.payload || {}).map(([key, value]) => <span key={key} className="mr-3 inline-block max-w-full"><span className="text-muted-text">{key}</span>: {textValue(value)}</span>)}</div><div className="text-xs text-muted-text">{formatDate(event.createdAt)}</div></div>)}</div></Card> : <EmptyState icon={<BookOpen className="h-8 w-8" />} title={t('tradeDesk.noJournal')} description={t('tradeDesk.description')} />}</div>;
 
   if (isLoading && !health) return <AppPage><Loading label={t('common.loading')} /></AppPage>;
   if (health && !health.enabled) return <AppPage><InlineAlert variant="warning" title={t('tradeDesk.unavailable')} message="Trade Desk is disabled by the server configuration." /></AppPage>;
-  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} id={`trade-desk-tab-${key}`} type="button" role="tab" aria-selected={view === key} aria-controls="trade-desk-panel" tabIndex={view === key ? 0 : -1} onKeyDown={onTabKey} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<ConfirmDialog isOpen={pendingDelete !== null} isDanger title={pendingDelete && 'job' in pendingDelete ? `Delete the ${pendingDelete.job.request.ticker} request?` : 'Delete all archived requests?'} message={pendingDelete && 'job' in pendingDelete ? 'The request and its answer are removed permanently. The journal keeps its log entries.' : `${pendingDelete && 'archive' in pendingDelete ? pendingDelete.archive : 0} archived requests are removed permanently. Requests linked to a monitored plan are kept.`} confirmText="Delete" onConfirm={() => void confirmDelete()} onCancel={() => setPendingDelete(null)} /><div className="mt-5" id="trade-desk-panel" role="tabpanel" aria-labelledby={`trade-desk-tab-${view}`}>{view === 'opportunities' ? renderOpportunities() : view === 'holdings' ? <HoldingsPanel onAsk={askAbout} /> : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
+  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} id={`trade-desk-tab-${key}`} type="button" role="tab" aria-selected={view === key} aria-controls="trade-desk-panel" tabIndex={view === key ? 0 : -1} onKeyDown={onTabKey} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<ConfirmDialog isOpen={pendingDelete !== null} isDanger title={pendingDelete && 'job' in pendingDelete ? `Delete the ${pendingDelete.job.request.ticker} request?` : 'Delete all archived requests?'} message={pendingDelete && 'job' in pendingDelete ? 'The request and its answer are removed permanently. The journal keeps its log entries.' : `${pendingDelete && 'archive' in pendingDelete ? pendingDelete.archive : 0} archived requests are removed permanently.`} confirmText="Delete" onConfirm={() => void confirmDelete()} onCancel={() => setPendingDelete(null)} /><div className="mt-5" id="trade-desk-panel" role="tabpanel" aria-labelledby={`trade-desk-tab-${view}`}>{view === 'opportunities' ? renderOpportunities() : view === 'holdings' ? <HoldingsPanel onAsk={askAbout} /> : renderJournal()}</div></AppPage>;
 };
 
 export default TradeDeskPage;

@@ -1,4 +1,4 @@
-import type { HoldingsView, TradeAdviceRequest, TradeAdviceStatus, TradeDeskDataMode, TradeDeskHealth, TradeFillIntent } from '../../types/tradeDesk';
+import type { HoldingsView, TradeAdviceRequest, TradeAdviceStatus, TradeDeskDataMode, TradeDeskHealth } from '../../types/tradeDesk';
 import type { DecisionSignalItem } from '../../types/decisionSignals';
 
 export const ARCHIVE_REASONS: Record<string, string> = { expired: 'options expired', stale: 'quotes stale', no_result: 'no result', old: 'over a week old' };
@@ -18,17 +18,6 @@ export type AdviceFormState = {
   dividendYield: string;
   message: string;
   useHoldings: boolean;
-};
-
-export type ManualFillState = {
-  contractId: string;
-  side: 'buy' | 'sell';
-  quantity: string;
-  price: string;
-  fees: string;
-  intent: TradeFillIntent;
-  note: string;
-  filledAt: string;
 };
 
 export const DEFAULT_FORM: AdviceFormState = {

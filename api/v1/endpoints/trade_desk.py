@@ -108,6 +108,15 @@ async def system_status(request: Request):
     return await invoke(build, get_service(request))
 
 
+@router.post("/advice/{advice_id}/reprice")
+async def reprice_advice(advice_id: str, request: Request):
+    """Fresh prices for a live answer's contracts (no model call); the explanation is unchanged."""
+    try:
+        return await invoke(get_service(request).reprice, advice_id)
+    except KeyError as exc:
+        raise HTTPException(404, detail="Answer not found") from exc
+
+
 @router.get("/catalog")
 async def catalog():
     from src.services.trade_desk.analytics import strategy_catalog

@@ -195,6 +195,11 @@ export const tradeDeskApi = {
     return response.data;
   },
 
+  async repriceAdvice(adviceId: string): Promise<TradeAdviceJob> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/advice/${encodeURIComponent(adviceId)}/reprice`);
+    return unwrapJob(response.data);
+  },
+
   async getAdvice(adviceId: string): Promise<TradeAdviceJob> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/advice/${encodeURIComponent(adviceId)}`);
     return unwrapJob(response.data);

@@ -200,6 +200,10 @@ export interface TradeAdviceJob {
   effectiveRequests?: Record<string, TradeAdviceRequest> | null;
   panel?: TradeModelPanel | null;
   planError?: string | null;
+  /** When "Refresh prices" last re-priced the candidates (the explanation keeps its original prices). */
+  repricedAt?: string | null;
+  /** Candidates that could not be re-priced then (they keep their earlier numbers). */
+  repriceFailed?: string[] | null;
   /** Your broker position in the ticker, attached to manual requests (read-only). */
   position?: TradeHeldPosition | null;
   positionInputs?: { existingShares: number; planFromPosition: boolean } | null;

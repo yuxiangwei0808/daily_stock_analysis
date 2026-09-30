@@ -330,6 +330,45 @@ class TradeDeskService:
             return None, current
         return match.model_copy(update={name: getattr(candidate, name) for name in _NARRATIVE_FIELDS}), current
 
+    def reprice(self, advice_id):
+        """Current prices for a live answer's own contracts, without asking the model again.
+
+        Each candidate keeps its reasoning; its legs, payoff, probability and scenarios are
+        recalculated from fresh quotes. A candidate that cannot be priced keeps its old numbers
+        and is listed in ``reprice_failed``. The explanation still refers to the prices it was
+        written at; ``repriced_at`` says when the numbers were refreshed.
+        """
+        from .models import QuoteSnapshot, StrategyCandidate
+        job = self.repo.advice(advice_id)
+        if not job:
+            raise KeyError(advice_id)
+        request = TradeAdviceRequest.model_validate(job.get("run_request") or job["request"])
+        if job["status"] not in {"completed", "stale"} or request.data_mode != "live" or not job.get("candidates"):
+            raise ValueError("Only a finished live answer with candidates can be re-priced")
+        snapshots = dict(job.get("snapshots") or {})
+        refreshed, failed = [], []
+        for item in job["candidates"]:
+            saved = QuoteSnapshot.model_validate(snapshots[item["snapshot_id"]])
+            effective = TradeAdviceRequest.model_validate(
+                (job.get("effective_requests") or {}).get(item["id"]) or job.get("run_request") or job["request"])
+            try:
+                match, current = self._refresh_candidate(StrategyCandidate.model_validate(item), effective, saved.spot,
+                                                         require_unchanged=False)
+            except Exception as exc:  # e.g. OpenD down or the contract no longer quoted
+                logger.info("Trade Desk re-price unavailable: %s", type(exc).__name__)
+                match = None
+            if match is None:
+                failed.append(item["id"])
+                refreshed.append(item)
+                continue
+            snapshots[current.id] = current.model_dump(mode="json")
+            refreshed.append(match.model_dump(mode="json"))
+        if len(failed) == len(refreshed):
+            raise ValueError("No candidate could be priced from current quotes")
+        return self.repo.update_advice(advice_id, {"candidates": refreshed, "snapshots": snapshots,
+                                                   "repriced_at": utcnow().isoformat(), "reprice_failed": failed},
+                                       only_statuses={"completed", "stale"})
+
     def _history(self, job):
         related = [item for item in reversed(self.repo.conversation_advice(job["conversation_id"], limit=5))
                    if item["id"] != job["id"]]
