@@ -449,7 +449,10 @@ and the videos wait for a later pass; only captions refused for a whole day fall
 audio. Audio is transcribed only for videos of the last 7 days, so the first pass after a restart
 does not spend hours of CPU on the 30-day backfill; older videos without captions are skipped. Videos over two hours (live streams) are not
 transcribed. yt-dlp downloads go against YouTube's terms for automated access and can stop
-working when YouTube changes; captioned channels are unaffected.
+working when YouTube changes; captioned channels are unaffected. yt-dlp needs a JavaScript
+runtime for YouTube's player challenges: `pip install deno yt-dlp-ejs` puts `deno` in the venv,
+where the scan finds it (or on `PATH`). Caption downloads are spaced 10 seconds apart and capped
+at 25 per pass, since bursts are what trip YouTube's rate limit; the rest wait for the next pass.
 
 - Each pick is tracked (`kind: influencer`, id `influencer:<video>:<ticker>`) from the first
   close after the video was published: during the session, that day's close; after 16:00 or

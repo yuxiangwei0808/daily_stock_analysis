@@ -43,6 +43,8 @@ MAX_TRANSCRIPT_CHARS = 60000
 MAX_PICKS_PER_VIDEO = 10
 TRANSCRIPT_ATTEMPTS = 3  # passes a video without a transcript is retried before it is dropped
 CAPTION_PAUSE_SECONDS = 6 * 3600  # after YouTube rate-limits caption downloads, stop asking for this long
+CAPTION_SPACING_SECONDS = 10.0  # between caption downloads: bursts are what trip the rate limit
+CAPTIONS_PER_PASS = 25  # the rest wait for the next pass (every 3 hours)
 BLOCKED_AUDIO_AFTER = timedelta(days=1)  # captions refused this long: transcribe the audio instead
 AUDIO_BACKFILL_DAYS = 7  # audio is transcribed only for videos of the last week (CPU time)
 MAX_AUDIO_SECONDS = 2 * 3600  # longer videos (live streams) are not transcribed
@@ -169,6 +171,16 @@ def clear_stale_audio(max_age_seconds: float = 3600) -> None:
             shutil.rmtree(path, ignore_errors=True)
 
 
+def _deno_path() -> Optional[str]:
+    """The deno binary: on PATH, or next to this Python (``pip install deno`` puts it in the venv)."""
+    import sys
+    found = shutil.which("deno")
+    if found:
+        return found
+    local = os.path.join(os.path.dirname(sys.executable), "deno")
+    return local if os.path.exists(local) else None
+
+
 def transcribe_audio(video_id: str, should_stop: Callable[[], bool] = lambda: False) -> str:
     """The video's speech as text: the audio goes to a temporary folder that is deleted on the way out."""
     import yt_dlp
@@ -177,6 +189,9 @@ def transcribe_audio(video_id: str, should_stop: Callable[[], bool] = lambda: Fa
         options = {"format": "bestaudio[ext=m4a]/bestaudio", "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
                    "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
                    "match_filter": match_filter_func(f"duration <= {MAX_AUDIO_SECONDS} & !is_live")}
+        deno = _deno_path()
+        if deno:  # YouTube's player challenges need a JavaScript runtime; without one formats go missing
+            options["js_runtimes"] = {"deno": {"path": deno}}
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
         files = [os.path.join(folder, name) for name in os.listdir(folder) if not name.endswith(".part")]
@@ -360,6 +375,8 @@ class YouTubeScanJob:
         self._missing: Dict[str, int] = {}  # video -> passes without a transcript
         self._blocked_since: Dict[str, datetime] = {}  # video -> first time its captions were refused
         self._captions_paused_until = 0.0
+        self._caption_fetches = 0  # this pass
+        self._spacing = CAPTION_SPACING_SECONDS
         self._stopping = threading.Event()
         self._generate = generate
         self._trading_day = trading_day
@@ -404,6 +421,7 @@ class YouTubeScanJob:
                 clear_stale_audio()
             except OSError as exc:
                 logger.info("Could not clear old audio folders: %s", type(exc).__name__)
+        self._caption_fetches = 0
         try:
             added = self._pass(now, processed, cutoff, trading)
         finally:
@@ -417,7 +435,10 @@ class YouTubeScanJob:
         """(text, source): "captions", "audio", "" (no transcript: retried, then dropped) or "skip" (too
         old to transcribe). Raises _Deferred when the captions exist but YouTube is refusing them for now."""
         video_id = video["video_id"]
-        fetch = self._clock() >= self._captions_paused_until
+        fetch = self._clock() >= self._captions_paused_until and self._caption_fetches < CAPTIONS_PER_PASS
+        if fetch and self._caption_fetches:
+            self._stopping.wait(self._spacing)  # a server stop ends the wait
+        self._caption_fetches += int(fetch)
         try:
             text = self._captions(video_id, fetch=fetch)
             if text:
@@ -428,6 +449,8 @@ class YouTubeScanJob:
                 self._captions_paused_until = self._clock() + CAPTION_PAUSE_SECONDS
                 logger.warning("YouTube refused captions (%s); captioned videos wait %d hours", exc,
                                CAPTION_PAUSE_SECONDS // 3600)
+            if not fetch and self._clock() >= self._captions_paused_until:
+                raise _Deferred() from exc  # only this pass's quota is used up: the next pass reads it
             if now - self._blocked_since.setdefault(video_id, now) < BLOCKED_AUDIO_AFTER or self._transcribe is None:
                 raise _Deferred() from exc
             # Refused for a day: the audio is the only way left to read the video.

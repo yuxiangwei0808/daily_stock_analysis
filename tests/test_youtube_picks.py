@@ -108,6 +108,7 @@ def test_the_scan_records_picks_once_and_retries_a_failed_video(repo):
         return "spoken words" if video_id == "spoken" else ""
     job = yp.YouTubeScanJob(repo, channel_list=[("Meet Kevin", KEVIN)], read_feed=lambda cid: feed,
                             read_captions=captions, transcribe=transcribe, generate=generate, trading_day=_weekday)
+    job._spacing = 0
     assert job.run(NOW) == 2
     rows = {row["ticker"]: row for row in repo.tracked_ideas()}
     assert rows["MU"]["id"] == "influencer:new:MU" and rows["MU"]["channel"] == "Meet Kevin"
@@ -241,3 +242,34 @@ def test_the_weekly_record_lists_each_channel(repo):
     assert stats["influencers"]["Meet Kevin"]["vs_spy"][5] == pytest.approx(5.0)
     text = it.format_track_record(stats)
     assert "• Meet Kevin: 1 picks (1 bullish, 0 bearish) · +5.00% / +10.00% / +20.00% · 1 closed" in text
+
+
+def test_caption_downloads_are_spaced_and_capped_per_pass(repo, monkeypatch):
+    monkeypatch.setattr(yp, "CAPTIONS_PER_PASS", 2)
+    feed = [_video(f"v{i}", i + 1, f"v{i}") for i in range(4)]
+    asked, waits = [], []
+
+    def captions(video_id, fetch=True):
+        asked.append((video_id, fetch))
+        if not fetch:
+            raise yp.CaptionsBlocked("paused")
+        return "words"
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: feed, read_captions=captions,
+                            transcribe=lambda video_id, should_stop: "never", generate=lambda prompt: '{"picks": []}',
+                            trading_day=_weekday)
+    job._stopping.wait = lambda seconds: waits.append(seconds)
+    job.run(NOW)
+    assert [fetch for _, fetch in asked] == [True, True, False, False] and waits == [yp.CAPTION_SPACING_SECONDS]
+    assert len(repo.setting(yp.PROCESSED_KEY)) == 2  # the other two wait for the next pass, not for the audio
+    job.run(NOW + timedelta(days=2))
+    assert len(repo.setting(yp.PROCESSED_KEY)) == 4
+
+
+def test_audio_downloads_use_the_venv_deno(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    assert yp._deno_path() is None
+    (tmp_path / "deno").write_text("")
+    assert yp._deno_path() == str(tmp_path / "deno")
+

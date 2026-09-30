@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] YouTube 扫描更稳：yt-dlp 使用 venv 中的 deno 解析播放器（需 `pip install deno yt-dlp-ejs`）；字幕下载间隔 10 秒、每轮最多 25 个，避免触发限流
 - [新功能] 「哪些有效」计分板：跟踪记录顶部并列展示所有来源（按信心的交易机会、被否决的候选、突破提醒、NX 一致与否、报告看多/看空、社交热议、各 YouTube 频道）相对 SPY 的平均表现；满 30 条已结束记录且逐月结果一致时才给出“跑赢/跑输”结论，周度 Discord 小结同步显示
 - [新功能] 组合风险（持仓页「Portfolio risk」）：按持仓汇总 delta（股数当量与美元）、每日时间损耗、对 SPY/QQQ 的一年 beta，以及 SPY ±3%、QQQ ±5% 时的估算盈亏；期权波动率由其价格反推；每日持仓小结在 Discord 追加一行百分比风险
 - [改进] Trade Desk 精简：新增「刷新价格」（按当前报价重算同一组合约，不再调用模型）；移除从未使用的计划监控界面（监控按钮、触发价输入、仓位页与模拟账本结果，API 保留）；手机上回答与候选卡片的内边距收窄，收益表完整显示
