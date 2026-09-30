@@ -39,7 +39,7 @@ export function TrackRecordCard() {
       </div>
       <p className="mt-1 text-xs text-secondary-text">{t('tradeDesk.trackRecordHint')}</p>
       {problem ? <p className="mt-2 text-xs text-danger">{problem}</p> : null}
-      {record && !groups.length ? <p className="mt-3 text-sm text-secondary-text">{t('tradeDesk.trackRecordEmpty')}</p> : null}
+      {record && !groups.length && !nxGroups.length && !verdictRows.length ? <p className="mt-3 text-sm text-secondary-text">{t('tradeDesk.trackRecordEmpty')}</p> : null}
       {groups.length ? (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[520px] text-sm">

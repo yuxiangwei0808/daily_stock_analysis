@@ -35,6 +35,7 @@ import type {
 import type { DecisionSignalItem } from '../types/decisionSignals';
 
 type TradeDeskView = 'opportunities' | 'holdings' | 'positions' | 'journal';
+const TRADE_DESK_VIEWS: TradeDeskView[] = ['opportunities', 'holdings', 'positions', 'journal'];
 const ARCHIVE_REASONS: Record<string, string> = { expired: 'options expired', stale: 'quotes stale', no_result: 'no result', old: 'over a week old' };
 
 type AdviceFormState = {
@@ -610,7 +611,8 @@ function QuestionList({ jobs, selectedId, heldTickers, busyId, onSelect, onCance
     index === 0 || Boolean(needle) || items.some((job) => job.id === selectedId));
   return (
     <div className="space-y-2">
-      {groups.length > 3 ? <input aria-label={t('tradeDesk.filterTickers')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('tradeDesk.filterTickers')} className="input-surface h-9 w-full rounded-lg border px-3 text-xs text-foreground" /> : null}
+      {groups.length > 3 || filter ? <input aria-label={t('tradeDesk.filterTickers')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('tradeDesk.filterTickers')} className="input-surface h-9 w-full rounded-lg border px-3 text-xs text-foreground" /> : null}
+      {needle && !shown.length ? <p className="px-1 py-3 text-center text-xs text-secondary-text">No ticker matches “{filter}”.</p> : null}
       {shown.map(([ticker, items], index) => {
         const open = isOpen(ticker, items, index);
         const latest = items[0];
@@ -645,7 +647,7 @@ function QuestionList({ jobs, selectedId, heldTickers, busyId, onSelect, onCance
                       </button>
                       {running
                         ? <Button size="xsm" variant="ghost" isLoading={busyId === job.id} onClick={() => onCancel(job)}><Pause className="h-3.5 w-3.5" />{t('tradeDesk.cancelJob')}</Button>
-                        : <Button size="xsm" variant="ghost" aria-label={`Delete ${ticker} request`} title="Delete" isLoading={busyId === job.id} onClick={() => onDelete(job)}><Trash2 className="h-3.5 w-3.5" /></Button>}
+                        : <Button size="xsm" variant="ghost" aria-label={`Delete ${ticker} request from ${shortDate(job.createdAt)}`} title="Delete" isLoading={busyId === job.id} onClick={() => onDelete(job)}><Trash2 className="h-3.5 w-3.5" /></Button>}
                     </div>
                   </li>
                 );
@@ -677,22 +679,29 @@ const TradeDeskPage: React.FC = () => {
   const focusedPlanId = useRef<string | null>(null);
   const sourceReportIdRaw = searchParams.get('sourceReportId');
   const sourceReportId = sourceReportIdRaw && /^\d+$/.test(sourceReportIdRaw) ? Number(sourceReportIdRaw) : undefined;
-  const [view, setView] = useState<TradeDeskView>(linkedPlanId ? 'positions' : ((searchParams.get('view') === 'ask' ? 'opportunities' : searchParams.get('view')) as TradeDeskView) || 'opportunities');
+  const [view, setView] = useState<TradeDeskView>(() => {
+    if (linkedPlanId) return 'positions';
+    const requested = searchParams.get('view');
+    if (requested === 'ask') return 'opportunities';
+    return TRADE_DESK_VIEWS.includes(requested as TradeDeskView) ? requested as TradeDeskView : 'opportunities';
+  });
   const [health, setHealth] = useState<TradeDeskHealth | null>(null);
   const [catalog, setCatalog] = useState<TradeDeskCatalogItem[]>([]);
   const [advice, setAdvice] = useState<TradeAdviceJob[]>([]);
   const [selectedAdviceId, setSelectedAdviceId] = useState<string | null>(linkedAdviceId);
   // Expired, stale, empty or week-old jobs: kept on the server, loaded only when the archive is opened.
   const [archive, setArchive] = useState<TradeAdviceJob[] | null>(null);
+  // Answers opened directly (a link, or a selection that left the Current list, e.g. just archived as stale).
+  const [pinned, setPinned] = useState<Record<string, TradeAdviceJob>>({});
+  const selectedRef = useRef<string | null>(linkedAdviceId);
+  const archiveLoadedRef = useRef(false);
   const [adviceScope, setAdviceScope] = useState<'active' | 'archive'>('active');
   const [adviceCounts, setAdviceCounts] = useState<{ active: number; archive: number } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ job: TradeAdviceJob } | { archive: number } | null>(null);
   // Broker holdings (read-only) for the "Use my position" hint; absent when no account is set.
   const [heldView, setHeldView] = useState<HoldingsView | null>(null);
-  useEffect(() => {
-    let active = true;
-    tradeDeskApi.getHoldings().then((result) => { if (active) setHeldView(result.view); }).catch(() => undefined);
-    return () => { active = false; };
+  const loadHoldings = useCallback(() => {
+    tradeDeskApi.getHoldings().then((result) => setHeldView(result.view)).catch(() => undefined);
   }, []);
   const [plans, setPlans] = useState<TradeDeskPlan[]>([]);
   const [positions, setPositions] = useState<TradePosition[]>([]);
@@ -745,29 +754,57 @@ const TradeDeskPage: React.FC = () => {
     if (rejected) setError(errorMessage(rejected.reason));
   }, []);
 
+  // react-router gives setSearchParams a new identity on every URL change; a ref keeps refreshData stable.
+  const setSearchParamsRef = useRef(setSearchParams);
+  useEffect(() => { setSearchParamsRef.current = setSearchParams; }, [setSearchParams]);
+  const dropLinkedAdvice = useCallback(() => {
+    setSearchParamsRef.current((current) => { const next = new URLSearchParams(current); next.delete('adviceId'); return next; }, { replace: true });
+  }, []);
+
   const refreshData = useCallback(async (showSpinner = true) => {
     if (showSpinner) { setIsLoading(true); setError(''); }
     const sequence = ++adviceListSequence.current;
-    const results = await Promise.allSettled([tradeDeskApi.getHealth(), tradeDeskApi.getCatalog(), tradeDeskApi.listAdvice()]);
+    const withArchive = archiveLoadedRef.current;
+    const results = await Promise.allSettled([tradeDeskApi.getHealth(), tradeDeskApi.getCatalog(), tradeDeskApi.listAdvice(),
+      withArchive ? tradeDeskApi.listAdvice('archive') : Promise.resolve(null)]);
     if (results[0].status === 'fulfilled') setHealth(results[0].value);
     if (results[1].status === 'fulfilled') setCatalog(results[1].value.items || []);
     if (results[2].status === 'fulfilled' && sequence === adviceListSequence.current) {
-      const items = [...(results[2].value.items || [])];
-      if (linkedAdviceId && !items.some((item) => item.id === linkedAdviceId)) {
-        try { items.unshift(await tradeDeskApi.getAdvice(linkedAdviceId)); }
-        catch (linkError) { setError(errorMessage(linkError)); }
+      const items = results[2].value.items || [];
+      const archived = results[3].status === 'fulfilled' && results[3].value ? results[3].value.items || [] : null;
+      const listed = new Set([...items, ...(archived || [])].map((item) => item.id));
+      // The linked answer and the one being read stay open even when they are in neither list.
+      const extra: Record<string, TradeAdviceJob> = {};
+      let linkedGone = false;
+      for (const id of new Set([linkedAdviceId, selectedRef.current].filter((value): value is string => Boolean(value)))) {
+        if (listed.has(id)) continue;
+        try { extra[id] = await tradeDeskApi.getAdvice(id); }
+        catch (linkError) {
+          if (id === linkedAdviceId) linkedGone = true;
+          const status = (linkError as { response?: { status?: number } })?.response?.status;
+          if (status !== 404) setError(errorMessage(linkError));
+        }
       }
-      setAdvice(items);
-      setAdviceCounts(results[2].value.counts ?? null);
-      setSelectedAdviceId((current) => current && items.some((item) => item.id === current) ? current : linkedAdviceId || items[0]?.id || null);
+      if (sequence === adviceListSequence.current) {  // a delete, cancel or newer list wins
+        setAdvice(items);
+        if (archived) setArchive(archived);
+        setPinned(extra);
+        setAdviceCounts(results[2].value.counts ?? null);
+        const available = new Set([...listed, ...Object.keys(extra)]);
+        setSelectedAdviceId((current) => current && available.has(current) ? current
+          : (linkedAdviceId && available.has(linkedAdviceId) ? linkedAdviceId : items[0]?.id || null));
+        if (linkedGone) dropLinkedAdvice();
+      }
     }
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (rejected) setError(errorMessage(rejected.reason));
     await refreshLedger(showSpinner);
     if (showSpinner) setIsLoading(false);
-  }, [refreshLedger, linkedAdviceId]);
+  }, [refreshLedger, linkedAdviceId, dropLinkedAdvice]);
 
   useEffect(() => { void refreshData(); }, [refreshData]);
+  // Holdings behind "You hold …", the held badges and ticker suggestions: fresh whenever the ask tab opens.
+  useEffect(() => { if (view === 'opportunities') loadHoldings(); }, [view, loadHoldings]);
   useEffect(() => { setSearchParams((current) => { const next = new URLSearchParams(current); next.set('view', view); return next; }, { replace: true }); }, [setSearchParams, view]);
 
   useEffect(() => {
@@ -827,7 +864,10 @@ const TradeDeskPage: React.FC = () => {
     return () => window.clearInterval(interval);
   }, [view]);
 
-  const selectedAdvice = useMemo(() => advice.find((item) => item.id === selectedAdviceId) || archive?.find((item) => item.id === selectedAdviceId) || null, [advice, archive, selectedAdviceId]);
+  const selectedAdvice = useMemo(() => advice.find((item) => item.id === selectedAdviceId)
+    || archive?.find((item) => item.id === selectedAdviceId) || (selectedAdviceId ? pinned[selectedAdviceId] : undefined) || null,
+  [advice, archive, pinned, selectedAdviceId]);
+  useEffect(() => { selectedRef.current = selectedAdviceId; setFollowUpForm(''); }, [selectedAdviceId]);
   const heldNote = heldSummary(heldView, form.ticker);
   // The newest active report verdict for the typed ticker (US), shown in the ask panel.
   const [reportVerdict, setReportVerdict] = useState<{ ticker: string; item: DecisionSignalItem | null } | null>(null);
@@ -851,6 +891,7 @@ const TradeDeskPage: React.FC = () => {
   const askPanelOpen = askOpen ?? (Boolean(deepLinkTicker) || advice.length === 0);
   // From a held position: open the ask panel on that ticker with your position attached.
   const askAbout = (ticker: string) => {
+    loadHoldings();
     setForm((current) => ({ ...current, ticker, dataMode: 'live', useHoldings: true }));
     setAskOpen(true);
     setView('opportunities');
@@ -865,7 +906,14 @@ const TradeDeskPage: React.FC = () => {
   const showScope = async (scope: 'active' | 'archive') => {
     setAdviceScope(scope);
     if (scope !== 'archive') return;
-    try { const result = await tradeDeskApi.listAdvice('archive'); setArchive(result.items || []); if (result.counts) setAdviceCounts(result.counts); } catch (archiveError) { setError(errorMessage(archiveError)); }
+    archiveLoadedRef.current = true;  // later refreshes keep the archive current too
+    const sequence = ++adviceListSequence.current;
+    try {
+      const result = await tradeDeskApi.listAdvice('archive');
+      if (sequence !== adviceListSequence.current) return;
+      setArchive(result.items || []);
+      if (result.counts) setAdviceCounts(result.counts);
+    } catch (archiveError) { setError(errorMessage(archiveError)); }
   };
   const intradayCandidates = selectedAdvice?.candidates.filter((candidate) => candidate.horizon === 'intraday') || [];
   const swingCandidates = selectedAdvice?.candidates.filter((candidate) => candidate.horizon === 'swing') || [];
@@ -899,11 +947,14 @@ const TradeDeskPage: React.FC = () => {
 
   const cancelAdvice = async (job: TradeAdviceJob) => {
     setBusyAdviceId(job.id); setError('');
-    try { const updated = await tradeDeskApi.cancelAdvice(job.id); setAdvice((items) => items.map((item) => item.id === job.id ? updated : item)); } catch (cancelError) { setError(errorMessage(cancelError)); } finally { setBusyAdviceId(null); }
+    try { const updated = await tradeDeskApi.cancelAdvice(job.id); adviceListSequence.current += 1; setAdvice((items) => items.map((item) => item.id === job.id ? updated : item)); } catch (cancelError) { setError(errorMessage(cancelError)); } finally { setBusyAdviceId(null); }
   };
 
   const removeAdvice = (ids: string[]) => {
     const gone = new Set(ids);
+    adviceListSequence.current += 1;  // a list request already in flight must not bring these back
+    setPinned((items) => Object.fromEntries(Object.entries(items).filter(([id]) => !gone.has(id))));
+    if (linkedAdviceId && gone.has(linkedAdviceId)) dropLinkedAdvice();
     const activeGone = advice.filter((item) => gone.has(item.id)).length;
     const archiveGone = ids.length - activeGone;
     setAdvice((items) => items.filter((item) => !gone.has(item.id)));
@@ -1009,6 +1060,17 @@ const TradeDeskPage: React.FC = () => {
   };
 
   const setActiveView = (nextView: TradeDeskView) => { setView(nextView); };
+  // Arrow keys, Home and End move between tabs (WAI-ARIA tabs pattern).
+  const onTabKey = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const index = TRADE_DESK_VIEWS.indexOf(view);
+    const next = event.key === 'ArrowRight' ? (index + 1) % TRADE_DESK_VIEWS.length
+      : event.key === 'ArrowLeft' ? (index - 1 + TRADE_DESK_VIEWS.length) % TRADE_DESK_VIEWS.length
+        : event.key === 'Home' ? 0 : event.key === 'End' ? TRADE_DESK_VIEWS.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    setActiveView(TRADE_DESK_VIEWS[next]);
+    document.getElementById(`trade-desk-tab-${TRADE_DESK_VIEWS[next]}`)?.focus();
+  };
   const listedAdvice = adviceScope === 'archive' ? archive || [] : advice;
   const renderQuestions = () => <Card variant="bordered" padding="sm" className="lg:sticky lg:top-4">
     <div className="mb-2 flex items-center justify-between gap-2 px-1">
@@ -1017,7 +1079,7 @@ const TradeDeskPage: React.FC = () => {
     </div>
     {adviceScope === 'archive' ? <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1"><p className="text-xs text-secondary-text">Expired, stale, empty or week-old questions, kept until you delete them.</p>{archive?.length ? <Button size="xsm" variant="ghost" onClick={() => setPendingDelete({ archive: adviceCounts?.archive ?? archive.length })}><Trash2 className="h-3.5 w-3.5" />Delete all archived</Button> : null}</div> : null}
     {listedAdvice.length
-      ? <QuestionList jobs={listedAdvice} selectedId={selectedAdviceId} heldTickers={heldTickers} busyId={busyAdviceId} onSelect={selectQuestion} onCancel={(job) => void cancelAdvice(job)} onDelete={(job) => setPendingDelete({ job })} />
+      ? <QuestionList key={adviceScope} jobs={listedAdvice} selectedId={selectedAdviceId} heldTickers={heldTickers} busyId={busyAdviceId} onSelect={selectQuestion} onCancel={(job) => void cancelAdvice(job)} onDelete={(job) => setPendingDelete({ job })} />
       : <p className="px-1 py-6 text-center text-xs text-secondary-text">{adviceScope === 'archive' ? 'Nothing archived.' : 'No questions yet. Ask about a stock above.'}</p>}
   </Card>;
   const candidateList = (items: StrategyCandidate[], job: TradeAdviceJob) => <div className="space-y-4">{items.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={job} onMonitor={monitorCandidate} monitoring={busyPlanId === candidate.id || plans.some((plan) => plan.adviceId === job.id && (plan.candidateId === candidate.id || plan.candidate.id === candidate.id))} />)}</div>;
@@ -1049,7 +1111,7 @@ const TradeDeskPage: React.FC = () => {
         {job.status === 'completed' && job.candidates.length === 0 && !job.explanation ? <EmptyState title={t('tradeDesk.noCandidates')} description={t('tradeDesk.description')} /> : null}
       </div>
       {!running ? <div className="mt-5 border-t border-border/50 pt-4">
-        <textarea aria-label={t('tradeDesk.followUp')} value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && followUpForm.trim()) void followUp(job); }} rows={2} placeholder={t('tradeDesk.followUpPlaceholder')} className="input-surface w-full rounded-xl border px-3 py-2 text-sm text-foreground" />
+        <textarea aria-label={t('tradeDesk.followUp')} value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && followUpForm.trim() && !isSubmitting) void followUp(job); }} rows={2} placeholder={t('tradeDesk.followUpPlaceholder')} className="input-surface w-full rounded-xl border px-3 py-2 text-sm text-foreground" />
         <div className="mt-2 flex justify-end"><Button size="sm" variant="outline" disabled={!followUpForm.trim()} isLoading={isSubmitting} onClick={() => void followUp(job)}><Sparkles className="h-4 w-4" />{t('tradeDesk.followUp')}</Button></div>
       </div> : null}
     </div></Card>;
@@ -1073,11 +1135,11 @@ const TradeDeskPage: React.FC = () => {
     const adviceId = event.adviceId || (typeof payload.adviceId === 'string' ? payload.adviceId : undefined);
     return adviceId ? advice.find((item) => item.id === adviceId)?.request.dataMode : undefined;
   };
-  const renderJournal = () => <div className="space-y-5"><TrackRecordCard /><div className="grid gap-4 md:grid-cols-2"><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><BookOpen className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.outcomes')}</h2></div><div className="mt-4 grid gap-4 sm:grid-cols-2">{(['paper', 'paperReplay', 'manualLive'] as const).map((ledger) => { const bucket = outcomes?.[ledger]; return <div key={ledger} className="rounded-xl bg-elevated/50 p-3"><div className="flex items-center justify-between gap-2"><span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">{ledger === 'manualLive' ? t('tradeDesk.manualLive') : t('tradeDesk.paper')}{ledger === 'paperReplay' ? <ModeBadge mode="replay" /> : null}</span><Badge variant={ledger === 'paper' ? 'info' : 'warning'}>{bucket?.closedTrades ?? 0}</Badge></div><p className="mt-2 text-sm text-secondary-text">{t('tradeDesk.realizedPnl')}: <strong className="text-foreground">{formatMoney(bucket?.realizedPnl)}</strong></p><p className="mt-1 text-xs text-secondary-text">{t('tradeDesk.winRate')}: {formatPercent(bucket?.winRate)}</p>{typeof bucket?.note === 'string' ? <p className="mt-1 text-xs text-muted-text">{bucket.note}</p> : null}</div>; })}</div></Card><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><Settings2 className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.preferences')}</h2></div><div className="mt-4 space-y-3 text-sm"><label className="flex items-center justify-between gap-3"><span>{t('tradeDesk.discord')}</span><input type="checkbox" checked={preferences.discordEnabled} onChange={(event) => setPreferences((current) => ({ ...current, discordEnabled: event.target.checked }))} /></label><div className="flex flex-wrap items-center justify-between gap-2"><Button size="sm" onClick={() => void savePreferences()}>{t('tradeDesk.savePreferences')}</Button><Link className="text-xs text-cyan hover:underline" to="/settings">{t('tradeDesk.discordSettings')}</Link></div></div></Card></div>{journal.length ? <Card variant="bordered" padding="md"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.journal')}</h2><div className="mt-3 divide-y divide-border/40">{journal.map((event) => <div key={String(event.id)} className="grid gap-2 py-3 text-sm md:grid-cols-[150px_1fr_180px]"><div className="flex flex-wrap items-start gap-2 font-medium text-foreground">{event.eventType}{journalMode(event) ? <ModeBadge mode={journalMode(event) as TradeDeskDataMode} /> : null}</div><div className="text-secondary-text">{Object.entries(event.payload || {}).map(([key, value]) => <span key={key} className="mr-3 inline-block"><span className="text-muted-text">{key}</span>: {textValue(value)}</span>)}</div><div className="text-xs text-muted-text">{formatDate(event.createdAt)}</div></div>)}</div></Card> : <EmptyState icon={<BookOpen className="h-8 w-8" />} title={t('tradeDesk.noJournal')} description={t('tradeDesk.description')} />}</div>;
+  const renderJournal = () => <div className="space-y-5"><TrackRecordCard /><div className="grid gap-4 md:grid-cols-2"><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><BookOpen className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.outcomes')}</h2></div><div className="mt-4 grid gap-4 sm:grid-cols-2">{(['paper', 'paperReplay', 'manualLive'] as const).map((ledger) => { const bucket = outcomes?.[ledger]; return <div key={ledger} className="rounded-xl bg-elevated/50 p-3"><div className="flex items-center justify-between gap-2"><span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">{ledger === 'manualLive' ? t('tradeDesk.manualLive') : t('tradeDesk.paper')}{ledger === 'paperReplay' ? <ModeBadge mode="replay" /> : null}</span><Badge variant={ledger === 'paper' ? 'info' : 'warning'}>{bucket?.closedTrades ?? 0}</Badge></div><p className="mt-2 text-sm text-secondary-text">{t('tradeDesk.realizedPnl')}: <strong className="text-foreground">{formatMoney(bucket?.realizedPnl)}</strong></p><p className="mt-1 text-xs text-secondary-text">{t('tradeDesk.winRate')}: {formatPercent(bucket?.winRate)}</p>{typeof bucket?.note === 'string' ? <p className="mt-1 text-xs text-muted-text">{bucket.note}</p> : null}</div>; })}</div></Card><Card variant="bordered" padding="md"><div className="flex items-center gap-2"><Settings2 className="h-5 w-5 text-cyan" /><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.preferences')}</h2></div><div className="mt-4 space-y-3 text-sm"><label className="flex items-center justify-between gap-3"><span>{t('tradeDesk.discord')}</span><input type="checkbox" checked={preferences.discordEnabled} onChange={(event) => setPreferences((current) => ({ ...current, discordEnabled: event.target.checked }))} /></label><div className="flex flex-wrap items-center justify-between gap-2"><Button size="sm" onClick={() => void savePreferences()}>{t('tradeDesk.savePreferences')}</Button><Link className="text-xs text-cyan hover:underline" to="/settings">{t('tradeDesk.discordSettings')}</Link></div></div></Card></div>{journal.length ? <Card variant="bordered" padding="md"><h2 className="text-lg font-semibold text-foreground">{t('tradeDesk.journal')}</h2><div className="mt-3 divide-y divide-border/40">{journal.map((event) => <div key={String(event.id)} className="grid min-w-0 gap-2 py-3 text-sm md:grid-cols-[150px_minmax(0,1fr)_180px]"><div className="flex min-w-0 flex-wrap items-start gap-2 font-medium text-foreground [overflow-wrap:anywhere]">{event.eventType}{journalMode(event) ? <ModeBadge mode={journalMode(event) as TradeDeskDataMode} /> : null}</div><div className="min-w-0 text-secondary-text [overflow-wrap:anywhere]">{Object.entries(event.payload || {}).map(([key, value]) => <span key={key} className="mr-3 inline-block max-w-full"><span className="text-muted-text">{key}</span>: {textValue(value)}</span>)}</div><div className="text-xs text-muted-text">{formatDate(event.createdAt)}</div></div>)}</div></Card> : <EmptyState icon={<BookOpen className="h-8 w-8" />} title={t('tradeDesk.noJournal')} description={t('tradeDesk.description')} />}</div>;
 
   if (isLoading && !health) return <AppPage><Loading label={t('common.loading')} /></AppPage>;
   if (health && !health.enabled) return <AppPage><InlineAlert variant="warning" title={t('tradeDesk.unavailable')} message="Trade Desk is disabled by the server configuration." /></AppPage>;
-  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<ConfirmDialog isOpen={pendingDelete !== null} isDanger title={pendingDelete && 'job' in pendingDelete ? `Delete the ${pendingDelete.job.request.ticker} request?` : 'Delete all archived requests?'} message={pendingDelete && 'job' in pendingDelete ? 'The request and its answer are removed permanently. The journal keeps its log entries.' : `${pendingDelete && 'archive' in pendingDelete ? pendingDelete.archive : 0} archived requests are removed permanently. Requests linked to a monitored plan are kept.`} confirmText="Delete" onConfirm={() => void confirmDelete()} onCancel={() => setPendingDelete(null)} /><div className="mt-5">{view === 'opportunities' ? renderOpportunities() : view === 'holdings' ? <HoldingsPanel onAsk={askAbout} /> : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
+  return <AppPage><PageHeader eyebrow={t('tradeDesk.eyebrow')} title={t('tradeDesk.title')} description={t('tradeDesk.description')} actions={<><Button size="sm" variant="ghost" onClick={() => void refreshData()}><RefreshCw className="h-4 w-4" />{t('tradeDesk.refresh')}</Button><Link to="/settings" className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-secondary-text hover:text-foreground"><Settings2 className="h-4 w-4" />Settings</Link></>} /><div className="mt-4 flex flex-wrap gap-2 rounded-2xl border border-border/50 bg-card/50 p-2" role="tablist" aria-label={t('tradeDesk.title')}>{([['opportunities', t('tradeDesk.ask')], ['holdings', t('tradeDesk.holdingsTab')], ['positions', t('tradeDesk.positions')], ['journal', t('tradeDesk.journal')]] as const).map(([key, label]) => <button key={key} id={`trade-desk-tab-${key}`} type="button" role="tab" aria-selected={view === key} aria-controls="trade-desk-panel" tabIndex={view === key ? 0 : -1} onKeyDown={onTabKey} onClick={() => setActiveView(key)} className={`rounded-xl px-4 py-2 text-sm transition ${view === key ? 'bg-cyan/10 text-cyan' : 'text-secondary-text hover:text-foreground'}`}>{label}</button>)}</div>{error ? <InlineAlert className="mt-4" variant="danger" title={t('common.failure')} message={error} action={<Button size="sm" variant="ghost" onClick={() => setError('')}>{t('common.close')}</Button>} /> : null}{message ? <InlineAlert className="mt-4" variant="success" message={message} /> : null}<ConfirmDialog isOpen={pendingDelete !== null} isDanger title={pendingDelete && 'job' in pendingDelete ? `Delete the ${pendingDelete.job.request.ticker} request?` : 'Delete all archived requests?'} message={pendingDelete && 'job' in pendingDelete ? 'The request and its answer are removed permanently. The journal keeps its log entries.' : `${pendingDelete && 'archive' in pendingDelete ? pendingDelete.archive : 0} archived requests are removed permanently. Requests linked to a monitored plan are kept.`} confirmText="Delete" onConfirm={() => void confirmDelete()} onCancel={() => setPendingDelete(null)} /><div className="mt-5" id="trade-desk-panel" role="tabpanel" aria-labelledby={`trade-desk-tab-${view}`}>{view === 'opportunities' ? renderOpportunities() : view === 'holdings' ? <HoldingsPanel onAsk={askAbout} /> : view === 'positions' ? renderPositions() : renderJournal()}</div></AppPage>;
 };
 
 export default TradeDeskPage;

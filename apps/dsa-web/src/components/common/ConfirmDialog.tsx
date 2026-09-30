@@ -1,4 +1,5 @@
 import type React from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
@@ -32,6 +33,37 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   onCancel,
 }) => {
   const { t } = useUiLanguage();
+  const titleId = useId();
+  const messageId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  // Pages pass a new onCancel each render; the key handler reads the latest one without re-focusing.
+  const onCancelRef = useRef(onCancel);
+  useEffect(() => { onCancelRef.current = onCancel; }, [onCancel]);
+
+  // Dialog keyboard contract: focus starts on Cancel, Escape cancels, Tab stays inside, focus returns on close.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const previous = document.activeElement as HTMLElement | null;
+    (cancelDisabled ? confirmRef.current : cancelRef.current)?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !cancelDisabled) {
+        event.preventDefault();
+        onCancelRef.current();
+      } else if (event.key === 'Tab') {
+        const buttons = [cancelRef.current, confirmRef.current].filter((item): item is HTMLButtonElement => Boolean(item && !item.disabled));
+        if (!buttons.length) return;
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        event.preventDefault();
+        buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      previous?.focus?.();
+    };
+  }, [isOpen, cancelDisabled]);
 
   if (!isOpen) return null;
 
@@ -45,15 +77,20 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
         className="mx-4 w-full max-w-sm rounded-xl border border-border/70 bg-elevated p-6 shadow-2xl animate-in fade-in zoom-in duration-200"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
-        <p className="text-sm text-secondary-text mb-6 leading-relaxed">
+        <h3 id={titleId} className="mb-2 text-lg font-medium text-foreground">{title}</h3>
+        <p id={messageId} className="text-sm text-secondary-text mb-6 leading-relaxed">
           {message}
         </p>
         <div className="flex justify-end gap-3">
           <button
+            ref={cancelRef}
             type="button"
             onClick={onCancel}
             disabled={cancelDisabled}
@@ -62,6 +99,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             {cancelText ?? t('common.cancel')}
           </button>
           <button
+            ref={confirmRef}
             type="button"
             onClick={onConfirm}
             disabled={confirmDisabled}

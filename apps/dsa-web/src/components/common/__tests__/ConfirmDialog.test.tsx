@@ -51,3 +51,26 @@ describe('ConfirmDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ConfirmDialog keyboard and screen-reader contract', () => {
+  it('is a labelled modal dialog that starts on Cancel, keeps Tab inside and closes on Escape', () => {
+    const onCancel = vi.fn();
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const { rerender } = render(<ConfirmDialog isOpen title="Delete it?" message="Gone for good." confirmText="Delete" cancelText="Cancel" onConfirm={() => undefined} onCancel={onCancel} />);
+    const dialog = screen.getByRole('dialog', { name: 'Delete it?' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleDescription('Gone for good.');
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    rerender(<ConfirmDialog isOpen={false} title="Delete it?" message="Gone for good." onConfirm={() => undefined} onCancel={onCancel} />);
+    expect(opener).toHaveFocus();
+    opener.remove();
+  });
+});

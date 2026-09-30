@@ -225,7 +225,7 @@ describe('TradeDeskPage', () => {
     api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Delete me' }], counts: { active: 1, archive: 0 } });
     api.deleteAdvice.mockResolvedValue({ deleted: [queuedJob.id] });
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: `Delete ${queuedJob.request.ticker} request` }));
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(`Delete ${queuedJob.request.ticker} request`) }));
     expect(api.deleteAdvice).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(api.deleteAdvice).toHaveBeenCalledWith(queuedJob.id));
@@ -339,6 +339,39 @@ describe('TradeDeskPage', () => {
     expect(panel).toHaveTextContent('as of 2026-09-29');
     expect(panel).toHaveTextContent('Price 33.26: below the fast tunnel (40.01–43.04)');
     expect(panel).toHaveTextContent('no tested edge');
+  });
+
+  it('keeps the answer you are reading when it leaves the current list', async () => {
+    const reading = { ...queuedJob, id: 'reading', status: 'completed', explanation: 'The answer I am reading' };
+    api.listAdvice.mockResolvedValueOnce({ items: [reading], counts: { active: 1, archive: 0 } })
+      .mockResolvedValue({ items: [], counts: { active: 0, archive: 1 } });  // it went stale and was archived
+    api.getAdvice.mockResolvedValue({ ...reading, status: 'stale' });
+    renderPage();
+    expect((await screen.findAllByText('The answer I am reading')).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole('button', { name: /^(Refresh|刷新)$/ })[0]);
+    await waitFor(() => expect(api.getAdvice).toHaveBeenCalledWith('reading'));
+    expect((await screen.findAllByText('The answer I am reading')).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Current (0)' })).toBeInTheDocument();  // not pushed into Current
+  });
+
+  it('drops a deleted linked answer without an error banner', async () => {
+    api.getAdvice.mockRejectedValue(Object.assign(new Error('Advice not found'), { response: { status: 404 } }));
+    renderPage('/trade-desk?adviceId=gone');
+    await waitFor(() => expect(api.getAdvice).toHaveBeenCalledWith('gone'));
+    expect(screen.queryByText('Advice not found')).not.toBeInTheDocument();
+  });
+
+  it('moves between tabs with the arrow keys and ignores unknown views', async () => {
+    renderPage('/trade-desk?view=foo');
+    const ask = await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ });
+    expect(ask).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'trade-desk-tab-opportunities');
+    fireEvent.keyDown(ask, { key: 'ArrowRight' });
+    const holdings = screen.getByRole('tab', { name: /Broker holdings|券商持仓|Holdings/ });
+    expect(holdings).toHaveAttribute('aria-selected', 'true');
+    expect(holdings).toHaveFocus();
+    fireEvent.keyDown(holdings, { key: 'End' });
+    expect(screen.getByRole('tab', { name: /^(Journal|日志)$/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('opens the merged ask tab for old ?view=ask links', async () => {

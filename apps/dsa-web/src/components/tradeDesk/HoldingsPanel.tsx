@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, BellOff, Pause, Play, Plus, RefreshCw, Sparkles, Trash2, Wallet, X } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { Badge, Button, Card, EmptyState, InlineAlert, Loading } from '../common';
@@ -230,8 +230,9 @@ function RuleList({ rules, onChanged, withTarget = false }: { rules: HoldingRule
   );
 }
 
-function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel, onAsk }: {
-  position: HoldingOption; rules: HoldingRule[]; adding: boolean; onAdd: () => void; onChanged: (warning?: string) => void; onCancel: () => void;
+function OptionCard({ position, rules, adding, onAdd, onChanged, onSaved, onCancel, onAsk }: {
+  position: HoldingOption; rules: HoldingRule[]; adding: boolean; onAdd: () => void; onChanged: () => void;
+  onSaved: (warning?: string) => void; onCancel: () => void;
   onAsk?: (ticker: string) => void;
 }) {
   const { t } = useUiLanguage();
@@ -275,15 +276,15 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onCancel, onAsk
       </table>
       <RuleList rules={rules} onChanged={onChanged} />
       {adding
-        ? <RuleForm target={{ positionKey: position.key, ticker: position.underlying, isOption: true, label: `${position.underlying} ${expiry} ${position.label}` }} onSaved={onChanged} onCancel={onCancel} />
+        ? <RuleForm target={{ positionKey: position.key, ticker: position.underlying, isOption: true, label: `${position.underlying} ${expiry} ${position.label}` }} onSaved={onSaved} onCancel={onCancel} />
         : <Button className="mt-3" size="sm" variant="ghost" onClick={onAdd}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>}
     </Card>
   );
 }
 
-function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel, onAsk }: {
+function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onSaved, onCancel, onAsk }: {
   stocks: HoldingStock[]; rulesFor: (key: string) => HoldingRule[]; adding: string | null;
-  onAdd: (key: string) => void; onChanged: (warning?: string) => void; onCancel: () => void;
+  onAdd: (key: string) => void; onChanged: () => void; onSaved: (warning?: string) => void; onCancel: () => void;
   onAsk?: (ticker: string) => void;
 }) {
   const { t } = useUiLanguage();
@@ -310,7 +311,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel, onAsk
             </dl>
             <RuleList rules={rules} onChanged={onChanged} />
             {adding === stock.key
-              ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onChanged} onCancel={onCancel} />
+              ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onSaved} onCancel={onCancel} />
               : <div className="mt-2 flex gap-1"><Button size="sm" variant="ghost" onClick={() => onAdd(stock.key)}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>{onAsk ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.ticker)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}</div>}
           </li>
         );
@@ -341,7 +342,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onCancel, onAsk
                   {onAsk ? <Button className="ml-1" size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.ticker)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
                   <RuleList rules={rules} onChanged={onChanged} />
                   {adding === stock.key
-                    ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onChanged} onCancel={onCancel} />
+                    ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onSaved} onCancel={onCancel} />
                     : null}
                 </td>
                 <td className="py-2 text-right">{stock.qty}</td>
@@ -372,12 +373,16 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
   const [refreshing, setRefreshing] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
 
+  const requestId = useRef(0);
   const load = useCallback(async () => {
+    const id = ++requestId.current;
     try {
-      setData(await tradeDeskApi.getHoldings());
+      const result = await tradeDeskApi.getHoldings();
+      if (id !== requestId.current) return;
+      setData(result);
       setProblem('');
     } catch (error) {
-      setProblem(errorText(error));
+      if (id === requestId.current) setProblem(errorText(error));
     }
   }, []);
 
@@ -389,8 +394,11 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
 
   const refresh = async () => {
     setRefreshing(true);
+    const id = ++requestId.current;
     try {
-      setData(await tradeDeskApi.refreshHoldings());
+      const result = await tradeDeskApi.refreshHoldings();
+      if (id !== requestId.current) return;
+      setData(result);
       setProblem('');
     } catch (error) {
       setProblem(errorText(error));
@@ -400,7 +408,9 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
   };
 
   const [notice, setNotice] = useState('');
-  const changed = (warning?: string) => { setAdding(null); setNotice(warning ?? ''); void load(); };
+  // Saving an alert closes its form; pausing or deleting another rule leaves any open form alone.
+  const saved = (warning?: string) => { setAdding(null); setNotice(warning ?? ''); void load(); };
+  const changed = () => { void load(); };
   const rules = data?.rules ?? [];
   const view = data?.view;
   const heldKeys = new Set([...(view?.stocks ?? []).map((row) => row.key), ...(view?.options ?? []).map((row) => row.key)]);
@@ -438,7 +448,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
           <div className="grid gap-4 xl:grid-cols-2">
             {view.options.map((position) => (
               <OptionCard key={position.key} position={position} rules={rulesFor(position.key)} adding={adding === position.key}
-                onAdd={() => setAdding(position.key)} onChanged={changed} onCancel={() => setAdding(null)} onAsk={onAsk} />
+                onAdd={() => setAdding(position.key)} onChanged={changed} onSaved={saved} onCancel={() => setAdding(null)} onAsk={onAsk} />
             ))}
           </div>
         ) : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noOptions')}</p>}
@@ -446,7 +456,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
       <Card variant="bordered" padding="md">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.stocks')}</h2>
         {view?.stocks.length
-          ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onCancel={() => setAdding(null)} onAsk={onAsk} />
+          ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onSaved={saved} onCancel={() => setAdding(null)} onAsk={onAsk} />
           : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noStocks')}</p>}
       </Card>
       </> : null}
@@ -455,7 +465,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
           <h2 className="text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.otherAlerts')}</h2>
           {adding === '__ticker__' ? null : <Button size="sm" variant="ghost" onClick={() => setAdding('__ticker__')}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.tickerAlert')}</Button>}
         </div>
-        {adding === '__ticker__' ? <TickerRuleForm onSaved={changed} onCancel={() => setAdding(null)} /> : null}
+        {adding === '__ticker__' ? <TickerRuleForm onSaved={saved} onCancel={() => setAdding(null)} /> : null}
         {otherRules.length ? <RuleList rules={otherRules} onChanged={changed} withTarget /> : <p className="mt-2 text-xs text-muted-text"><BellOff className="mr-1 inline h-3 w-3" />{t('tradeDesk.holdings.noOtherAlerts')}</p>}
         <p className="mt-4 text-xs text-muted-text">{t('tradeDesk.holdings.defaults')}</p>
       </Card>
