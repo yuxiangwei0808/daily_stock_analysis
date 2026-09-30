@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 在 Discord 用 `/ask` 向 Trade Desk 提问：自建 Bot（`DISCORD_BOT_TOKEN`）并用 `TRADE_DESK_DISCORD_ASK_USERS` 限定提问人，Bot 主动连接 Discord（无需公网地址），回答完成后贴出结论、摘要与链接；不使用持仓信息
 - [新功能] 个人交易日志（「日志」页「Your trades」）：只读读取 moomoo 近一年成交，按先进先出配对成往返交易，统计已实现盈亏、胜率、持有时间，按类型、持有期、是否与系统信号一致分组，并列出最佳/最差交易；仅在网页显示，不发送到 Discord
 - [改进] YouTube 扫描更稳：yt-dlp 使用 venv 中的 deno 解析播放器（需 `pip install deno yt-dlp-ejs`）；字幕下载间隔 10 秒、每轮最多 25 个，避免触发限流
 - [新功能] 「哪些有效」计分板：跟踪记录顶部并列展示所有来源（按信心的交易机会、被否决的候选、突破提醒、NX 一致与否、报告看多/看空、社交热议、各 YouTube 频道）相对 SPY 的平均表现；满 30 条已结束记录且逐月结果一致时才给出“跑赢/跑输”结论，周度 Discord 小结同步显示

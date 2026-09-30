@@ -764,6 +764,8 @@ class TradeDeskService:
     def stop(self):
         if self.worker:
             self.worker.stop()
+        if getattr(self, "discord_ask", None) is not None:
+            self.discord_ask.stop()
         with self._lock:
             for cancel, _ in self._jobs.values():
                 cancel.set()

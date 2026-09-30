@@ -299,9 +299,11 @@ async def app_lifespan(app: FastAPI):
 
     trade_desk_service = TradeDeskService()
     app.state.trade_desk_service = trade_desk_service
-    trade_desk_service.scheduler_status = runtime_scheduler_service.status  # for the Status page
+    trade_desk_service.scheduler_status = getattr(runtime_scheduler_service, "status", None)  # for the Status page
     trade_desk_service.worker = TradeDeskWorker(trade_desk_service)
     trade_desk_service.worker.start()
+    from src.services.trade_desk import discord_ask
+    trade_desk_service.discord_ask = discord_ask.start(trade_desk_service)  # /ask on your Discord bot, when configured
     try:
         yield
     finally:

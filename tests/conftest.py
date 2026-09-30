@@ -311,3 +311,4 @@ def _social_scans_off(monkeypatch):
     """The social scan and YouTube picks read the web; a local .env turning them on must not reach tests."""
     monkeypatch.delenv("SOCIAL_SCAN_ENABLED", raising=False)
     monkeypatch.delenv("YOUTUBE_CHANNELS", raising=False)
+    monkeypatch.delenv("TRADE_DESK_DISCORD_ASK_USERS", raising=False)  # no Discord /ask bot in tests

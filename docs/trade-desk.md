@@ -263,6 +263,25 @@ at the open, so they are sent together once the oldest has waited 15 minutes, as
 moves & news" message; alerts on names you hold, or when holdings are unknown, still go out
 at once. The scheduled stock reports are not Trade Desk messages and keep the main channel.
 
+## Asking from Discord (/ask)
+
+With your own Discord bot you can ask Trade Desk from your phone: `/ask ticker:NVDA
+question:covered call for next week?` (`trade_desk/discord_ask.py`). The bot connects out to
+Discord, so the server needs no public URL. Setup:
+
+1. In the Discord Developer Portal create an application, add a bot, copy its token into
+   `DISCORD_BOT_TOKEN`, and invite it to your server with the `bot` and `applications.commands`
+   scopes (no privileged intents are needed).
+2. Set `TRADE_DESK_DISCORD_ASK_USERS` to your Discord user id (Settings → Advanced → Developer
+   Mode, then right-click your name → Copy User ID); several ids are comma-separated. Each
+   question costs a model call, so nobody else can ask.
+3. Restart the server; the command appears in your server within a minute.
+
+The bot replies "Asked Trade Desk about NVDA…" at once and posts the verdict, a shortened
+explanation and a link (`TRADE_DESK_PUBLIC_URL`) when the answer is ready (up to 15 minutes).
+Questions from Discord run as live questions without your broker position, so the reply never
+carries holdings. They appear under Your questions on the page like any other.
+
 ## Market pulse (market-hours watch)
 
 With `MARKET_PULSE_ENABLED=true`, the Trade Desk worker (leader only, regular
