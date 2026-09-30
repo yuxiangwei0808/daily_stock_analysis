@@ -303,8 +303,8 @@ class TradeDeskService:
         return match.model_copy(update={name: getattr(candidate, name) for name in _NARRATIVE_FIELDS}), current
 
     def _history(self, job):
-        related = [item for item in reversed(self.repo.advice_list())
-                   if item["conversation_id"] == job["conversation_id"] and item["id"] != job["id"]]
+        related = [item for item in reversed(self.repo.conversation_advice(job["conversation_id"], limit=5))
+                   if item["id"] != job["id"]]
         history = []
         for item in related[-4:]:
             history.extend([{"role": "user", "content": item["request"].get("message") or
@@ -345,6 +345,9 @@ class TradeDeskService:
                     "Your held position could not be priced." if request.plan_source == "position"
                     else "Your plan could not be priced.")
             changes = {"plan_error": plan_error, "position": position, "nx_tunnel": nx,
+                       # The request as run (position shares, strategies, plan legs filled in): re-pricing
+                       # and plans fall back to it, never to the bare request as typed.
+                       "run_request": request.model_dump(mode="json"),
                        "position_inputs": {"existing_shares": request.existing_shares,
                                            "plan_from_position": request.plan_source == "position"} if position else None,
                        "candidates": [c.model_dump(mode="json") for c in candidates],
@@ -456,7 +459,8 @@ class TradeDeskService:
                         refreshed.append(item)
                         continue
                     effective = TradeAdviceRequest.model_validate(
-                        (changes.get("effective_requests") or {}).get(item["id"], job["request"]))
+                        (changes.get("effective_requests") or {}).get(item["id"])
+                        or changes.get("run_request") or job["request"])
                     try:
                         # Unselected candidates carry no model reasoning about their
                         # prices, so current numbers simply replace the old ones.
@@ -491,7 +495,8 @@ class TradeDeskService:
         mode = job["request"]["data_mode"]
         if ledger == "manual_live" and mode != "live":
             raise ValueError("Replay candidates cannot create manual-live plans")
-        effective = job.get("effective_requests", {}).get(candidate_id, job["request"])
+        effective = ((job.get("effective_requests") or {}).get(candidate_id)
+                     or job.get("run_request") or job["request"])
         if mode == "live":
             from .models import QuoteSnapshot, StrategyCandidate
             from .quality import candidate_quotes_fresh
@@ -565,8 +570,8 @@ class TradeDeskService:
                 if required_shares > balances.get(owned_stock["contract_id"], 0):
                     raise ValueError("The recorded existing shares do not cover this paper call quantity")
         fills, net_debit = [], 0.0
-        original_job = self.repo.advice(plan["advice_id"])
-        fee = float(original_job["request"].get("fee_per_contract", 0.65))
+        original_job = self.repo.advice(plan["advice_id"]) or {}  # the advice may have been deleted
+        fee = float((original_job.get("request") or {}).get("fee_per_contract", 0.65))
         now = utcnow()
         for leg in legs:
             # Explicitly owned shares were never bought by this plan, so a

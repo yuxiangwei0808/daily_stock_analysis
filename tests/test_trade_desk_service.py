@@ -125,6 +125,7 @@ def test_manual_requests_carry_your_position_and_automatic_ones_do_not(repo, mon
     assert manual['position_inputs'] == {'existing_shares': 300, 'plan_from_position': False}
     assert any(item.get('kind') == 'position' for item in manual['snapshot']['evidence'])
     assert manual['request']['existing_shares'] == 0  # the saved request stays as you sent it
+    assert manual['run_request']['existing_shares'] == 300  # what re-pricing and plans use
     assert automatic.get('position') is None
     assert not any(item.get('kind') == 'position' for item in automatic['snapshot']['evidence'])
     # Switched off by the user.
@@ -159,6 +160,33 @@ def test_live_answers_carry_the_nx_tunnel_and_replay_ones_do_not(repo, monkeypat
 def test_the_model_is_told_nx_is_context_only():
     from src.services.trade_desk.advisor import _RULES
     assert "kind 'nx_tunnel'" in _RULES and "never choose or reject a trade because of NX alone" in _RULES
+
+
+def test_plans_and_repricing_keep_the_shares_filled_from_your_position(repo):
+    svc = service(repo)
+    snap = snapshot()
+    old = snap.model_copy(update={"quoted_at": snap.quoted_at - timedelta(minutes=10),
+                                  "options": [q.model_copy(update={"quoted_at": q.quoted_at - timedelta(minutes=10)})
+                                              for q in snap.options]})
+    item = candidate(old)
+    item = item.model_copy(update={"strategy": "covered_call", "legs": [
+        OptionLeg(contract_id="TEST", right="stock", side="buy", quantity=100, entry_price=100, existing=True),
+        *item.legs]})
+    typed = TradeAdviceRequest(ticker="TEST").model_dump(mode="json")
+    job = repo.create_advice(typed)
+    run = TradeAdviceRequest(ticker="TEST", existing_shares=300).model_dump(mode="json")
+    repo.update_advice(job["id"], {"status": "completed", "candidates": [item.model_dump(mode="json")],
+                                   "snapshots": {old.id: old.model_dump(mode="json")}, "run_request": run})
+    seen = []
+
+    def refresh(found, request, spot, **kw):
+        seen.append(request.existing_shares)
+        return found, old
+
+    svc._refresh_candidate = refresh
+    plan = svc.create_plan(job["id"], item.id)
+    assert seen == [300] and plan["existing_share_quantity"] == 300
+    assert repo.advice(job["id"])["request"]["existing_shares"] == 0  # the saved request stays as typed
 
 
 def test_cancelled_advice_cannot_be_resurrected(repo):

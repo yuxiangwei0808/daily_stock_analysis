@@ -526,3 +526,16 @@ def test_questions_use_held_shares_and_price_a_held_spread_as_the_plan(store):
     _, request = svc._with_position(TradeAdviceRequest(ticker="NVDA", existing_shares=2))
     assert request.existing_shares == 2
     assert svc._with_position(TradeAdviceRequest(ticker="AAPL"))[0] is None
+
+
+def test_discord_safe_hides_sizes_and_what_you_paid():
+    cases = {
+        "trim 300sh": "trim [n] sh", "sell 5 cts": "sell [n] cts", "bought 2k shares": "bought [n] shares",
+        "cost basis 152.30": "cost basis [amount]", "avg cost: 41": "avg cost: [amount]",
+        "bought at 12.5": "bought at [amount]", "close 3 contracts at 1.2k usd": "close [n] contracts at [amount]",
+        "stop if below $145": "stop if below [amount]",
+    }
+    for text, expected in cases.items():
+        assert h.discord_safe(text) == expected, text
+    for kept in ("alert below 145", "MA50 break", "expires in 2 days", "loss 40%"):
+        assert h.discord_safe(kept) == kept

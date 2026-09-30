@@ -32,7 +32,7 @@ report history itself, so older reports are picked up too.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -46,6 +46,7 @@ COST_BPS = 5.0
 WINDOW_DAYS = 90
 VERDICT_HORIZONS = (5, 10)
 VERDICT_DAYS = 45  # how far back the after-close job reads the report history
+NO_DATA_DAYS = 30  # a record still without bars this long after its signal closes as "no_data"
 BULLISH_ACTIONS, BEARISH_ACTIONS = {"buy", "add", "hold"}, {"reduce", "sell", "avoid"}
 VERDICT_GROUPS = (("bullish", "Bullish calls"), ("watch", "Watch"), ("bearish", "Bearish calls"))
 NX_SLOW_STATES = ("above", "inside", "below")
@@ -102,12 +103,48 @@ def verdict_record(report: Any) -> Optional[tuple]:
         return None
     if group is None or price <= 0 or created is None:
         return None
-    day = created.date().isoformat() if hasattr(created, "date") else str(created)[:10]
+    # Reports store naive local time; read it as the server's local time and take the New York date.
+    day = (created.astimezone(_NEW_YORK).date().isoformat() if hasattr(created, "astimezone")
+           else str(created)[:10])
     direction = {"bullish": "long", "bearish": "short"}.get(group, "none")
     return f"verdict:{day}:{code}", {
         "kind": "verdict", "verdict": action, "group": group, "ticker": code, "direction": direction,
         "signal_day": day, "entry": round(price, 4), "score": getattr(report, "sentiment_score", None),
         "report_id": getattr(report, "id", None)}
+
+
+def recent_reports(db: Any, days: int = VERDICT_DAYS, known: Optional[set] = None) -> List[Any]:
+    """Stock reports of the last ``days`` whose day's call is not tracked yet.
+
+    Reads ids, codes and times first and loads ``raw_result`` only for the new days,
+    instead of whole report rows (news and context snapshots included).
+    """
+    import re
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.storage import AnalysisHistory
+    known = known or set()
+    cutoff = datetime.now() - timedelta(days=days)  # created_at is naive local time
+    with db.get_session() as session:
+        heads = session.execute(select(AnalysisHistory.id, AnalysisHistory.code, AnalysisHistory.created_at)
+                                .where(AnalysisHistory.created_at >= cutoff,
+                                       AnalysisHistory.report_type != "market_review")).all()
+        wanted = []
+        for report_id, code, created in heads:
+            code = str(code or "").upper()
+            if not created or not re.fullmatch(r"[A-Z][A-Z.\-]{0,9}", code):
+                continue
+            if f"verdict:{created.astimezone(_NEW_YORK).date().isoformat()}:{code}" not in known:
+                wanted.append(report_id)
+        rows = []
+        for start in range(0, len(wanted), 500):
+            rows += session.execute(select(AnalysisHistory.id, AnalysisHistory.code, AnalysisHistory.report_type,
+                                           AnalysisHistory.sentiment_score, AnalysisHistory.created_at,
+                                           AnalysisHistory.raw_result)
+                                    .where(AnalysisHistory.id.in_(wanted[start:start + 500]))).all()
+    return [SimpleNamespace(**row._mapping) for row in rows]
 
 
 def sync_verdicts(repo: Any, reports: List[Any]) -> int:
@@ -208,6 +245,10 @@ def settle_open(repo: Any, today: date,
     if not open_records:
         return 0
     history = bars(list(dict.fromkeys(["SPY", *(record["ticker"] for record in open_records)])))
+
+    def bars_for(source, ticker):  # download_bars keys use dots (BRK.B) whatever the request used
+        return source.get(ticker) or source.get(str(ticker).replace("-", "."))
+
     market, closed = history.get("SPY") or [], 0
     missing_nx = list(dict.fromkeys(record["ticker"] for record in open_records if "nx" not in record))
     long_history: Dict[str, List[Dict[str, Any]]] = {}
@@ -221,13 +262,15 @@ def settle_open(repo: Any, today: date,
             logger.info("Idea tracker NX bars unavailable: %s", type(exc).__name__)
     for record in open_records:
         nx_update = {}
-        if "nx" not in record and record["ticker"] in long_history:
-            nx_update["nx"] = nx_snapshot(long_history[record["ticker"]], record["signal_day"],
+        if "nx" not in record and bars_for(long_history, record["ticker"]):
+            nx_update["nx"] = nx_snapshot(bars_for(long_history, record["ticker"]), record["signal_day"],
                                           float(record.get("entry") or 0), record["direction"])
             if nx_update["nx"] and record["direction"] == "none":
                 nx_update["nx"]["alignment"] = None  # "watch" takes no side
         settle_one = settle_verdict if record.get("kind") == "verdict" else settle
-        update = settle_one(record, history.get(record["ticker"]) or [], market, today)
+        update = settle_one(record, bars_for(history, record["ticker"]) or [], market, today)
+        if update is None and (today - date.fromisoformat(str(record["signal_day"])[:10])).days > NO_DATA_DAYS:
+            update = {"status": "closed", "reason": "no_data"}  # delisted or unknown: stop re-downloading it
         if update is None:
             if nx_update:
                 payload = {key: value for key, value in record.items() if key not in {"id", "status", "created_at"}}
@@ -242,8 +285,9 @@ def settle_open(repo: Any, today: date,
 
 
 def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = WINDOW_DAYS) -> Dict[str, Any]:
-    since = ((now or datetime.now(_NEW_YORK)) - timedelta(days=window_days)).isoformat()
-    everything = repo.tracked_ideas(since=since)
+    # created_at is stored in UTC ISO text; compare like with like.
+    since = ((now or datetime.now(_NEW_YORK)) - timedelta(days=window_days)).astimezone(timezone.utc).isoformat()
+    everything = repo.tracked_ideas(since=since, limit=1_000_000)
     verdicts = [r for r in everything if r.get("kind") == "verdict"]
     records = [r for r in everything if r.get("kind") != "verdict"]
     groups = {}
@@ -289,8 +333,9 @@ def verdict_stats(verdicts: List[Dict[str, Any]]) -> Dict[str, Any]:
         cells = {}
         for state in (*NX_SLOW_STATES, "all"):
             chosen = [r for r in rows if state == "all" or (r.get("nx") or {}).get("slow") == state]
-            closed = [r for r in chosen if r["status"] == "closed"]
-            cells[state] = {"closed": len(closed), "open": len(chosen) - len(closed),
+            closed = [r for r in chosen if r["status"] == "closed" and r.get("return_10d_pct") is not None]
+            still_open = [r for r in chosen if r["status"] == "open"]
+            cells[state] = {"closed": len(closed), "open": len(still_open),
                             "avg_5d_pct": average([r.get("return_5d_pct") for r in chosen]),
                             "avg_10d_pct": average([r.get("return_10d_pct") for r in closed]),
                             "avg_10d_vs_spy_pct": average([r["return_10d_pct"] - r["spy_10d_pct"] for r in closed
@@ -358,7 +403,8 @@ class TrackerJob:
         self._emit = emit
         self._bars = bars
         self._nx_bars = nx_bars
-        self._reports = reports or (lambda: repo.db.get_analysis_history(days=VERDICT_DAYS, limit=20000))
+        self._reports = reports or (lambda: recent_reports(repo.db, VERDICT_DAYS, repo.tracked_idea_ids("verdict:")))
+        self._retry_after: Optional[datetime] = None
         self._done_day: Optional[date] = None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="idea-tracker")
         self._task = None
@@ -373,7 +419,8 @@ class TrackerJob:
             return
         if self._task is not None and not self._task.done():
             return
-        self._done_day = day
+        if self._retry_after is not None and now < self._retry_after:
+            return
         self._task = self._pool.submit(self._run, day, now)
 
     def _run(self, day: date, now: datetime) -> None:
@@ -387,12 +434,16 @@ class TrackerJob:
             logger.info("Idea tracker: %d records closed", closed)
             if _last_trading_day_of_week(day):
                 stats = track_record(self.repo, now)
-                if any(group["closed"] or group["open"] for group in stats["groups"].values()):
+                verdicts = (stats.get("verdicts") or {}).values()
+                if any(group["closed"] or group["open"] for group in stats["groups"].values()) or any(
+                        group["by_nx"]["all"]["closed"] for group in verdicts):
                     iso = day.isocalendar()
                     self._emit("track_record", {"underlying": "", "message": format_track_record(stats)},
                                f"track-record:{iso[0]}-{iso[1]}")
-        except Exception as exc:  # retried tomorrow; open records stay open
+            self._done_day, self._retry_after = day, None
+        except Exception as exc:  # retried in 30 minutes (the weekly summary is keyed per week); records stay open
             logger.warning("Idea tracker failed: %s", type(exc).__name__)
+            self._retry_after = now + timedelta(minutes=30)
 
 
 def _trading_day(day: date) -> bool:

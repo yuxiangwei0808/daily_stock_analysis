@@ -56,7 +56,7 @@ def test_for_ticker_caches_and_never_raises(monkeypatch):
 
     def fake_download(tickers, period):
         calls.append((tuple(tickers), period))
-        return {"BRK-B": _bars(_uptrend())}
+        return {"BRK.B": _bars(_uptrend())}  # download_bars keys use dots, like the real one
 
     monkeypatch.setattr("src.services.trade_desk.trend.download_bars", fake_download)
     nx_tunnel._cache.clear()

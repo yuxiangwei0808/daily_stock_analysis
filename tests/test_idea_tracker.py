@@ -239,3 +239,70 @@ def test_tracker_job_reads_report_calls_before_settling(repo, monkeypatch):
     job._run(date(2026, 9, 29), datetime(2026, 9, 29, 20, 45, tzinfo=timezone.utc))
     job.stop()
     assert [r["kind"] for r in repo.tracked_ideas()] == ["verdict"]
+
+
+def test_records_without_bars_close_as_no_data_after_a_month(repo):
+    repo.track_idea("idea:q:GONE", _record(ticker="GONE", signal_day="2026-08-01"))
+    repo.track_idea("idea:q:NEW", _record(ticker="NEW", signal_day="2026-09-25"))
+    it.settle_open(repo, date(2026, 9, 30), bars=lambda tickers: {"SPY": []}, nx_bars=lambda tickers: {})
+    records = {r["ticker"]: r for r in repo.tracked_ideas()}
+    assert records["GONE"]["status"] == "closed" and records["GONE"]["reason"] == "no_data"
+    assert records["NEW"]["status"] == "open"
+    assert it.track_record(repo, now=datetime.now(timezone.utc))["groups"]["medium"]["closed"] == 0  # no return: not counted
+
+
+def test_dashed_tickers_find_dotted_bars(repo):
+    long_history = _rising("2025-06-01", 400)
+    signal_day = long_history[-1]["date"]
+    repo.track_idea("idea:d:BRK-B", _record(ticker="BRK-B", signal_day=signal_day, entry=long_history[-2]["close"]))
+    it.settle_open(repo, date.fromisoformat(signal_day), bars=lambda tickers: {"SPY": [], "BRK.B": []},
+                   nx_bars=lambda tickers: {"BRK.B": long_history})
+    assert repo.tracked_ideas()[0]["nx"]["alignment"] == "agree"
+
+
+def test_a_failed_run_is_retried_after_half_an_hour_and_a_success_ends_the_day(repo, monkeypatch):
+    monkeypatch.setattr(it, "_trading_day", lambda day: True)
+    calls = []
+
+    def flaky(tickers):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("yahoo down")
+        return {"SPY": []}
+
+    repo.track_idea("idea:r:AAA", _record())
+    job = it.TrackerJob(repo, lambda *a: None, bars=flaky, nx_bars=lambda tickers: {}, reports=lambda: [])
+    start = datetime(2026, 9, 29, 20, 31, tzinfo=timezone.utc)  # 16:31 New York
+    job._run(date(2026, 9, 29), start)
+    assert job._done_day is None and job._retry_after == start + timedelta(minutes=30)
+    job.tick(start + timedelta(minutes=5))
+    assert job._task is None  # waiting out the retry delay
+    job._run(date(2026, 9, 29), start + timedelta(minutes=31))
+    assert job._done_day == date(2026, 9, 29) and job._retry_after is None and len(calls) == 2
+    job.stop()
+
+
+def test_weekly_summary_is_sent_when_only_report_calls_have_closed(repo, monkeypatch):
+    monkeypatch.setattr(it, "_trading_day", lambda day: True)
+    monkeypatch.setattr(it, "_last_trading_day_of_week", lambda day: True)
+    repo.track_idea("verdict:2026-09-01:AAA", {"kind": "verdict", "verdict": "watch", "group": "watch", "ticker": "AAA",
+                                                "direction": "none", "signal_day": "2026-09-01", "entry": 10.0})
+    record = repo.tracked_ideas()[0]
+    repo.update_tracked_idea(record["id"], {**{k: v for k, v in record.items() if k not in {"id", "status", "created_at"}},
+                                            "return_10d_pct": 2.0, "spy_10d_pct": 1.0, "return_pct": 2.0}, "closed")
+    sent = []
+    job = it.TrackerJob(repo, lambda *a: sent.append(a), bars=lambda tickers: {"SPY": []},
+                        nx_bars=lambda tickers: {}, reports=lambda: [])
+    job._run(date(2026, 10, 2), datetime(2026, 10, 2, 20, 45, tzinfo=timezone.utc))
+    job.stop()
+    assert sent and sent[0][0] == "track_record" and "Report calls" in sent[0][1]["message"]
+
+
+def test_repository_lookups_by_id_prefix_and_conversation(repo):
+    repo.track_idea("verdict:2026-09-01:AAA", {"kind": "verdict", "ticker": "AAA"})
+    repo.track_idea("idea:s:AAA", {"kind": "idea", "ticker": "AAA"})
+    assert repo.tracked_idea_ids("verdict:") == {"verdict:2026-09-01:AAA"}
+    first = repo.create_advice({"ticker": "AAA"})
+    second = repo.create_advice({"ticker": "AAA", "parent_advice_id": first["id"]})
+    repo.create_advice({"ticker": "BBB"})
+    assert [job["id"] for job in repo.conversation_advice(first["conversation_id"])] == [second["id"], first["id"]]

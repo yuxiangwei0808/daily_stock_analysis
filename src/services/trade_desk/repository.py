@@ -187,6 +187,13 @@ class TradeDeskRepository:
                 AdviceRecord.created_at.desc()).offset(offset).limit(limit)).scalars().all()
             return [json.loads(row.payload) for row in rows]
 
+    def conversation_advice(self, conversation_id, limit=5):
+        """The newest advice jobs of one conversation (indexed lookup), newest first."""
+        with self.db.get_session() as session:
+            rows = session.execute(select(AdviceRecord).where(AdviceRecord.conversation_id == conversation_id)
+                                   .order_by(AdviceRecord.created_at.desc()).limit(limit)).scalars().all()
+            return [json.loads(row.payload) for row in rows]
+
     def advice_count(self):
         from sqlalchemy import func
         with self.db.get_session() as session:
@@ -199,9 +206,11 @@ class TradeDeskRepository:
         from stays (the plan links to it). Journal events are kept as the audit trail.
         """
         wanted = list(dict.fromkeys(advice_ids))
-        planned = {plan.get("advice_id") for plan in self.plans(limit=100000)}
         deleted, blocked = [], {}
         with self.db.session_scope() as session:
+            # Read plans inside the same transaction, so a plan created meanwhile still blocks the delete.
+            planned = {json.loads(payload).get("advice_id")
+                       for payload in session.execute(select(PlanRecord.payload)).scalars().all()}
             rows = session.execute(select(AdviceRecord).where(AdviceRecord.id.in_(wanted))).scalars().all()
             found = {row.id: row for row in rows}
             conversations = set()
@@ -385,6 +394,14 @@ class TradeDeskRepository:
             rows = session.execute(query.order_by(TrackedIdeaRecord.created_at.desc()).limit(limit)).scalars().all()
             return [{"id": row.id, "status": row.status, "created_at": row.created_at, **json.loads(row.payload)}
                     for row in rows]
+
+    def tracked_idea_ids(self, prefix=""):
+        """Ids of tracked records (only the id column), optionally those starting with ``prefix``."""
+        with self.db.get_session() as session:
+            query = select(TrackedIdeaRecord.id)
+            if prefix:
+                query = query.where(TrackedIdeaRecord.id.like(prefix + "%"))
+            return set(session.execute(query).scalars().all())
 
     def update_tracked_idea(self, record_id, payload, status):
         with self.db.session_scope() as session:

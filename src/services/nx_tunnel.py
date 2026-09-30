@@ -65,7 +65,7 @@ def for_ticker(ticker: str) -> Optional[Dict[str, Any]]:
             return cached[1]
     try:
         from src.services.trade_desk.trend import download_bars
-        bars = (download_bars([symbol], period="2y") or {}).get(symbol.replace(".", "-"))
+        bars = (download_bars([symbol], period="2y") or {}).get(symbol.replace("-", "."))  # keys use dots
         result = describe(bars or [])
     except Exception as exc:  # a missing tunnel never blocks a report
         logger.info("NX tunnel unavailable for %s: %s", symbol, type(exc).__name__)

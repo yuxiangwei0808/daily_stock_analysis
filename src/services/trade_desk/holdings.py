@@ -209,10 +209,20 @@ def moneyness(position: Dict[str, Any]) -> str:
     return f"{position['underlying']} {spot:.2f}: " + ", ".join(parts)
 
 
+_SIZE_WORDS = r"(contracts?|cts?|shares?|shs?|sh|lots?)"
+_COST_WORDS = r"(cost(?:\s+basis)?|basis|avg(?:\s+cost)?|average(?:\s+cost)?|paid|bought\s+at|entry)"
+
+
 def discord_safe(text: str) -> str:
-    """Your note may mention amounts or sizes; Discord gets percentages only."""
-    text = re.sub(r"[$€£¥]\s?[\d,.]+\s*[kKmM]?\b|\b[\d,.]+\s*(?:usd|dollars?)\b", "[amount]", text, flags=re.I)
-    return re.sub(r"\b\d[\d,]*\s*(contracts?|shares?|lots?)\b", r"[n] \1", text, flags=re.I)
+    """Your note may mention amounts or sizes; Discord gets percentages only.
+
+    Money ($1,200 / 1.2k usd), sizes (300 shares, 300sh, 5 cts, 2k shares, 3 lots) and
+    what you paid (cost basis 152.30, avg 41, bought at 12.5) become placeholders.
+    Plain price levels ("below 145") stay: they are alert levels, not account data.
+    """
+    text = re.sub(r"[$€£¥]\s?[\d,.]+\s*[kKmM]?\b|\b[\d,.]+\s*[kKmM]?\s*(?:usd|dollars?)\b", "[amount]", text, flags=re.I)
+    text = re.sub(rf"\b\d[\d,.]*\s*[kKmM]?\s*{_SIZE_WORDS}\b", r"[n] \1", text, flags=re.I)
+    return re.sub(rf"\b{_COST_WORDS}(\s*(?:of|is|was|=|:)?\s*)\d[\d,.]*", r"\1\2[amount]", text, flags=re.I)
 
 
 def describe_option(position: Dict[str, Any], with_days: bool = True) -> str:
