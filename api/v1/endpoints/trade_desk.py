@@ -101,6 +101,13 @@ async def health(request: Request):
     return await invoke(get_service(request).health)
 
 
+@router.get("/status")
+async def system_status(request: Request):
+    """Every component's state (ok / warn / error / off) with a one-line detail: the Status page."""
+    from src.services.trade_desk.status import build
+    return await invoke(build, get_service(request))
+
+
 @router.get("/catalog")
 async def catalog():
     from src.services.trade_desk.analytics import strategy_catalog

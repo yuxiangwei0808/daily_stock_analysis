@@ -231,6 +231,19 @@ last regular-session price and change versus the previous close; during
 pre-market or after-hours, `extended` adds that session's price. Home polls it
 every 15 seconds while the tab is visible.
 
+## System status
+
+The **Status** page (sidebar; `GET /api/v1/trade-desk/status`) lists every component with a
+state — working, needs attention, failing, or off — and a one-line detail, refreshing every
+30 seconds: the running code version (and a warning when newer code is on disk, i.e. a
+restart is needed), moomoo OpenD quotes, scheduled reports (next run, last success, last
+error), the alert monitor, plan monitoring, broker holdings sync, market pulse, trade
+opportunities, breakout watch, idea tracker, YouTube picks (including a caption rate limit),
+social scan and Discord delivery. The worker's watchdog (`trade_desk/status.py`) posts
+`system_status` messages to the digest category: a summary two minutes after each start
+("✅ Server started · <version> · all systems working", or the components that need
+attention), and a component still failing five minutes later, once per component per day.
+
 ## Discord channels, categories and batching
 
 Trade Desk messages fall into four categories (`trade_desk/discord_routes.py`):

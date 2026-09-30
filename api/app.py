@@ -299,6 +299,7 @@ async def app_lifespan(app: FastAPI):
 
     trade_desk_service = TradeDeskService()
     app.state.trade_desk_service = trade_desk_service
+    trade_desk_service.scheduler_status = runtime_scheduler_service.status  # for the Status page
     trade_desk_service.worker = TradeDeskWorker(trade_desk_service)
     trade_desk_service.worker.start()
     try:

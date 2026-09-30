@@ -368,6 +368,9 @@ class YouTubeScanJob:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="youtube-picks")
         self._task = None
         self.today_picks: List[Dict[str, Any]] = []  # for the evening digest
+        self.last_pass_at: Optional[str] = None
+        self.last_pass_added = 0
+        self.last_error: Optional[str] = None
 
     def stop(self):
         self._stopping.set()  # a transcription in progress ends at its next segment; its folder is deleted
@@ -377,7 +380,18 @@ class YouTubeScanJob:
         if self._clock() < self._next or (self._task is not None and not self._task.done()):
             return
         self._next = self._clock() + POLL_SECONDS
-        self._task = self._pool.submit(self.run, now)
+        self._task = self._pool.submit(self._run_recorded, now)
+
+    def _run_recorded(self, now: datetime) -> None:
+        try:
+            self.last_pass_added = self.run(now)
+            self.last_pass_at, self.last_error = now.isoformat(), None
+        except Exception as exc:  # the next pass retries
+            self.last_error = type(exc).__name__
+            logger.warning("YouTube scan failed: %s", type(exc).__name__)
+
+    def captions_paused(self) -> bool:
+        return self._clock() < self._captions_paused_until
 
     def run(self, now: datetime) -> int:
         """One pass over every channel; returns how many picks were recorded."""

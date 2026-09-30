@@ -107,6 +107,10 @@ class TradeDeskService:
         self.advisor = advisor or CodexTradeAdvisor()
         self.routine_advisor = routine_advisor or RoutineTradeAdvisor()
         self.providers = {}
+        from .status import code_version
+        self.started_at = utcnow().isoformat()
+        self.version = code_version()  # the commit this process loaded
+        self.scheduler_status = None  # set by the app: the report scheduler's status()
         self._lock = threading.RLock()
         self._jobs = {}
         self._latest = {}

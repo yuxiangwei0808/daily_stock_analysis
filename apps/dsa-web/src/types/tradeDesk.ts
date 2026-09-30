@@ -508,3 +508,17 @@ export interface HoldingRuleDraft {
   positionKey?: string | null;
   source: 'pattern' | 'model';
 }
+
+export interface SystemStatusComponent {
+  key: string;
+  label: string;
+  state: 'ok' | 'warn' | 'error' | 'off';
+  detail: string;
+  since?: string | null;
+}
+
+export interface SystemStatus {
+  checkedAt: string;
+  overall: 'ok' | 'warn' | 'error' | string;
+  components: SystemStatusComponent[];
+}

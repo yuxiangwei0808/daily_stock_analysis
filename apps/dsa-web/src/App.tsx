@@ -21,6 +21,7 @@ const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
+const StatusPage = lazy(() => import('./pages/StatusPage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const TradeDeskPage = lazy(() => import('./pages/TradeDeskPage'));
 
@@ -91,6 +92,7 @@ const AppContent: React.FC = () => {
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/usage" element={<TokenUsagePage />} />
+        <Route path="/status" element={<StatusPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

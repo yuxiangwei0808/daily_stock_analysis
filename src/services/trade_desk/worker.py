@@ -52,6 +52,7 @@ class TradeDeskWorker:
         self._stop = threading.Event()
         self._thread = None
         self._delivery = None  # the Discord sender thread; a slow Discord never holds up monitoring
+        self.part_status = {}  # name -> last clean tick or the error since when (the Status page reads it)
         self._last_tick = None
         self._error = None
         self._leader = False
@@ -88,6 +89,8 @@ class TradeDeskWorker:
         self._social = (social_scan.DigestJob(self.repo, self._emit, today_picks=(
             (lambda: list(self._youtube.today_picks)) if self._youtube is not None else (lambda: [])))
             if social_scan.enabled() else None)
+        from .status import StatusWatch
+        self._status = StatusWatch(service, self._emit)
 
     def _watched(self):
         """The watchlist plus held stocks and option underlyings."""
@@ -223,41 +226,38 @@ class TradeDeskWorker:
         try:
             if not self._check_plans(now, regular_session):
                 return
+            self._part_ok("plans")
         except Exception as exc:  # e.g. a moment of "database is locked"; alerts below still run
-            logger.warning("Plan monitoring failed: %s", type(exc).__name__)
+            self._part_failed("plans", exc)
         # One OpenD snapshot a minute serves the market pulse, breakouts and holdings.
-        quotes = self._shared_quotes(session_window(now)[0])
-        if self._pulse is not None:
-            try:
-                self._pulse.tick(now, quotes=quotes, shared=True)
-            except Exception as exc:  # the watch must never stop plan monitoring
-                logger.warning("Market pulse check failed: %s", type(exc).__name__)
-        if self._holdings is not None:
-            try:
-                self._holdings.tick(now, session_window(now)[0], quotes=quotes, shared=True)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Holdings monitor failed: %s", type(exc).__name__)
-        if self._tracker is not None:
-            try:
-                self._tracker.tick(now)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Idea tracker failed: %s", type(exc).__name__)
-        for name, part in (("YouTube scan", self._youtube), ("Social digest", self._social)):
-            if part is not None:
-                try:
-                    part.tick(now)
-                except Exception as exc:  # optional; plan monitoring continues
-                    logger.warning("%s failed: %s", name, type(exc).__name__)
-        if self._opportunities is not None:
-            try:
-                self._breakouts.tick(now, session_window(now)[0], quotes=quotes, shared=True)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Breakout watch failed: %s", type(exc).__name__)
-            try:
-                self._opportunities.tick(regular_session)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Trade opportunities failed: %s", type(exc).__name__)
+        session = session_window(now)[0]
+        quotes = self._shared_quotes(session)
+        parts = [("pulse", self._pulse, lambda: self._pulse.tick(now, quotes=quotes, shared=True)),
+                 ("holdings", self._holdings, lambda: self._holdings.tick(now, session, quotes=quotes, shared=True)),
+                 ("tracker", self._tracker, lambda: self._tracker.tick(now)),
+                 ("youtube", self._youtube, lambda: self._youtube.tick(now)),
+                 ("social", self._social, lambda: self._social.tick(now)),
+                 ("breakouts", self._breakouts, lambda: self._breakouts.tick(now, session, quotes=quotes, shared=True)),
+                 ("opportunities", self._opportunities, lambda: self._opportunities.tick(regular_session)),
+                 ("status", self._status, lambda: self._status.tick(now))]
+        for name, part, call in parts:
+            if part is None:
+                continue
+            try:  # each part is optional: one failing never stops the others or plan monitoring
+                call()
+                self._part_ok(name)
+            except Exception as exc:
+                self._part_failed(name, exc)
         self._deliver_in_background()
+
+    def _part_ok(self, name):
+        self.part_status[name] = {"ok_at": utcnow().isoformat(), "error": None}
+
+    def _part_failed(self, name, exc):
+        previous = self.part_status.get(name) or {}
+        self.part_status[name] = {**previous, "error": type(exc).__name__,
+                                  "error_at": previous.get("error_at") if previous.get("error") else utcnow().isoformat()}
+        logger.warning("Trade Desk %s failed: %s", name, type(exc).__name__)
 
     def _check_plans(self, now, regular_session):
         """Plan triggers, targets, time exits and outages; False when leadership was lost mid-way."""
@@ -474,7 +474,8 @@ class TradeDeskWorker:
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
             ticker = payload.get("underlying", "")
-            if event["event_type"] in {"trade_opportunities", "portfolio_summary", "track_record", "social_digest"}:
+            if event["event_type"] in {"trade_opportunities", "portfolio_summary", "track_record", "social_digest",
+                                       "system_status"}:
                 content = message  # carries its own header
             elif event["event_type"] == "options_ideas":
                 content = f"🧭 **Options ideas** · for today's high-conviction trades\n{message}"

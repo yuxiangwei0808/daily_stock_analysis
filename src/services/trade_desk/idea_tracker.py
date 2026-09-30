@@ -460,6 +460,7 @@ class TrackerJob:
         self._reports = reports or (lambda: recent_reports(repo.db, VERDICT_DAYS, repo.tracked_idea_ids("verdict:")))
         self._retry_after: Optional[datetime] = None
         self._done_day: Optional[date] = None
+        self.last_error: Optional[str] = None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="idea-tracker")
         self._task = None
 
@@ -496,8 +497,9 @@ class TrackerJob:
                     iso = day.isocalendar()
                     self._emit("track_record", {"underlying": "", "message": format_track_record(stats)},
                                f"track-record:{iso[0]}-{iso[1]}")
-            self._done_day, self._retry_after = day, None
+            self._done_day, self._retry_after, self.last_error = day, None, None
         except Exception as exc:  # retried in 30 minutes (the weekly summary is keyed per week); records stay open
+            self.last_error = type(exc).__name__
             logger.warning("Idea tracker failed: %s", type(exc).__name__)
             self._retry_after = now + timedelta(minutes=30)
 

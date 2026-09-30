@@ -56,7 +56,7 @@ export function QuestionList({ jobs, selectedId, heldTickers, busyId, onSelect, 
                   <li key={job.id}>
                     <div className={`flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 ${selected ? 'bg-cyan/10 ring-1 ring-cyan/30' : 'hover:bg-hover'}`}>
                       <button type="button" aria-current={selected || undefined} onClick={() => onSelect(job)} className="min-w-0 flex-1 text-left">
-                        <span className="block truncate text-sm text-foreground" title={job.request.message || undefined}>{job.request.message || 'Compare strategies'}</span>
+                        <span className="line-clamp-2 block text-sm text-foreground [overflow-wrap:anywhere]">{job.request.message || 'Compare strategies'}</span>
                         <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-secondary-text">
                           <span>{shortDate(job.createdAt)}</span>
                           <Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>
@@ -68,7 +68,7 @@ export function QuestionList({ jobs, selectedId, heldTickers, busyId, onSelect, 
                       </button>
                       {running
                         ? <Button size="xsm" variant="ghost" isLoading={busyId === job.id} onClick={() => onCancel(job)}><Pause className="h-3.5 w-3.5" />{t('tradeDesk.cancelJob')}</Button>
-                        : <Button size="xsm" variant="ghost" aria-label={`Delete ${ticker} request from ${shortDate(job.createdAt)}`} title="Delete" isLoading={busyId === job.id} onClick={() => onDelete(job)}><Trash2 className="h-3.5 w-3.5" /></Button>}
+                        : <Button size="xsm" variant="ghost" aria-label={`Delete ${ticker} request from ${shortDate(job.createdAt)}`} isLoading={busyId === job.id} onClick={() => onDelete(job)}><Trash2 className="h-3.5 w-3.5" /></Button>}
                     </div>
                   </li>
                 );

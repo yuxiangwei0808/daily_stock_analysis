@@ -21,6 +21,7 @@ import type {
   TradeJournalListResponse,
   TradeOutcomes,
   TradePositionListResponse,
+  SystemStatus,
   TradePreferences,
   TradePreferencesUpdate,
   TradeReconciliationRequest,
@@ -247,6 +248,11 @@ export const tradeDeskApi = {
   async listJournal(): Promise<TradeJournalListResponse> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/journal`);
     return toCamelCase<TradeJournalListResponse>(response.data);
+  },
+
+  async getStatus(): Promise<SystemStatus> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/status`);
+    return toCamelCase<SystemStatus>(response.data);
   },
 
   async getOutcomes(): Promise<TradeOutcomes> {

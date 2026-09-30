@@ -296,6 +296,7 @@ class DigestJob:
         self._trading_day = trading_day
         self._done_day: Optional[date] = None
         self._retry_at: Optional[datetime] = None
+        self.last_error: Optional[str] = None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="social-digest")
         self._task = None
 
@@ -325,8 +326,9 @@ class DigestJob:
             if event is not None:  # already sent before a restart: the names were recorded then
                 added = sum(bool(self.repo.track_idea(*item)) for item in records(hot, day))
                 logger.info("Social scan: digest sent, %d names tracked", added)
-            self._done_day, self._retry_at = day, None
+            self._done_day, self._retry_at, self.last_error = day, None, None
         except Exception as exc:  # retried shortly; the digest is keyed per day
+            self.last_error = type(exc).__name__
             logger.warning("Social digest failed: %s", type(exc).__name__)
             self._retry_at = now + timedelta(minutes=self.RETRY_MINUTES)
 
