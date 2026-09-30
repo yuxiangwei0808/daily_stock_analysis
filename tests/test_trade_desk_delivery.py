@@ -210,3 +210,54 @@ def test_the_worker_starts_the_scans_only_when_configured(repo, monkeypatch):
     assert desk._tracker is not None  # their records settle even with trade opportunities off
     for part in (desk._social, desk._youtube, desk._tracker):
         part.stop()
+
+
+def _delivery_desk(repo, monkeypatch, sent, **env):
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    repo.set_preferences({"discord_enabled": True})
+    monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid/main"))
+    monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(("main", c)) or True)
+    monkeypatch.setattr("src.notification_sender.discord_sender.DiscordSender.send_to_discord",
+                        lambda self, c, **kw: sent.append((self._discord_config["webhook_url"], c)) or True)
+    return worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
+
+
+def test_categories_go_to_their_own_channels_and_can_be_switched_off(repo, monkeypatch):
+    sent = []
+    desk = _delivery_desk(repo, monkeypatch, sent,
+                          TRADE_DESK_DISCORD_WEBHOOKS="holdings=https://discord.test/h, ideas=https://discord.test/i,bogus=x")
+    repo.event("holding_alert", {"underlying": "NVDA", "kind": "loss", "message": "Down 40% on cost"}, "h1")
+    repo.event("breakout", {"underlying": "MU", "kind": "breakout", "message": "MU broke out"}, "b1")
+    repo.event("social_digest", {"underlying": "", "message": "📣 digest"}, "d1")
+    desk._deliver()
+    assert [target for target, _ in sent] == ["https://discord.test/h", "https://discord.test/i", "main"]
+    sent.clear()
+    repo.set_preferences({"discord_categories": {"ideas": False}})
+    repo.event("breakout", {"underlying": "AMD", "kind": "breakout", "message": "AMD broke out"}, "b2")
+    repo.event("holding_alert", {"underlying": "NVDA", "kind": "profit", "message": "Up 50%"}, "h2")
+    desk._deliver()
+    assert [target for target, _ in sent] == ["https://discord.test/h"]  # ideas are off
+
+
+def test_moves_on_names_you_do_not_hold_are_batched(repo, monkeypatch):
+    sent = []
+    desk = _delivery_desk(repo, monkeypatch, sent)
+    repo.event("market_move", {"underlying": "NVDA", "change_pct": 4.2, "held": True, "message": "NVDA up 4.2% today"}, "m1")
+    repo.event("market_move", {"underlying": "AMD", "change_pct": -5.1, "held": False, "message": "AMD down 5.1% today"}, "m2")
+    repo.event("market_news", {"underlying": "TSLA", "held": False, "message": "TSLA: recall (Reuters)\nhttps://x"}, "n1")
+    repo.event("market_move", {"underlying": "PLTR", "change_pct": 3.0, "held": None, "message": "PLTR up 3.0% today"}, "m3")
+    desk._deliver()
+    assert [c.split("\n")[1] for _, c in sent] == ["NVDA up 4.2% today", "PLTR up 3.0% today"]  # held or unknown: at once
+    sent.clear()
+    later = worker_module.utcnow() + timedelta(minutes=16)
+    monkeypatch.setattr(worker_module, "utcnow", lambda: later)
+    desk._deliver()
+    [(_, batch)] = sent
+    assert batch.startswith("📊 **Market moves & news** · names you don't hold")
+    assert "📉 AMD down 5.1% today" in batch and "📰 TSLA: recall (Reuters)" in batch and "https://x" not in batch
+    desk._deliver()
+    assert len(sent) == 1  # sent once

@@ -364,10 +364,12 @@ export interface TradeOutcomes {
 
 export interface TradePreferences {
   discordEnabled: boolean;
+  /** Per-category switches (holdings, market, ideas, digest); a missing key means on. */
+  discordCategories?: Record<string, boolean>;
   [key: string]: unknown;
 }
 
-export type TradePreferencesUpdate = Partial<Pick<TradePreferences, 'discordEnabled'>>;
+export type TradePreferencesUpdate = Partial<Pick<TradePreferences, 'discordEnabled' | 'discordCategories'>>;
 
 export interface TrackRecordGroup {
   label: string;

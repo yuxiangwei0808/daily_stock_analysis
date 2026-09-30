@@ -105,6 +105,7 @@ function toFillPayload(request: TradeFillRequest): Record<string, unknown> {
 function toPreferencesPayload(request: TradePreferencesUpdate): Record<string, unknown> {
   return withoutUndefined({
     discord_enabled: request.discordEnabled,
+    discord_categories: request.discordCategories,
   });
 }
 

@@ -144,6 +144,7 @@ def test_small_moves_alert_only_for_what_you_hold():
     provider.quotes["AAPL"] = {"price": 105.5, "change_pct": 5.5}
     pulse.check_moves(NOW + timedelta(minutes=1))
     assert [e[1]["underlying"] for e in events] == ["NVDA", "AAPL"]
+    assert [e[1]["held"] for e in events] == [True, False]  # delivery batches the names you do not hold
 
 
 def test_shared_quotes_replace_the_pulses_own_poll():

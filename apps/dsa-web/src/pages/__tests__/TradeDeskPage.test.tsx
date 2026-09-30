@@ -429,6 +429,18 @@ describe('TradeDeskPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /^(Ask|提问)$/ })).toBeEnabled());
   });
 
+  it('switches Discord categories off in the preferences', async () => {
+    api.getPreferences.mockResolvedValue({ discordEnabled: true, discordCategories: { market: false } });
+    renderPage('/trade-desk?view=journal');
+    const ideas = await screen.findByRole('checkbox', { name: 'Trade ideas' });
+    expect(screen.getByRole('checkbox', { name: 'Market moves & news' })).not.toBeChecked();
+    expect(ideas).toBeChecked();
+    fireEvent.click(ideas);
+    fireEvent.click(screen.getByRole('button', { name: /^(Save settings|保存设置)$/ }));
+    await waitFor(() => expect(api.updatePreferences).toHaveBeenCalledWith(
+      expect.objectContaining({ discordEnabled: true, discordCategories: { market: false, ideas: false } })));
+  });
+
   it('labels replay alerts in the journal even when the payload has many fields', async () => {
     api.listJournal.mockResolvedValue({ items: [{ id: 7, eventType: 'price_trigger', createdAt: '2026-09-22T14:00:00Z',
       planId: 'plan-replay', payload: { planId: 'plan-replay', underlying: 'AAPL', price: 101, level: 100,

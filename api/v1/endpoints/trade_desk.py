@@ -1,11 +1,11 @@
 """Trade Desk API: advice, simulated fills and manually recorded trades only."""
 import asyncio
 import json
-from typing import Literal, Optional
+from typing import Dict, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AwareDatetime, ConfigDict, Field
+from pydantic import AwareDatetime, ConfigDict, Field, field_validator
 
 from src.services.trade_desk.models import Model, TradeAdviceRequest, utcnow
 
@@ -80,6 +80,16 @@ class Preferences(Model):
     # Old tabs may still send removed settings (proactive discovery); they are ignored, not rejected.
     model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
     discord_enabled: Optional[bool] = None
+    # Per-category switches: holdings, market, ideas, digest (see trade_desk/discord_routes.py).
+    discord_categories: Optional[Dict[str, bool]] = None
+
+    @field_validator("discord_categories")
+    @classmethod
+    def _known_categories(cls, value):
+        from src.services.trade_desk.discord_routes import CATEGORIES
+        if value is not None and not set(value) <= set(CATEGORIES):
+            raise ValueError(f"Categories are {', '.join(CATEGORIES)}")
+        return value
 
 
 class Reconciliation(Model):

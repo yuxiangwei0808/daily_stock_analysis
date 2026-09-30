@@ -198,6 +198,7 @@ class MarketPulse:
                     self._level_high[(day, ticker, sign)] = level
                     self._emit("market_move", {
                         "underlying": ticker, "kind": "day_move", "price": price, "change_pct": change,
+                        "held": (ticker in held) if held is not None else None,  # not held: sent in a batch
                         "message": f"{ticker} {'up' if change > 0 else 'down'} {abs(change):.1f}% today "
                                    f"(past {sign}{level:g}%) at {price:.2f}.{self._reason(ticker, now)}"},
                         f"pulse-move:{day}:{ticker}:{sign}{level:g}")
@@ -261,6 +262,10 @@ class MarketPulse:
             return
         ratings = self._rate_news(fresh)
         day = now.astimezone(_NEW_YORK).date().isoformat()
+        try:
+            held = set(self._held()) if self._held is not None else None
+        except Exception:  # unknown: the alert goes out on its own
+            held = None
         for item in fresh:
             if ratings is not None:
                 rating = ratings.get(item["id"]) or {}
@@ -276,6 +281,7 @@ class MarketPulse:
             self._news_alerts[day] = self._news_alerts.get(day, 0) + 1
             self._emit("market_news", {
                 "underlying": item["ticker"], "kind": "news", "title": item["title"], "url": item["url"],
+                "held": (item["ticker"] in held) if held is not None else None,
                 "message": f"{item['ticker']}: {item['title']} ({item['source']})"
                            + (f" — {why}" if why else "") + (f"\n{item['url']}" if item["url"] else "")},
                 f"pulse-news:{item['id']}")

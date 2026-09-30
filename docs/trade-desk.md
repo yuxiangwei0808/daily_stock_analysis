@@ -222,6 +222,25 @@ last regular-session price and change versus the previous close; during
 pre-market or after-hours, `extended` adds that session's price. Home polls it
 every 15 seconds while the tab is visible.
 
+## Discord channels, categories and batching
+
+Trade Desk messages fall into four categories (`trade_desk/discord_routes.py`):
+
+| Category | Messages |
+| --- | --- |
+| `holdings` | Holding alerts, your price alerts, daily portfolio summary, plan triggers |
+| `market` | Big moves and material news |
+| `ideas` | Trade opportunities, options ideas, breakouts |
+| `digest` | Social scan, weekly track record, system status |
+
+`TRADE_DESK_DISCORD_WEBHOOKS=holdings=<url>,market=<url>,ideas=<url>,digest=<url>` (any
+subset) sends a category to its own channel; the others use `DISCORD_WEBHOOK_URL` or the bot.
+The Journal tab's settings switch each category off or on (`discord_categories` in the
+preferences; a missing key means on). Moves and news on names you do not hold come in bursts
+at the open, so they are sent together once the oldest has waited 15 minutes, as one "📊 Market
+moves & news" message; alerts on names you hold, or when holdings are unknown, still go out
+at once. The scheduled stock reports are not Trade Desk messages and keep the main channel.
+
 ## Market pulse (market-hours watch)
 
 With `MARKET_PULSE_ENABLED=true`, the Trade Desk worker (leader only, regular
