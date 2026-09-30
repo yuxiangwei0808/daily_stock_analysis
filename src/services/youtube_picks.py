@@ -426,8 +426,11 @@ class YouTubeScanJob:
             return "", "skip"
         started = time.monotonic()
         text = self._transcribe(video_id, should_stop=self._stopping.is_set)
-        logger.info("YouTube audio for %s transcribed in %.0f s", video_id, time.monotonic() - started)
-        return (text, "audio") if text else ("", "")
+        if text:
+            logger.info("YouTube audio for %s transcribed in %.0f s", video_id, time.monotonic() - started)
+            return text, "audio"
+        logger.info("YouTube video %s not transcribed (live, over two hours, or no speech)", video_id)
+        return "", ""
 
     def _pass(self, now, processed, cutoff, trading) -> int:
         added = 0
