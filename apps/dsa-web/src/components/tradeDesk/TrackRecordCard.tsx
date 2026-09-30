@@ -6,6 +6,13 @@ import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { TrackRecord } from '../../types/tradeDesk';
 
 const NX_STATES = ['above', 'inside', 'below'] as const;
+const SCOREBOARD_MIN = 30;
+const VERDICTS: Record<string, { label: string; color?: string }> = {
+  ahead: { label: 'Ahead of SPY', color: 'hsl(var(--color-success))' },
+  behind: { label: 'Behind SPY — consider turning it down', color: 'hsl(var(--color-danger))' },
+  no_difference: { label: 'No clear difference from SPY' },
+  too_early: { label: 'Too early' },
+};
 
 function pct(value?: number | null, signed = true): string {
   if (value == null || !Number.isFinite(value)) return '–';
@@ -40,6 +47,33 @@ export function TrackRecordCard() {
       <p className="mt-1 text-xs text-secondary-text">{t('tradeDesk.trackRecordHint')}</p>
       {problem ? <p className="mt-2 text-xs text-danger">{problem}</p> : null}
       {record && !groups.length && !nxGroups.length && !verdictRows.length ? <p className="mt-3 text-sm text-secondary-text">{t('tradeDesk.trackRecordEmpty')}</p> : null}
+      {record?.scoreboard?.length ? (
+        <div className="mt-3" data-testid="scoreboard">
+          <h3 className="text-sm font-semibold text-foreground">What's working</h3>
+          <p className="mt-0.5 text-xs text-secondary-text">Each source's average result vs SPY in the direction of its call. A verdict needs {SCOREBOARD_MIN} closed records and a clear difference across months.</p>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[520px] text-sm">
+              <thead className="text-xs text-muted-text">
+                <tr><th className="py-1 text-left font-normal">Source</th><th className="text-right font-normal">Closed</th><th className="text-right font-normal">Open</th>
+                  <th className="text-right font-normal">vs SPY</th><th className="pl-3 text-left font-normal">So far</th></tr>
+              </thead>
+              <tbody className="divide-y divide-border/40">
+                {record.scoreboard.map((item) => (
+                  <tr key={item.key}>
+                    <td className="py-1.5 text-foreground">{item.label}<span className="block text-[11px] text-muted-text">{item.horizon}</span></td>
+                    <td className="text-right">{item.closed}</td>
+                    <td className="text-right">{item.open}</td>
+                    <td className="text-right">{pct(item.avgVsSpyPct)}</td>
+                    <td className="pl-3 text-left text-xs" style={{ color: VERDICTS[item.verdict]?.color }}>
+                      {item.verdict === 'too_early' ? `Too early (${item.closed}/${SCOREBOARD_MIN})` : VERDICTS[item.verdict]?.label ?? item.verdict}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       {groups.length ? (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[520px] text-sm">

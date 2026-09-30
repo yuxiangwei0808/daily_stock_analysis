@@ -343,7 +343,76 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
     return {"window_days": window_days, "groups": groups, "by_nx": by_nx, "recent": recent,
             "verdicts": verdict_stats(verdicts),
             "social": social_stats([r for r in everything if r.get("kind") == "social"]),
+            "scoreboard": scoreboard(everything),
             "influencers": channel_stats([r for r in everything if r.get("kind") == "influencer"])}
+
+
+SCOREBOARD_MIN = 30  # closed records before a source gets a verdict
+
+
+def _excess(record: Dict[str, Any], stock_key: str, spy_key: str) -> Optional[float]:
+    """Return vs SPY in the call's direction: a short or bearish call gains when it lags SPY."""
+    stock, spy = record.get(stock_key), record.get(spy_key)
+    if stock is None or spy is None:
+        return None
+    if record.get("kind") in (None, "idea", "breakout"):  # return_pct already carries the trade's direction
+        return stock - (1 if record.get("direction") == "long" else -1) * spy
+    return (stock - spy) * (-1 if record.get("direction") == "short" else 1)
+
+
+def scoreboard(everything: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Every tracked source side by side: closed count, average result vs SPY in the call's direction,
+    a month-clustered t, and a verdict ("too_early" under SCOREBOARD_MIN closed, else "ahead" /
+    "behind" when |t| >= 2, else "no_difference")."""
+    import math
+
+    def closed(rows):
+        return [r for r in rows if r["status"] == "closed"]
+
+    sources = []
+
+    def add(key: str, label: str, rows: List[Dict[str, Any]], stock_key: str, spy_key: str, horizon: str):
+        done = [(r, _excess(r, stock_key, spy_key)) for r in closed(rows)]
+        values = [(r, x) for r, x in done if x is not None]
+        by_month: Dict[str, List[float]] = {}
+        for record, value in values:
+            by_month.setdefault(str(record.get("signal_day", ""))[:7], []).append(value)
+        means = [sum(v) / len(v) for v in by_month.values()]
+        mean = sum(x for _, x in values) / len(values) if values else None
+        t = None
+        if len(means) >= 2:
+            centre = sum(means) / len(means)
+            spread = math.sqrt(sum((m - centre) ** 2 for m in means) / (len(means) - 1))
+            t = centre / (spread / math.sqrt(len(means))) if spread > 0 else None
+        verdict = ("too_early" if len(values) < SCOREBOARD_MIN else
+                   "ahead" if t is not None and t >= 2 and (mean or 0) > 0 else
+                   "behind" if t is not None and t <= -2 and (mean or 0) < 0 else "no_difference")
+        sources.append({"key": key, "label": label, "horizon": horizon, "closed": len(values),
+                        "open": sum(1 for r in rows if r["status"] == "open"),
+                        "avg_vs_spy_pct": round(mean, 3) if mean is not None else None,
+                        "t": round(t, 2) if t is not None else None, "verdict": verdict})
+    ideas = [r for r in everything if r.get("kind") in (None, "idea")]
+    for verdict, label in (("high", "Trade ideas · high conviction"), ("medium", "Trade ideas · medium conviction"),
+                           ("rejected", "Candidates the review rejected")):
+        add(f"idea:{verdict}", label, [r for r in ideas if r.get("verdict") == verdict],
+            "return_pct", "spy_return_pct", "to stop/target, ≤15 sessions")
+    add("breakout", "Breakout alerts", [r for r in everything if r.get("kind") == "breakout"],
+        "return_pct", "spy_return_pct", "to stop/target, ≤15 sessions")
+    trades = [r for r in everything if r.get("kind") in (None, "idea", "breakout")]
+    for alignment, label in (("agree", "Ideas & breakouts · NX agrees"), ("against", "Ideas & breakouts · NX against")):
+        add(f"nx:{alignment}", label, [r for r in trades if (r.get("nx") or {}).get("alignment") == alignment],
+            "return_pct", "spy_return_pct", "to stop/target, ≤15 sessions")
+    verdicts = [r for r in everything if r.get("kind") == "verdict"]
+    for group, label in (("bullish", "Report calls · bullish"), ("bearish", "Report calls · bearish")):
+        add(f"verdict:{group}", label, [r for r in verdicts if r.get("group") == group],
+            "return_10d_pct", "spy_10d_pct", "10 sessions")
+    add("social", "Most discussed on social media", [r for r in everything if r.get("kind") == "social"],
+        "return_20d_pct", "spy_20d_pct", "20 sessions")
+    influencer = [r for r in everything if r.get("kind") == "influencer"]
+    for channel in sorted({r.get("channel") or "?" for r in influencer}):
+        add(f"youtube:{channel}", f"YouTube · {channel}", [r for r in influencer if (r.get("channel") or "?") == channel],
+            "return_20d_pct", "spy_20d_pct", "20 sessions")
+    return [item for item in sources if item["closed"] or item["open"]]
 
 
 def social_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -424,6 +493,15 @@ def format_track_record(stats: Dict[str, Any]) -> str:
                 lines.append(f"• {group['label']}: " + " | ".join(parts))
         if closed_verdicts < 60:
             lines.append("Few closed calls so far; read this as a first look.")
+    board = stats.get("scoreboard") or []
+    if board:
+        judged = [item for item in board if item["verdict"] in ("ahead", "behind")]
+        if judged:
+            lines.append("What's working so far: " + "; ".join(
+                f"{item['label']} {'ahead of' if item['verdict'] == 'ahead' else 'behind'} SPY "
+                f"({item['avg_vs_spy_pct']:+.2f}%, {item['closed']} closed)" for item in judged))
+        else:
+            lines.append(f"What's working: no source has {SCOREBOARD_MIN} closed records with a clear difference from SPY yet.")
     social = stats.get("social") or {}
     if social.get("5d", {}).get("count"):
         parts = [f"{h} sessions {social[f'{h}d']['count']} · vs SPY {_pct(social[f'{h}d']['vs_spy_pct'])}"

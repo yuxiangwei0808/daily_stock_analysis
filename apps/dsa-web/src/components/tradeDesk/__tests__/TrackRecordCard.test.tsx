@@ -50,4 +50,21 @@ describe('TrackRecordCard', () => {
     await screen.findByText(/.+/, { selector: 'h2' });
     expect(screen.queryByTestId('track-record-nx')).not.toBeInTheDocument();
   });
+
+  it('lists every source side by side with a cautious verdict', async () => {
+    api.getTrackRecord.mockResolvedValue({
+      windowDays: 90, groups: {}, recent: [],
+      scoreboard: [
+        { key: 'idea:high', label: 'Trade ideas · high conviction', horizon: 'to stop/target, ≤15 sessions', closed: 36, open: 4, avgVsSpyPct: 1.4, t: 2.6, verdict: 'ahead' },
+        { key: 'youtube:Meet Kevin', label: 'YouTube · Meet Kevin', horizon: '20 sessions', closed: 5, open: 9, avgVsSpyPct: 3.0, t: null, verdict: 'too_early' },
+      ],
+    });
+    render(<TrackRecordCard />);
+    const rows = (await screen.findByTestId('scoreboard')).querySelectorAll('tbody tr');
+    expect(rows[0]).toHaveTextContent('Trade ideas · high conviction');
+    expect(rows[0]).toHaveTextContent('Ahead of SPY');
+    expect(rows[1]).toHaveTextContent('Too early (5/30)');
+    expect(rows[1]).toHaveTextContent('+3.00%');
+  });
 });
+

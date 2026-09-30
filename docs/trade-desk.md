@@ -464,6 +464,16 @@ Cost: the social sources, RSS, captions and local transcription are free (transc
 CPU time). Only the pick extraction uses a model, about one call per video; a transcript is
 typically 3–8k tokens, so a low-cost LiteLLM model costs a fraction of a cent per video.
 
+### What's working
+
+The track record (Journal tab, `GET /track-record`, and the weekly Discord summary) opens with a
+scoreboard: every tracked source side by side — trade ideas by conviction, candidates the review
+rejected, breakout alerts, ideas where NX agrees or not, bullish and bearish report calls, the
+social scan's names and each YouTube channel — with closed and open counts and the average result
+against SPY in the direction of the call. A source gets a verdict only with at least 30 closed
+records: "ahead" or "behind" SPY when the month-by-month results are consistent (|t| ≥ 2),
+otherwise "no clear difference". A source that stays behind is a candidate to switch off.
+
 ## Broker holdings and your alerts
 
 With `TRADE_DESK_BROKER_ACCOUNT` set (a real moomoo account id or its last

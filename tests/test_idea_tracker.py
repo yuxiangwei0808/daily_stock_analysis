@@ -306,3 +306,33 @@ def test_repository_lookups_by_id_prefix_and_conversation(repo):
     second = repo.create_advice({"ticker": "AAA", "parent_advice_id": first["id"]})
     repo.create_advice({"ticker": "BBB"})
     assert [job["id"] for job in repo.conversation_advice(first["conversation_id"])] == [second["id"], first["id"]]
+
+
+def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict():
+    def closed(kind, n, excess, **extra):
+        rows = []
+        for i in range(n):
+            month = 7 + i % 3
+            row = {"kind": kind, "status": "closed", "signal_day": f"2026-{month:02d}-{10 + i % 15:02d}", **extra}
+            if kind in ("idea", "breakout"):
+                row.update(return_pct=excess + 1.0 + (i % 5) * 0.1, spy_return_pct=1.0 if extra.get("direction") == "long" else -1.0)
+            elif kind == "verdict":
+                row.update(return_10d_pct=excess + 0.5 + (i % 5) * 0.1, spy_10d_pct=0.5)
+            else:
+                row.update(return_20d_pct=excess + 2.0 + (i % 5) * 0.1, spy_20d_pct=2.0)
+            rows.append(row)
+        return rows
+    everything = (closed("idea", 36, 1.2, verdict="high", direction="long")
+                  + closed("idea", 12, -0.5, verdict="rejected", direction="short")
+                  + closed("verdict", 40, -1.0, group="bearish", direction="short")
+                  + closed("influencer", 5, 3.0, channel="Meet Kevin", direction="long")
+                  + [{"kind": "social", "status": "open", "signal_day": "2026-09-29"}])
+    board = {item["key"]: item for item in it.scoreboard(everything)}
+    assert board["idea:high"]["verdict"] == "ahead" and board["idea:high"]["closed"] == 36
+    assert board["idea:high"]["avg_vs_spy_pct"] == pytest.approx(1.4, abs=0.01)
+    assert board["idea:rejected"]["verdict"] == "too_early"
+    # A bearish report call on a stock that lagged SPY by 1% (plus noise) is 1% in the call's favour.
+    assert board["verdict:bearish"]["avg_vs_spy_pct"] == pytest.approx(0.8, abs=0.01)
+    assert board["verdict:bearish"]["verdict"] == "ahead"
+    assert board["youtube:Meet Kevin"]["verdict"] == "too_early" and board["social"]["open"] == 1
+    assert "breakout" not in board  # nothing tracked, nothing listed

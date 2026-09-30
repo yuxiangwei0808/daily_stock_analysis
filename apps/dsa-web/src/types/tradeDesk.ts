@@ -414,6 +414,9 @@ export interface TrackRecord {
   verdicts?: Record<string, { label: string; byNx: Record<string, TrackRecordVerdictCell> }>;
   recent: Array<{ ticker: string; direction: string; verdict: string; signalDay: string; status: string;
     reason?: string | null; returnPct?: number | null; kind?: string; nxAlignment?: string | null }>;
+  /** Every tracked source vs SPY in the call's direction, with a cautious verdict. */
+  scoreboard?: Array<{ key: string; label: string; horizon: string; closed: number; open: number;
+    avgVsSpyPct?: number | null; t?: number | null; verdict: 'too_early' | 'ahead' | 'behind' | 'no_difference' | string }>;
 }
 
 export type HoldingRuleKind = 'price_below' | 'price_above' | 'days_to_expiry' | 'pnl_below' | 'pnl_above';
