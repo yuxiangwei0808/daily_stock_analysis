@@ -349,6 +349,18 @@ async def holdings_view(request: Request):
             "summary": service.holdings.last_summary()}
 
 
+@router.get("/holdings/journal")
+async def trade_journal(request: Request):
+    """Your round trips and realized P&L from moomoo fills, as last built (None before the first build)."""
+    return {"journal": await invoke(get_service(request).holdings.journal)}
+
+
+@router.post("/holdings/journal/refresh")
+async def refresh_trade_journal(request: Request):
+    """Reads a year of fills from moomoo (read-only) and rebuilds the journal."""
+    return {"journal": await invoke(get_service(request).holdings.refresh_journal)}
+
+
 @router.get("/holdings/risk")
 async def holdings_risk(request: Request):
     """Portfolio delta, time decay, beta to SPY/QQQ and index-move scenarios (read-only estimates)."""

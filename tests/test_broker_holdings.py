@@ -594,3 +594,22 @@ def test_held_conditions_do_not_retry_the_insert_every_minute(store):
     assert first
     monitor.check(MIDDAY)
     assert len(calls) == first
+
+
+def test_the_trade_journal_is_built_from_fills_and_kept(store):
+    provider = store.service.provider("live")
+    calls = []
+
+    def broker_deals(account, security_firm="FUTUINC", days=365, today=None):
+        calls.append((account, security_firm, days))
+        return [{"deal_id": "1", "code": "US.SPY260918P550000", "side": "SELL_SHORT", "qty": 1, "price": 2.0,
+                 "time": "2026-09-01 10:00:00"},
+                {"deal_id": "2", "code": "US.NVDA", "side": "BUY", "qty": 5, "price": 100.0, "time": "2026-09-02 10:00:00"},
+                {"deal_id": "3", "code": "US.NVDA", "side": "SELL", "qty": 5, "price": 110.0, "time": "2026-09-09 10:00:00"}]
+    provider.broker_deals = broker_deals
+    assert store.journal() is None
+    bars = {"SPY": [{"date": "2026-09-18", "close": 560.0}]}
+    built = store.refresh_journal(date(2026, 9, 30), bars=lambda tickers, period="1y": bars)
+    assert calls == [("1234", "FUTUINC", 365)] and built["fills"] == 3
+    assert built["total"]["trades"] == 2 and built["total"]["total_pnl"] == 250.0  # 200 premium kept + 50 on NVDA
+    assert store.journal()["built_at"] == built["built_at"]

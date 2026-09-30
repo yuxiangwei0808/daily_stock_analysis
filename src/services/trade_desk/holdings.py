@@ -510,6 +510,36 @@ class Holdings:
         from .risk import portfolio_risk
         return portfolio_risk(self.view(now=now), download=download, now=now)
 
+    def journal(self) -> Optional[Dict[str, Any]]:
+        """The last trade journal built from your fills, or None."""
+        return self.repo.setting("trade_journal", None)
+
+    def refresh_journal(self, today: Optional[date] = None, *,
+                        bars: Callable[..., Dict[str, List[Dict[str, Any]]]] = trend.download_bars) -> Dict[str, Any]:
+        """Reads a year of fills from moomoo (read-only) and rebuilds the trade journal (see journal.py)."""
+        from . import journal
+        if not enabled():
+            raise ValueError("Set TRADE_DESK_BROKER_ACCOUNT to read your fills")
+        today = today or _local(utcnow()).date()
+        deals = self.service.provider("live").broker_deals(
+            account(), os.getenv("TRADE_DESK_BROKER_SECURITY_FIRM", "FUTUINC") or "FUTUINC", days=365, today=today)
+        expired = sorted({info["underlying"] for info in (parse_code(deal["code"]) for deal in deals)
+                          if info["kind"] == "option" and info["expiry"] < today})
+        history: Dict[str, List[Dict[str, Any]]] = {}
+        if expired:
+            try:
+                history = bars(expired, period="1y")
+            except Exception as exc:  # expired options then count as worthless, flagged
+                logger.info("Journal expiry closes unavailable: %s", type(exc).__name__)
+
+        def expiry_close(ticker: str, day: date) -> Optional[float]:
+            rows = history.get(ticker) or history.get(ticker.replace("-", ".")) or []
+            return next((float(row["close"]) for row in rows if str(row["date"])[:10] == day.isoformat()), None)
+        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close)
+        result.update(built_at=utcnow().isoformat(), fills=len(deals))
+        self.repo.set_setting("trade_journal", result)
+        return result
+
     def last_summary(self) -> Optional[Dict[str, Any]]:
         return self.repo.setting("portfolio_summary", None)
 

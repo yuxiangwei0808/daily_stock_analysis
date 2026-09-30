@@ -20,6 +20,7 @@ import math
 import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from types import ModuleType
@@ -1500,13 +1501,12 @@ class MoomooProvider:
             return self._snapshot_rows(codes[:middle]) + self._snapshot_rows(codes[middle:])
         return data.to_dict("records") if hasattr(data, "to_dict") else list(data or [])
 
-    def broker_positions(self, account: str, security_firm: str = "FUTUINC") -> dict[str, Any]:
-        """Read-only positions and USD account value for one real account.
+    @contextmanager
+    def _trade_account(self, account: str, security_firm: str):
+        """A short-lived trade context on one real account: ``(ctx, acc_id, real_env, ok, account_row)``.
 
-        ``account`` is the account id or its trailing digits. A short-lived trade
-        context is opened on the same OpenD (and encryption) as quotes; only
-        ``get_acc_list``, ``position_list_query`` and ``accinfo_query`` are called,
-        and trading is never unlocked.
+        ``account`` is the account id or its trailing digits. The context uses the same OpenD (and
+        encryption) as quotes and is closed on exit; trading is never unlocked.
         """
         if not self.configured:
             raise ProviderError("opend_not_configured", "Trade Desk OpenD is not configured")
@@ -1532,7 +1532,16 @@ class MoomooProvider:
             if len(matches) != 1:
                 raise ProviderError("broker_account_unavailable",
                                     f"{len(matches)} real accounts end with {wanted[-4:]}")
-            acc_id = int(matches[0]["acc_id"])
+            yield ctx, int(matches[0]["acc_id"]), real, ok, matches[0]
+        finally:
+            ctx.close()
+
+    def broker_positions(self, account: str, security_firm: str = "FUTUINC") -> dict[str, Any]:
+        """Read-only positions and USD account value for one real account.
+
+        Only ``get_acc_list``, ``position_list_query`` and ``accinfo_query`` are called.
+        """
+        with self._trade_account(account, security_firm) as (ctx, acc_id, real, ok, match):
             ret, positions = ctx.position_list_query(trd_env=real, acc_id=acc_id)
             if ret != ok:
                 raise ProviderError("broker_positions_unavailable", f"position_list_query: {_text(positions)[:160]}")
@@ -1540,8 +1549,7 @@ class MoomooProvider:
                                           currency=self._enum("Currency", "USD", "USD"))
             if ret != ok:
                 raise ProviderError("broker_positions_unavailable", f"accinfo_query: {_text(info)[:160]}")
-        finally:
-            ctx.close()
+        matches = [match]
         summary = info.to_dict("records")[0] if hasattr(info, "to_dict") and len(info) else {}
         rows = positions.to_dict("records") if hasattr(positions, "to_dict") else []
         return {"account": f"…{str(acc_id)[-4:]}", "account_type": _text(matches[0].get("acc_type")),
@@ -1560,6 +1568,40 @@ class MoomooProvider:
                 "closed_today_pl": sum(_safe_float(row.get("today_pl_val")) or 0 for row in rows
                                        if (_safe_float(row.get("qty")) or 0) == 0
                                        and _text(row.get("code")).startswith("US."))}
+
+    def broker_deals(self, account: str, security_firm: str = "FUTUINC", days: int = 365,
+                     today: Optional[date] = None) -> list[dict[str, Any]]:
+        """Read-only filled trades (US codes) of one real account over the last ``days`` days.
+
+        ``history_deal_list_query`` covers at most 90 days a call, so the span is read in 90-day
+        windows; ``deal_list_query`` adds today's fills. Nothing else is called.
+        """
+        today = today or datetime.now(timezone.utc).date()
+        rows: list[dict[str, Any]] = []
+        with self._trade_account(account, security_firm) as (ctx, acc_id, real, ok, _match):
+            end = today
+            start_limit = today - timedelta(days=days)
+            while end > start_limit:
+                start = max(start_limit, end - timedelta(days=89))
+                ret, data = ctx.history_deal_list_query(start=start.isoformat(), end=end.isoformat(),
+                                                        trd_env=real, acc_id=acc_id)
+                if ret != ok:
+                    raise ProviderError("broker_deals_unavailable", f"history_deal_list_query: {_text(data)[:160]}")
+                rows += data.to_dict("records") if hasattr(data, "to_dict") else []
+                end = start - timedelta(days=1)
+            ret, data = ctx.deal_list_query(trd_env=real, acc_id=acc_id)
+            if ret == ok and hasattr(data, "to_dict"):
+                rows += data.to_dict("records")
+        deals, seen = [], set()
+        for row in rows:
+            code, deal_id = _text(row.get("code")), _text(row.get("deal_id"))
+            if not code.startswith("US.") or deal_id in seen or _text(row.get("status")) not in ("OK", "N/A", ""):
+                continue
+            seen.add(deal_id)
+            deals.append({"deal_id": deal_id, "code": code, "name": _text(row.get("stock_name")),
+                          "side": _text(row.get("trd_side")), "qty": _safe_float(row.get("qty")) or 0.0,
+                          "price": _safe_float(row.get("price")) or 0.0, "time": _text(row.get("create_time"))})
+        return sorted(deals, key=lambda deal: (deal["time"], deal["deal_id"]))
 
     def _enum(self, group_name: str, member: str, default: str = "") -> Any:
         group = getattr(self._sdk, group_name, None) if self._sdk is not None else None

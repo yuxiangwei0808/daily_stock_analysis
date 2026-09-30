@@ -555,6 +555,20 @@ what you hold, as read-only estimates:
 The daily portfolio summary on Discord adds one line in percentages only, e.g. "Risk
 (estimate): if SPY -3% ≈ -0.7% · QQQ -5% ≈ -1.0% · time decay ≈ -0.02%/day".
 
+## Your trades (journal from moomoo fills)
+
+The Journal tab's **Your trades** card reads a year of your filled trades from moomoo
+(`POST /holdings/journal/refresh`; read-only: `history_deal_list_query` in 90-day windows plus
+today's `deal_list_query`, trading is never unlocked) and builds round trips per contract, first in,
+first out (`trade_desk/journal.py`). Options still open after expiry settle at intrinsic value from
+the underlying's close on the expiry day (worthless when that close is unknown, flagged); open
+positions are not counted; spreads count as their legs; amounts are gross of commissions. The card
+shows realized P&L, win rate and average hold, grouped by type (long/short stock, calls, puts), by
+holding time, and by whether the trade agreed with one of the system's tracked signals (idea,
+breakout, report call, social pick, YouTube call) on the ticker in the five days before it opened,
+plus the best and worst trades. The result is kept (`GET /holdings/journal`); it is web-only and never
+sent to Discord.
+
 ## Your own trade plan and fresh news
 
 A request may carry `plan_legs`: up to four legs, either objects

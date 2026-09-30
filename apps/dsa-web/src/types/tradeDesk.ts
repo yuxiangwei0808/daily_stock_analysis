@@ -548,3 +548,38 @@ export interface PortfolioRisk {
   totals: { deltaDollars: number; spyBetaDollars: number; spyBetaPct?: number | null; thetaPerDay: number; thetaPct?: number | null };
   scenarios: Array<{ key: string; label: string; pnl: number; pct?: number | null }>;
 }
+
+export interface TradeJournalStats {
+  trades: number;
+  totalPnl: number;
+  winRate?: number | null;
+  avgPnl?: number | null;
+  avgReturnPct?: number | null;
+  avgHoldDays?: number | null;
+}
+
+export interface TradeJournalTrip {
+  code: string;
+  ticker: string;
+  kind: 'stock' | 'call' | 'put' | string;
+  position: 'long' | 'short' | string;
+  opened: string;
+  closed: string;
+  pnl: number;
+  returnPct?: number | null;
+  how: string;
+}
+
+export interface TradeJournal {
+  builtAt: string;
+  fills: number;
+  firstFill?: string | null;
+  total: TradeJournalStats;
+  byType: Array<TradeJournalStats & { label: string }>;
+  byHold: Array<TradeJournalStats & { key: string; label: string }>;
+  bySignal: Array<TradeJournalStats & { key: string; label: string }>;
+  byUnderlying: Array<TradeJournalStats & { ticker: string }>;
+  best: TradeJournalTrip[];
+  worst: TradeJournalTrip[];
+  openLotsNote: string;
+}
