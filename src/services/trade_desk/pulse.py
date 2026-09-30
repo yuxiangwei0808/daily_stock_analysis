@@ -199,7 +199,7 @@ class MarketPulse:
                     self._emit("market_move", {
                         "underlying": ticker, "kind": "day_move", "price": price, "change_pct": change,
                         "message": f"{ticker} {'up' if change > 0 else 'down'} {abs(change):.1f}% today "
-                                   f"(past {sign}{level:g}%) at {price:.2f}.{self._reason(ticker)}"},
+                                   f"(past {sign}{level:g}%) at {price:.2f}.{self._reason(ticker, now)}"},
                         f"pulse-move:{day}:{ticker}:{sign}{level:g}")
 
     def _prune(self, day: str) -> None:
@@ -212,9 +212,12 @@ class MarketPulse:
         if len(self._seen) > 20000:
             self._seen = set(list(self._seen)[-10000:])
 
-    def _reason(self, ticker: str) -> str:
+    def _reason(self, ticker: str, now: datetime) -> str:
+        """The newest headline still within NEWS_MAX_AGE of the move: at the open, before the
+        first sweep of the day, yesterday afternoon's story is not "latest news"."""
         with self._lock:
-            recent = self._headlines.get(ticker) or []
+            recent = [item for item in self._headlines.get(ticker) or []
+                      if now - datetime.fromisoformat(item["published_at"]) <= NEWS_MAX_AGE]
         return f" Latest news: {recent[0]['title']} ({recent[0]['source']})" if recent else ""
 
     # -- news ----------------------------------------------------------

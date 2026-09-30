@@ -51,6 +51,7 @@ class TradeDeskWorker:
         self.owner = identity()
         self._stop = threading.Event()
         self._thread = None
+        self._delivery = None  # the Discord sender thread; a slow Discord never holds up monitoring
         self._last_tick = None
         self._error = None
         self._leader = False
@@ -128,7 +129,8 @@ class TradeDeskWorker:
     def _breakout_history(self):
         new_york = ZoneInfo("America/New_York")
         return [(event["payload"].get("underlying"), "up" if event["payload"].get("kind") == "breakout" else "down",
-                 datetime.fromisoformat(event["created_at"]).astimezone(new_york).date())
+                 datetime.fromisoformat(event["created_at"]).astimezone(new_york).date(),
+                 event["payload"].get("group"), event["payload"].get("group_move"))
                 for event in self.repo.events(limit=500, newest=True, types=["breakout"],
                                               since=(utcnow() - timedelta(days=10)).isoformat())]
 
@@ -196,7 +198,6 @@ class TradeDeskWorker:
 
     def run_once(self):
         from data_provider.us_session import session_window
-        from .quality import candidate_quotes_fresh
         was_leader = self._leader
         self._leader = self.repo.lease(self.owner)
         if not self._leader:
@@ -208,6 +209,43 @@ class TradeDeskWorker:
         self._last_tick = utcnow().isoformat()
         now = utcnow()
         regular_session = session_window(now)[0] == "regular"
+
+        try:
+            if not self._check_plans(now, regular_session):
+                return
+        except Exception as exc:  # e.g. a moment of "database is locked"; alerts below still run
+            logger.warning("Plan monitoring failed: %s", type(exc).__name__)
+        # One OpenD snapshot a minute serves the market pulse, breakouts and holdings.
+        quotes = self._shared_quotes(session_window(now)[0])
+        if self._pulse is not None:
+            try:
+                self._pulse.tick(now, quotes=quotes, shared=True)
+            except Exception as exc:  # the watch must never stop plan monitoring
+                logger.warning("Market pulse check failed: %s", type(exc).__name__)
+        if self._holdings is not None:
+            try:
+                self._holdings.tick(now, session_window(now)[0], quotes=quotes, shared=True)
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Holdings monitor failed: %s", type(exc).__name__)
+        if self._tracker is not None:
+            try:
+                self._tracker.tick(now)
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Idea tracker failed: %s", type(exc).__name__)
+        if self._opportunities is not None:
+            try:
+                self._breakouts.tick(now, session_window(now)[0], quotes=quotes, shared=True)
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Breakout watch failed: %s", type(exc).__name__)
+            try:
+                self._opportunities.tick(regular_session)
+            except Exception as exc:  # optional; plan monitoring continues
+                logger.warning("Trade opportunities failed: %s", type(exc).__name__)
+        self._deliver_in_background()
+
+    def _check_plans(self, now, regular_session):
+        """Plan triggers, targets, time exits and outages; False when leadership was lost mid-way."""
+        from .quality import candidate_quotes_fresh
 
         def held(position):
             # Owned shares alone are coverage, not a position opened by the plan.
@@ -228,7 +266,7 @@ class TradeDeskWorker:
                        for leg in plan["candidate"]["legs"])
 
         # An unfilled plan whose contracts have expired can no longer be entered.
-        positions = [p for p in self.service.positions() if p["plan"].get("monitoring")
+        positions = [p for p in self.service.monitored_positions() if p["plan"].get("monitoring")
                      and p["status"] != "closed" and
                      (held(p) or (p["plan"].get("status") not in {"invalidated", "archived"}
                                   and not expired(p["plan"])))]
@@ -252,7 +290,7 @@ class TradeDeskWorker:
             if plan.get("status") in {"invalidated", "archived"} and not held(position):
                 continue
             if not self.repo.lease(self.owner):
-                return
+                return False
             if position["status"] == "reconciliation_required":
                 self._emit("position_reconciliation", {"plan_id": plan["id"], "underlying": position["underlying"],
                     "message": "Check exercise/assignment and record resulting fills. Position has not been closed.",
@@ -289,7 +327,7 @@ class TradeDeskWorker:
                     f"outage:{plan['id']}:{utcnow().strftime('%Y%m%d%H')}")
                 continue
             if not self.repo.lease(self.owner):
-                return
+                return False
             above = plan.get("trigger_direction", "above") == "above"
             price = snapshot.spot
             checks = [
@@ -312,33 +350,20 @@ class TradeDeskWorker:
                     "price": price, "level": level, "message": message,
                     "data_mode": plan["data_mode"], "ledger": plan["ledger"]},
                     f"{event_type}:{plan['id']}:{level}")
-        # One OpenD snapshot a minute serves the market pulse, breakouts and holdings.
-        quotes = self._shared_quotes(session_window(now)[0])
-        if self._pulse is not None:
-            try:
-                self._pulse.tick(now, quotes=quotes, shared=True)
-            except Exception as exc:  # the watch must never stop plan monitoring
-                logger.warning("Market pulse check failed: %s", type(exc).__name__)
-        if self._holdings is not None:
-            try:
-                self._holdings.tick(now, session_window(now)[0], quotes=quotes, shared=True)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Holdings monitor failed: %s", type(exc).__name__)
-        if self._tracker is not None:
-            try:
-                self._tracker.tick(now)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Idea tracker failed: %s", type(exc).__name__)
-        if self._opportunities is not None:
-            try:
-                self._breakouts.tick(now, session_window(now)[0], quotes=quotes, shared=True)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Breakout watch failed: %s", type(exc).__name__)
-            try:
-                self._opportunities.tick(regular_session)
-            except Exception as exc:  # optional; plan monitoring continues
-                logger.warning("Trade opportunities failed: %s", type(exc).__name__)
-        self._deliver()
+        return True
+
+    def _deliver_in_background(self):
+        """Sends pending alerts on their own thread; one pass at a time, the next tick starts the next."""
+        if self._delivery is not None and self._delivery.is_alive():
+            return
+        self._delivery = threading.Thread(target=self._deliver_safely, name="trade-desk-discord", daemon=True)
+        self._delivery.start()
+
+    def _deliver_safely(self):
+        try:
+            self._deliver()
+        except Exception as exc:  # the next pass retries; nothing was marked delivered
+            logger.warning("Trade Desk Discord delivery failed: %s", type(exc).__name__)
 
     def _deliver(self):
         if not self.repo.preferences()["discord_enabled"]:

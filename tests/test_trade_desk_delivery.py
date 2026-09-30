@@ -164,3 +164,20 @@ def test_pulse_treats_never_synced_holdings_as_unknown(repo, monkeypatch):
                                                          provider=lambda mode: None))
     with pytest.raises(LookupError):
         desk._held_tickers()  # the pulse then applies every level to every name
+
+
+def test_a_slow_discord_does_not_hold_up_the_monitor(repo, monkeypatch):
+    import threading
+    for name in ("MARKET_PULSE_ENABLED", "TRADE_OPPORTUNITIES_ENABLED", "TRADE_DESK_BROKER_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+    desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
+    release, passes = threading.Event(), []
+    desk._deliver = lambda: passes.append(1) or release.wait(5)
+    desk._deliver_in_background()
+    desk._deliver_in_background()  # a pass is still sending: no second one
+    assert desk._delivery.is_alive() and len(passes) == 1
+    release.set()
+    desk._delivery.join(5)
+    desk._deliver_in_background()
+    desk._delivery.join(5)
+    assert len(passes) == 2

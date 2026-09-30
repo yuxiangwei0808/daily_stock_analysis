@@ -122,15 +122,15 @@ def _session_row(ticker, intraday, daily, now, session, start, end):
         return None
     intraday.index = intraday.index.tz_convert(NEW_YORK)
     bars = intraday[(intraday.index >= start) & (intraday.index < end) & (intraday.index <= now)]
-    if bars.empty:
+    fresh = not bars.empty and 0 <= (now - bars.index[-1]).total_seconds() <= MAX_QUOTE_AGE_SECONDS
+    price = float(bars.iloc[-1]["Close"]) if fresh else None
+    stamp = bars.index[-1] if fresh else None
+    if fresh and (not math.isfinite(price) or price <= 0):
         return None
-    stamp = bars.index[-1]
-    age = (now - stamp).total_seconds()
-    if age < 0 or age > MAX_QUOTE_AGE_SECONDS:
+    if not fresh and session != "postmarket":
         return None
-    price = float(bars.iloc[-1]["Close"])
-    if not math.isfinite(price) or price <= 0:
-        return None
+    # After the close a name without a fresh after-hours trade still has a known regular-session day:
+    # it keeps its day fields (breadth, sector table) with a flat after-hours move.
     # Pre/open moves use the prior regular close; after-hours moves use today's close.
     reference = None
     day_change_pct = day_amount = None
@@ -165,6 +165,11 @@ def _session_row(ticker, intraday, daily, now, session, start, end):
                     reference = float(regular.iloc[-1]["Close"])
     if reference is None or not math.isfinite(reference) or reference <= 0:
         return None
+    if not fresh:
+        if day_change_pct is None:
+            return None
+        price, bars = reference, bars.iloc[0:0]
+        stamp = regular.index[-1]  # the regular close this row is built on
     volume = bars["Volume"].fillna(0).clip(lower=0)
     change_pct = round((price / reference - 1) * 100, 4)
     return {

@@ -494,6 +494,27 @@ def test_breakouts_confirm_on_a_second_check_and_rest_for_a_week():
     assert [payload["underlying"] for payload in sent] == ["SPY"]
 
 
+def test_a_fund_group_stays_quiet_after_a_restart_and_through_its_cooldown():
+    history = _bars(n=80, step=0.5)
+    quotes = {"TQQQ": {"price": 150.0, "volume": 900_000, "change_pct": 3.0}}
+    today, group = NY_MIDDAY.date(), opp._breakout_group("QQQ", "")
+    for past in ([("QQQ", "up", today, group, "up")],  # restarted after QQQ alerted this morning
+                 [("QQQ", "up", today - timedelta(days=1), group, "up")],  # QQQ broke out yesterday
+                 [("SQQQ", "down", today - timedelta(days=2), group, "up")],  # the inverse fund broke down
+                 [("QQQ", "up", today, None, None)]):  # alerts stored before groups were recorded
+        sent, tick = [], {"clock": 0.0}
+        watch = opp.BreakoutWatch(lambda: FakeProvider(quotes), lambda t, p, k: sent.append(p) or {"id": 1},
+                                  watchlist=lambda: ["TQQQ"], bars=lambda tickers: {t: history for t in tickers},
+                                  clock=lambda: tick["clock"], earnings_date=lambda ticker, day: None,
+                                  confirm_checks=1, history=lambda: past)
+        watch.tick(NY_MIDDAY, "regular")
+        watch._loading.result(timeout=10)
+        watch.tick(NY_MIDDAY, "regular")
+        assert sent == [], past
+    assert opp._group_direction("SQQQ", "", "down") == "up" and opp._group_direction("TQQQ", "", "up") == "up"
+    assert opp._group_direction("TSLZ", "T-Rex 2X Inverse Tesla Daily Target ETF", "up") == "down"
+
+
 def test_mirror_and_single_stock_funds_group_together():
     assert opp._breakout_group("SOXL", "") == opp._breakout_group("SOXS", "")
     assert opp._breakout_group("TSLL", "Direxion Daily TSLA Bull 2X Shares") == "TSLA"

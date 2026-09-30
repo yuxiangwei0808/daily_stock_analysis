@@ -650,16 +650,23 @@ class TradeDeskService:
         plan = self.repo.plan(plan_id)
         if not plan:
             raise ValueError("Plan does not exist")
+        return self._position(plan)
+
+    def _position(self, plan):
         expiry = next((datetime.fromisoformat(leg["expiry"]).date()
                        for leg in plan["candidate"]["legs"] if leg.get("expiry")), None)
         with self._lock:
             snapshot = self._latest.get((plan["data_mode"], plan["candidate"]["underlying"], expiry))
             if snapshot is None:
                 snapshot = self._latest.get((plan["data_mode"], plan["candidate"]["underlying"]))
-        return position_from_fills(plan, self.repo.fills(plan_id), snapshot)
+        return position_from_fills(plan, self.repo.fills(plan["id"]), snapshot)
 
     def positions(self):
-        return [self.position(plan["id"]) for plan in self.repo.plans(limit=None)]
+        return [self._position(plan) for plan in self.repo.plans(limit=None)]
+
+    def monitored_positions(self):
+        """Positions of plans with monitoring on: the monitor reads fills only for those, every tick."""
+        return [self._position(plan) for plan in self.repo.plans(limit=None) if plan.get("monitoring")]
 
     def reconcile(self, plan_id, notes):
         if not notes.strip():

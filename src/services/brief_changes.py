@@ -37,9 +37,13 @@ def changes_only(results: List[Any], db: Any, config: Any, slot: Optional[str],
     except Exception as exc:  # without history the full brief goes out
         logger.info("Changes-only brief unavailable: %s", type(exc).__name__)
         return None
+    # The baseline ends at the slot's time today, not at this run's start: a run killed at 12:07
+    # and caught up at 12:10 must not compare against rows the killed attempt already saved.
+    hour, minute = (int(part) for part in slot.split(":"))
+    cutoff = min(started_at, started_at.replace(hour=hour, minute=minute, second=0, microsecond=0))
     latest = {}
     for row in sorted(earlier, key=lambda item: item.id):
-        if row.created_at and row.created_at < started_at and row.created_at.date() == started_at.date():
+        if row.created_at and row.created_at < cutoff and row.created_at.date() == started_at.date():
             latest[row.code] = row
     if not latest:
         return None  # the day's first run: nothing to compare with

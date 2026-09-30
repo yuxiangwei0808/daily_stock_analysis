@@ -455,6 +455,21 @@ def test_holding_side_reads_the_payoff_shape(store):
     assert store.side("SPY") == "short"  # a long put
 
 
+def test_a_hedged_holding_keeps_its_side(store):
+    def holding(*rows):
+        store.repo.set_setting("broker_holdings", {**RAW, "positions": [
+            {"code": code, "qty": qty, "side": "LONG" if qty > 0 else "SHORT", "average_cost": 5.0, "price": 5.0}
+            for code, qty in rows]})
+    holding(("US.SPY", 1000.0), ("US.SPY261016C700000", -1.0))
+    assert store.side("SPY") == "long"  # 1,000 shares with one covered call
+    holding(("US.SPY", 1000.0), ("US.SPY261016P550000", 2.0))
+    assert store.side("SPY") == "long"  # protective puts
+    holding(("US.SPY", -300.0), ("US.SPY261016C650000", 1.0))
+    assert store.side("SPY") == "short"  # a short hedged with a call
+    holding(("US.SPY261016C600000", 1.0), ("US.SPY261016P600000", 1.0))
+    assert store.side("SPY") == "mixed"  # a straddle
+
+
 def test_expired_options_are_labelled_in_the_summary_and_skip_rules(store):
     from src.services.trade_desk.portfolio import build_summary
     raw = store.raw()
@@ -537,5 +552,45 @@ def test_discord_safe_hides_sizes_and_what_you_paid():
     }
     for text, expected in cases.items():
         assert h.discord_safe(text) == expected, text
-    for kept in ("alert below 145", "MA50 break", "expires in 2 days", "loss 40%"):
-        assert h.discord_safe(kept) == kept
+    for kept in ("alert below 145", "MA50 break", "expires in 2 days", "loss 40%", "sell half at 180 before 10/28",
+                 "roll the 10/17 150C at 9:45 am", "NVDA>145 then add", "under the 50-day line"):
+        assert h.discord_safe(kept) == kept, kept
+
+
+def test_discord_safe_hides_option_sizes_premiums_and_bare_counts():
+    cases = {
+        "sold 3 puts for 2.10 credit": "sold [n] puts for [amount] credit",
+        "bought 2 calls at 1.50": "bought [n] calls at [amount]",
+        "my 10 calls": "my [n] calls", "sold 4x 150P": "sold [n]x 150P",
+        "holding 1,200 AAPL": "holding [n] AAPL", "my 5 NVDA calls": "my [n] NVDA calls",
+        "sold 100 shares at 150 last week": "sold [n] shares at [amount] last week",
+        "collected 85 premium": "collected [amount] premium",
+    }
+    for text, expected in cases.items():
+        assert h.discord_safe(text) == expected, text
+
+
+def test_a_rule_edited_while_it_fires_keeps_its_new_level(store):
+    rule = store.add_rule({"ticker": "NVDA", "kind": "price_above", "value": 100})
+    store.update_rule(rule["id"], {"value": 200})  # the edit lands after the check read the old level
+    store.mark_triggered(rule["id"], "2026-09-29T15:00:00", True, arm=0)
+    [saved] = [item for item in store.rules() if item["id"] == rule["id"]]
+    assert saved["status"] == "active" and saved["triggered_at"] is None and saved["value"] == 200
+    store.mark_triggered(rule["id"], "2026-09-29T15:01:00", True, arm=saved["arm"])
+    assert [item for item in store.rules() if item["id"] == rule["id"]][0]["status"] == "triggered"
+
+
+def test_held_conditions_do_not_retry_the_insert_every_minute(store):
+    raw = store.raw()
+    for row in raw["positions"]:
+        row["code"] = row["code"].replace("261016", "260929")  # expires in days: an alert that stays true
+    store.repo.set_setting("broker_holdings", raw)
+    monitor, events = _monitor(store)
+    calls = []
+    emit = monitor._emit
+    monitor._emit = lambda *args: calls.append(args[2]) or emit(*args)
+    monitor.check(MIDDAY)
+    first = len(calls)
+    assert first
+    monitor.check(MIDDAY)
+    assert len(calls) == first

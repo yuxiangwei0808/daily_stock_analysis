@@ -77,6 +77,9 @@ def test_news_alerts_only_new_material_headlines_after_warm_up():
     provider.quotes = {"AAPL": {"price": 104, "change_pct": 4.0}}
     pulse.check_moves(NOW)
     assert events[-1][1]["message"].endswith("Latest news: Apple old story (Reuters)")
+    # The next morning, before a sweep, that headline is no longer the latest news.
+    pulse.check_moves(NOW + timedelta(hours=18))
+    assert "Latest news" not in events[-1][1]["message"]
 
 
 def test_keyword_rule_covers_an_unavailable_model():

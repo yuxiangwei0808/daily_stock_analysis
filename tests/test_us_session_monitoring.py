@@ -1242,3 +1242,23 @@ def test_after_the_close_breadth_and_sectors_use_the_regular_session(monkeypatch
     assert result["sectors"][0]["change_pct"] == pytest.approx(2.0)
     text = scan.render_us_market_scan(result)
     assert "today's regular session" in text and "| Day move |" in text
+
+
+def test_after_the_close_names_without_after_hours_trades_keep_their_day(monkeypatch):
+    from src.services import us_market_scan as scan
+    current = at("2026-09-21T17:00")
+    # CCC and XLU have no after-hours bar at all; their regular close is still known.
+    intraday = pd.concat({
+        "AAA": bars([at("2026-09-21T09:30"), at("2026-09-21T15:55"), current - pd.Timedelta(minutes=5)],
+                    [100, 105, 105.2], [50000, 50000, 5000]),
+        "CCC": bars([at("2026-09-21T09:30"), at("2026-09-21T15:55")], [100, 96], [50000, 50000]),
+        "XLU": bars([at("2026-09-21T09:30"), at("2026-09-21T15:55")], [100, 101], [50000, 50000]),
+    }, axis=1, names=["Ticker", "Price"])
+    daily = pd.concat({code: bars([datetime(2026, 9, 18), datetime(2026, 9, 21)], [100, close])
+                       for code, close in (("AAA", 105), ("CCC", 96), ("XLU", 101))}, axis=1, names=["Ticker", "Price"])
+    monkeypatch.setattr("yfinance.download", lambda *a, **k: intraday if k["interval"] == "5m" else daily)
+    monkeypatch.setattr(scan, "fetch_us_universe", lambda source: ["AAA", "CCC"])
+    result = scan.collect_us_market_scan([], now=current)
+    assert (result["advancers"], result["decliners"]) == (1, 1)  # CCC counted on its regular-session day
+    assert result["losers"][0]["code"] == "CCC" and result["losers"][0]["change_pct"] == pytest.approx(-4.0)
+    assert any(sector["change_pct"] == pytest.approx(1.0) for sector in result["sectors"])  # XLU kept

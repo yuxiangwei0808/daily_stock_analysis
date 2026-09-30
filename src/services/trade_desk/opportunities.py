@@ -72,6 +72,16 @@ def _breakout_group(ticker: str, name: str) -> str:
             if word not in {"ETF", "ETN", "USD", "SHARES", "DAILY", "BULL", "BEAR", "LONG", "SHORT"}:
                 return word
     return ticker  # names outside the watchlist; watchlist breakouts are not capped
+
+
+_INVERSE_MEMBERS = {"SH", "SDS", "SPXU", "SPXS", "QID", "SQQQ", "PSQ", "SOXS", "SSG", "TZA", "RWM", "TWM",
+                    "DOG", "DXD", "SDOW"}
+
+
+def _group_direction(ticker: str, name: str, direction: str) -> str:
+    """The move of the group's underlying: SQQQ breaking down is QQQ breaking out."""
+    inverse = ticker in _INVERSE_MEMBERS or (geared_fund(name) and re.search(r"\b(bear|short|inverse)\b", name or "", re.I))
+    return ("down" if direction == "up" else "up") if inverse else direction
 OPENING_GRACE = timedelta(minutes=15)
 REGIME = ("SPY", "QQQ")
 # Broad inverse ETFs; single stocks are shorted directly or with puts.
@@ -431,7 +441,8 @@ class BreakoutWatch:
         self._history = history  # past breakout alerts: (ticker, "up"|"down", date)
         self._recent: Dict[tuple, date] = {}
         self._pending: Dict[tuple, int] = {}  # (ticker, direction) -> consecutive checks beyond the level
-        self._groups_alerted: set = set()
+        self._groups_alerted: set = set()  # groups alerted today, either way
+        self._recent_groups: Dict[tuple, date] = {}  # (group, underlying move) -> last alert day
         self._provider = provider
         self._emit = emit
         self._watchlist = watchlist
@@ -538,14 +549,18 @@ class BreakoutWatch:
                 continue
             key = f"breakout:{day.isoformat()}:{ticker}:{direction}"
             group = _breakout_group(ticker, quote.get("name", ""))
+            move = _group_direction(ticker, quote.get("name", ""), direction)
             last = self._recent.get((ticker, direction))
+            group_last = self._recent_groups.get((group, move))
             if (key in self._alerted or group in self._groups_alerted
                     or (last is not None and (day - last).days < BREAKOUT_COOLDOWN_DAYS)
+                    or (group_last is not None and (day - group_last).days < BREAKOUT_COOLDOWN_DAYS)
                     or (ticker not in watchlist and self._scan_alerts.get(day, 0) >= SCAN_BREAKOUTS_PER_DAY)):
                 continue
             self._alerted.add(key)
             self._groups_alerted.add(group)
             self._recent[(ticker, direction)] = day
+            self._recent_groups[(group, move)] = day
             sign, level = (1, levels["high20"]) if up else (-1, levels["low20"])
             stop, atr = price - sign * 1.5 * levels["atr"], levels["atr"]
             change = quote.get("change_pct")
@@ -591,7 +606,7 @@ class BreakoutWatch:
                        + (f"\n{earnings_line}" if earnings_line else "") + (f"\n{note}" if note else "") + f"\nHow: {how}.")
             event = self._emit("breakout", {"underlying": ticker, "kind": "breakout" if up else "breakdown",
                                             "price": price, "level": round(level, 2), "change_pct": change,
-                                            "message": message}, key)
+                                            "group": group, "group_move": move, "message": message}, key)
             if event is not None and self._track is not None:
                 try:
                     if same_way and review.get("stop") and review.get("targets"):
@@ -621,14 +636,24 @@ class BreakoutWatch:
         return earnings.note(when, day)
 
     def _load_recent(self, day: date) -> None:
-        """Breakouts already alerted in the last week, so a running trend is not re-announced daily."""
-        self._recent = {}
+        """Breakouts already alerted in the last week, so a running trend is not re-announced daily.
+
+        History rows are (ticker, direction, day) plus, when recorded, the fund group and the
+        group's move: after a restart or on the next day, TQQQ stays quiet once QQQ has alerted.
+        """
+        self._recent, self._recent_groups = {}, {}
         if self._history is None:
             return
         try:
-            for ticker, direction, when in self._history():
+            for row in self._history():
+                ticker, direction, when = row[:3]
+                group, move = ((row[3], row[4]) if len(row) >= 5 and row[3]
+                               else (_breakout_group(ticker, ""), _group_direction(ticker, "", direction)))
                 if (day - when).days < BREAKOUT_COOLDOWN_DAYS:
                     self._recent[(ticker, direction)] = max(when, self._recent.get((ticker, direction), when))
+                    self._recent_groups[(group, move)] = max(when, self._recent_groups.get((group, move), when))
+                if when == day:
+                    self._groups_alerted.add(group)
         except Exception as exc:  # the cooldown then starts from today
             logger.info("Breakout history unavailable: %s", type(exc).__name__)
 

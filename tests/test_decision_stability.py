@@ -407,3 +407,23 @@ def test_us_calls_confirmed_by_the_trend_are_not_downgraded_at_levels() -> None:
         _unsupported_fund_flow(),
     )
     assert buy.decision_type == "buy"
+
+
+def test_after_the_close_structure_uses_the_regular_session_close() -> None:
+    # The stock closed at 35.2, above resistance; an after-hours print of 33.4 sits just under it.
+    result = _result(decision_type="buy", operation_advice="买入", score=65, current_price=33.4)
+    result.market_snapshot = {"quote_session": "postmarket", "regular_close": 35.2, "regular_change_pct": 3.1}
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _fund_flow(main=-1_000_000, five_day=-2_000_000),
+    )
+    assert result.decision_type == "buy"  # not downgraded as "near resistance" because of the after-hours print
+    during = _result(decision_type="buy", operation_advice="买入", score=65, current_price=33.4)
+    during.market_snapshot = {"quote_session": "regular", "regular_close": 35.2}
+    stabilize_decision_with_structure(
+        during,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _fund_flow(main=-1_000_000, five_day=-2_000_000),
+    )
+    assert during.decision_type == "hold"  # in the session the live price still counts

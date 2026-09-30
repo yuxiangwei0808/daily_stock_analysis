@@ -180,6 +180,15 @@ class TestDiscordSender(unittest.TestCase):
 
     @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
     @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_a_long_rate_limit_wait_is_capped(self, mock_post, mock_sleep):
+        mock_post.side_effect = [_response(429, {"retry_after": 900}), _response(204)]
+        sender = DiscordSender(_config(discord_webhook_url="https://discord.com/webhook/1"))
+
+        self.assertTrue(sender.send_to_discord("hello"))
+        mock_sleep.assert_called_once_with(30.0)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
     def test_send_webhook_long_content_retries_429_and_continues(self, mock_post, mock_sleep):
         mock_post.side_effect = [
             _response(204),

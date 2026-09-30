@@ -210,19 +210,49 @@ def moneyness(position: Dict[str, Any]) -> str:
 
 
 _SIZE_WORDS = r"(contracts?|cts?|shares?|shs?|sh|lots?)"
-_COST_WORDS = r"(cost(?:\s+basis)?|basis|avg(?:\s+cost)?|average(?:\s+cost)?|paid|bought\s+at|entry)"
+_COST_WORDS = (r"(cost(?:\s+basis)?|basis|avg(?:\s+cost)?|average(?:\s+cost)?|paid|bought\s+at|entry|fill(?:ed)?|"
+               r"credit|debit|premium)")
+# A bare number stays only when it reads as an alert level, a percentage, a strike, a date or a time.
+_LEVEL_WORDS = {"below", "above", "under", "over", "near", "at", "to", "target", "stop", "support", "resistance",
+                "break", "breaks", "cross", "crosses", "reclaim", "reclaims", "hit", "hits", "reach", "reaches",
+                "from", "between", "and", "or", "than", "if", "when", "ma", "sma", "ema"}
+_TIME_UNITS = r"\s*(?:%|-?\s*(?:days?|dte|trading\s+days?|wks?|weeks?|months?|mins?|minutes?|hrs?|hours?|am|pm)\b)"
+_OPTION_CONTEXT = re.compile(r"\b(calls?|puts?|options?|spreads?|contracts?|cts?|credit|debit|premium|shares?|shs?)\b",
+                             re.I)
+_NOTE_NUMBER = re.compile(r"(?<![\w.$€£¥\[/:])(\d[\d,.]*\d|\d)([kKmMxX]|[CcPp])?\b(?![/:]\d)")
+
+
+def _bare_number(match: "re.Match[str]") -> str:
+    text, start = match.string, match.start()
+    suffix = (match.group(2) or "").lower()
+    if suffix in {"c", "p"} or re.match(_TIME_UNITS, text[match.end():], re.I):
+        return match.group(0)  # a strike, a percentage, a count of days
+    if suffix:
+        return "[n]" + match.group(2)  # 2k, 4x
+    before = text[max(0, start - 40):start]
+    previous = re.search(r"([A-Za-z]+|[<>=~@])\s*$", before)
+    word = previous.group(1).lower() if previous else ""
+    if word in {"at", "@", "for"} and _OPTION_CONTEXT.search(re.split(r"[.;!?\n]", before)[-1]):
+        return "[amount]"  # "2 calls at 1.50", "3 puts for 2.10": what you paid or collected
+    if word in _LEVEL_WORDS or word in {"<", ">", "=", "~"}:
+        return match.group(0)
+    return "[n]"
 
 
 def discord_safe(text: str) -> str:
     """Your note may mention amounts or sizes; Discord gets percentages only.
 
-    Money ($1,200 / 1.2k usd), sizes (300 shares, 300sh, 5 cts, 2k shares, 3 lots) and
-    what you paid (cost basis 152.30, avg 41, bought at 12.5) become placeholders.
-    Plain price levels ("below 145") stay: they are alert levels, not account data.
+    Money ($1,200 / 1.2k usd), sizes (300 shares, 300sh, 5 cts, 2k shares, 3 lots, 4x) and
+    what you paid (cost basis 152.30, avg 41, bought at 12.5, 2 calls at 1.50, 3 puts for 2.10
+    credit) become placeholders; so does any other bare number ("holding 1,200 AAPL").
+    Numbers that read as alert levels ("below 145"), percentages, strikes (150P), dates,
+    times and day counts stay: they are not account data.
     """
     text = re.sub(r"[$€£¥]\s?[\d,.]+\s*[kKmM]?\b|\b[\d,.]+\s*[kKmM]?\s*(?:usd|dollars?)\b", "[amount]", text, flags=re.I)
     text = re.sub(rf"\b\d[\d,.]*\s*[kKmM]?\s*{_SIZE_WORDS}\b", r"[n] \1", text, flags=re.I)
-    return re.sub(rf"\b{_COST_WORDS}(\s*(?:of|is|was|=|:)?\s*)\d[\d,.]*", r"\1\2[amount]", text, flags=re.I)
+    text = re.sub(rf"\b{_COST_WORDS}(\s*(?:of|is|was|at|@|=|:)?\s*)\d[\d,.]*", r"\1\2[amount]", text, flags=re.I)
+    text = re.sub(r"\b\d[\d,.]*(\s*(?:credit|debit|premium|cr|db)\b)", r"[amount]\1", text, flags=re.I)
+    return _NOTE_NUMBER.sub(_bare_number, text)
 
 
 def describe_option(position: Dict[str, Any], with_days: bool = True) -> str:
@@ -390,25 +420,31 @@ class Holdings:
     def side(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> str:
         """Net direction of what you hold in a ticker: "long", "short", "mixed", or "" when not held.
 
-        Shares count by sign; options by their expiry payoff across the strikes (a bull call
-        spread or short puts are long, long puts or a bear spread are short).
+        Exposure is counted in shares: shares by their signed quantity, options by their expiry
+        payoff slope across the strikes (100 × contracts for a single leg deep in the money). So
+        a bull call spread or short puts are long, long puts or a bear spread are short, and a
+        hedge (1,000 shares with a protective put or a covered call) leaves the holding long.
+        "mixed" means the net is under a tenth of the gross, e.g. a straddle.
         """
         view = view or self.view(live=False)
-        held, exposure = False, 0.0
+        held, exposures = False, []
         for row in view["stocks"]:
             if row["ticker"] == ticker:
-                held, exposure = True, exposure + (1 if row["qty"] > 0 else -1)
+                held = True
+                exposures.append(float(row["qty"]))
         for row in view["options"]:
             if row["underlying"] != ticker or row.get("expired"):
                 continue
             held = True
             strikes = [leg["strike"] for leg in row["legs"]]
             low, high = min(strikes) * 0.9, max(strikes) * 1.1
-            slope = _intrinsic(row["legs"], high) - _intrinsic(row["legs"], low)
-            exposure += 1 if slope > 0 else -1 if slope < 0 else 0
+            exposures.append((_intrinsic(row["legs"], high) - _intrinsic(row["legs"], low)) / (high - low))
         if not held:
             return ""
-        return "long" if exposure > 0 else "short" if exposure < 0 else "mixed"
+        net, gross = sum(exposures), sum(abs(value) for value in exposures)
+        if gross == 0 or abs(net) < 0.1 * gross:
+            return "mixed"
+        return "long" if net > 0 else "short"
 
     def weight(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> Optional[float]:
         view = view or self.view(live=False)
@@ -542,11 +578,12 @@ class Holdings:
                 raise KeyError(rule_id)
             self._save_rules([item for item in rules if item["id"] != rule_id])
 
-    def mark_triggered(self, rule_id: str, when: str, once: bool) -> None:
+    def mark_triggered(self, rule_id: str, when: str, once: bool, arm: int = 0) -> None:
+        """Marks the rule as it was checked; an edit in between (a new level re-arms it) or a pause wins."""
         with self._lock:
             rules = self.rules()
             for item in rules:
-                if item["id"] == rule_id:
+                if item["id"] == rule_id and int(item.get("arm") or 0) == arm and item["status"] == "active":
                     item["triggered_at"] = when
                     if once:
                         item["status"] = "triggered"
@@ -599,6 +636,9 @@ class HoldingsMonitor:
         self._levels: Dict[str, Dict[str, float]] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="holdings")
         self._tasks: Dict[str, Any] = {}
+        # Keys already stored (sent now or before a restart): a held condition re-checks every
+        # minute, and each check would otherwise try, and fail, one more insert on the database.
+        self._stored: Dict[str, str] = {}
         self.errors: Dict[str, str] = {}
         self.error_at: Dict[str, str] = {}
 
@@ -693,9 +733,16 @@ class HoldingsMonitor:
 
     # alerts ------------------------------------------------------------------
     def _alert(self, kind: str, ticker: str, message: str, key: str) -> Any:
-        return self._emit("holding_alert", {"underlying": ticker, "kind": kind,
-                                            "message": message + "\nReview in moomoo — nothing is traded automatically."},
-                          key)
+        today = utcnow().date().isoformat()
+        if self._stored.get(key):
+            return None
+        event = self._emit("holding_alert", {"underlying": ticker, "kind": kind,
+                                             "message": message + "\nReview in moomoo — nothing is traded automatically."},
+                           key)
+        if len(self._stored) > 5000:  # old days' keys never come back
+            self._stored = {k: day for k, day in self._stored.items() if day == today}
+        self._stored[key] = today  # stored now, or already stored (None): either way done; an error raises first
+        return event
 
     def check(self, now: datetime, quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         local = _local(now)
@@ -751,7 +798,8 @@ class HoldingsMonitor:
                        + (f"\nNote: {discord_safe(rule['note'])}" if rule.get("note") else ""))
             key = f"rule:{rule['id']}:{rule.get('arm') or 0}:{day if rule['repeat'] == 'daily' else 'once'}"
             self._alert("rule", rule["ticker"], message, key)
-            self.holdings.mark_triggered(rule["id"], utcnow().isoformat(), rule["repeat"] == "once")
+            self.holdings.mark_triggered(rule["id"], utcnow().isoformat(), rule["repeat"] == "once",
+                                         int(rule.get("arm") or 0))
 
     def _option_defaults(self, position, day, morning, last_hour):
         if position.get("expired"):

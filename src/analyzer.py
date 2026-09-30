@@ -1045,7 +1045,14 @@ def stabilize_decision_with_structure(
             price_position = {}
 
         trend_dict = _as_dict_for_decision_guard(trend_result)
+        # After the close the displayed quote is an after-hours print; structure is judged on the
+        # regular session's close and change, like the brief's day basis.
+        snapshot = getattr(result, "market_snapshot", None) or {}
+        postmarket = isinstance(snapshot, dict) and snapshot.get("quote_session") == "postmarket"
+        regular_close = _first_numeric_value(snapshot.get("regular_close")) if postmarket else None
+        regular_change = _first_numeric_value(snapshot.get("regular_change_pct")) if postmarket else None
         current_price = _first_numeric_value(
+            regular_close,
             getattr(result, "current_price", None),
             price_position.get("current_price"),
             trend_dict.get("current_price"),
@@ -1181,7 +1188,7 @@ def stabilize_decision_with_structure(
                     flow_bias=flow_bias,
                 )
         elif decision_type == "hold":
-            change_pct = _first_numeric_value(getattr(result, "change_pct", None))
+            change_pct = _first_numeric_value(regular_change, getattr(result, "change_pct", None))
             if change_pct is not None and change_pct < 0 and near_support and flow_bias != "outflow":
                 _set_structural_hold_wording(
                     result,

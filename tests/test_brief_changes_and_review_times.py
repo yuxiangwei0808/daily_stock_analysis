@@ -61,3 +61,12 @@ def test_extended_hours_prints_are_labelled_without_a_regular_close():
     assert NotificationService._brief_price(result).startswith(" | 101.00 (+2.00%) · AH 101.50")
     result.market_snapshot = {"quote_session": "regular"}
     assert NotificationService._brief_price(result) == " | 101.50 (+0.40%)"
+
+
+def test_a_caught_up_run_does_not_compare_with_rows_the_killed_attempt_saved():
+    morning, killed, caught_up = datetime(2026, 9, 25, 9, 50), datetime(2026, 9, 25, 12, 6), datetime(2026, 9, 25, 12, 10)
+    earlier = [_row(1, "AAA", "Watch", 50, morning), _row(20, "AAA", "Buy", 72, killed)]  # saved, never pushed
+    db = SimpleNamespace(get_analysis_history=lambda **kwargs: earlier)
+    config = SimpleNamespace(brief_changes_only_times=["12:00"], report_language="en")
+    changed, header = changes_only([_result("AAA", "Buy", 72), _result("BBB", "Watch", 50)], db, config, "12:00", caught_up)
+    assert [r.code for r in changed] == ["AAA", "BBB"] and "since 09:50" in header

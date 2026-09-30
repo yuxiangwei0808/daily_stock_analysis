@@ -31,8 +31,7 @@ def test_only_a_recent_interrupted_latest_slot_is_resumed(tmp_path, monkeypatch)
     old = now - timedelta(minutes=rs.SCHEDULE_CATCHUP_MINUTES + 5)
     rs._write_run_record({"slot": slot, "status": "started", "started_at": old.isoformat(), "attempts": 1})
     assert check(service, times) is False  # too late to be useful
-    rs._write_run_record({"slot": "2000-01-01 09:40", "status": "started", "started_at": started.isoformat()})
-    assert check(service, times) is False  # a different slot
+    # A record for another slot means the latest slot never ran: see the pinned-clock test below.
 
 
 def test_a_run_whose_worker_is_still_alive_is_not_started_again(tmp_path, monkeypatch):
@@ -65,3 +64,50 @@ def test_the_worker_marks_its_own_run_finished(tmp_path, monkeypatch):
     sent = []
     rs._run_scheduled_analysis_process(SimpleNamespace(put=sent.append), None, {})
     assert rs._read_run_record()["status"] == "finished" and sent == [{"success": True, "error": None}]
+
+
+def _pin_clock(monkeypatch, now):
+    class Pinned(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+    monkeypatch.setattr(rs, "datetime", Pinned)
+    import src.scheduler as scheduler_module
+    return scheduler_module
+
+
+def test_a_slot_missed_while_the_server_was_down_starts_if_recent(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "db.sqlite"))
+    times = ["09:40", "12:00", "16:10"]
+    rs._write_run_record({"slot": "2026-09-29 09:40", "status": "finished", "started_at": "2026-09-29T09:40:00"})
+    _pin_clock(monkeypatch, datetime(2026, 9, 29, 12, 3))
+    assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is True  # 12:00 never ran
+    _pin_clock(monkeypatch, datetime(2026, 9, 29, 13, 30))
+    assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is False  # too late now
+
+
+def test_runs_are_labelled_only_within_the_slot_window():
+    assert rs._slot_label(["09:40", "12:00"], datetime(2026, 9, 29, 12, 10)) == "12:00"
+    assert rs._slot_label(["09:40", "12:00"], datetime(2026, 9, 29, 15, 0)) is None  # a late manual start
+    assert "scheduled_slot" in rs.SCHEDULE_ARGS_OVERRIDE_KEYS  # reaches the child process
+
+
+def test_the_child_process_keeps_the_scheduled_slot():
+    service = rs.RuntimeSchedulerService(schedule_args_overrides={"scheduled_slot": "12:00", "unknown": 1})
+    assert service._make_schedule_args().scheduled_slot == "12:00"
+
+
+def test_a_pushed_run_is_not_caught_up_again(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "db.sqlite"))
+    times = ["09:40", "12:00", "16:10"]
+    rs._write_run_record({"slot": "2026-09-29 12:00", "status": "started", "pid": os.getpid(),
+                          "started_at": "2026-09-29T12:00:05", "attempts": 1})
+    rs.mark_run_pushed()
+    assert rs._read_run_record()["status"] == "pushed"
+    _pin_clock(monkeypatch, datetime(2026, 9, 29, 12, 20))
+    assert rs.RuntimeSchedulerService._interrupted_slot(SimpleNamespace(), times) is False
+    rs._write_run_record({"slot": "2026-09-29 12:00", "status": "started", "pid": os.getpid() + 1, "attempts": 1,
+                          "started_at": "2026-09-29T12:00:05"})
+    rs.mark_run_pushed()  # another process's run is left alone
+    assert rs._read_run_record()["status"] == "started"

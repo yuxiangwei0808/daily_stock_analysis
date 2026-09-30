@@ -34,6 +34,7 @@ SCHEDULE_CATCHUP_MINUTES = 60
 SCHEDULE_CATCHUP_ATTEMPTS = 2
 _RUNTIME_ANALYSIS_LOCK = threading.Lock()
 SCHEDULE_ARGS_OVERRIDE_KEYS = {
+    "scheduled_slot",  # MARKET_REVIEW_TIMES and BRIEF_CHANGES_ONLY_TIMES read it in the child process
     "no_notify",
     "no_market_review",
     "dry_run",
@@ -127,6 +128,27 @@ def _process_alive(pid: Any) -> bool:
             return b"python" in handle.read()
     except OSError:
         return True
+
+
+def mark_run_pushed() -> None:
+    """Called by the scheduled run itself once its brief is sent: catch-up then leaves it alone,
+    even if a restart cuts off the steps after the push (market review, backtest)."""
+    try:
+        record = _read_run_record()
+        if record.get("pid") == os.getpid() and record.get("status") == "started":
+            _write_run_record({**record, "status": "pushed", "pushed_at": datetime.now().isoformat()})
+    except Exception as exc:  # bookkeeping only
+        logger.info("Could not mark the scheduled run as pushed: %s", type(exc).__name__)
+
+
+def _slot_label(times: List[str], now: datetime) -> Optional[str]:
+    """The "HH:MM" slot a scheduled run belongs to: the latest one within the catch-up window, else None.
+
+    A run started long after any slot (e.g. at 15:00) is not labelled with the 12:00 slot,
+    so it gets the full brief and follows MARKET_REVIEW_TIMES like a manual run.
+    """
+    from src.scheduler import current_slot
+    return current_slot(times, now, window_minutes=SCHEDULE_CATCHUP_MINUTES)
 
 
 def _latest_slot(times: List[str], now: datetime) -> Optional[str]:
@@ -566,7 +588,8 @@ class RuntimeSchedulerService:
             process = context.Process(
                 target=self._analysis_process_target,
                 args=(result_queue, stock_codes, {**self._schedule_args_overrides,
-                                                  "scheduled_slot": slot[-5:] if slot else None}),
+                                                  "scheduled_slot": _slot_label(self._current_times(), datetime.now())
+                                                  if scheduled else None}),
                 name="runtime-scheduled-analysis",
             )
             timeout = self._analysis_timeout_seconds()
@@ -817,14 +840,31 @@ class RuntimeSchedulerService:
             self._enabled = True
             thread.start()
             if not run_immediately and self._interrupted_slot(times):
-                self._run_in_background_thread(scheduled_analysis)
+                def catch_up() -> None:
+                    # After a schedule edit the stopped run's watchdog can hold the lock for a
+                    # moment while it drains; wait briefly instead of recording a busy skip.
+                    deadline = time.monotonic() + 15
+                    while self._run_lock.locked() and time.monotonic() < deadline:
+                        time.sleep(0.2)
+                    scheduled_analysis()
+                self._run_in_background_thread(catch_up)
 
     def _interrupted_slot(self, times: List[str]) -> bool:
-        """Whether the latest scheduled run was cut off by a restart and should start again."""
+        """Whether the latest scheduled run was cut off by a restart (or missed while the server
+        was down) and should start now."""
         record = _read_run_record()
         now = datetime.now()
         slot = _latest_slot(times, now)
-        if not slot or record.get("slot") != slot or record.get("status") != "started":
+        if not slot:
+            return False
+        if record.get("slot") != slot:
+            # No run at all for the latest slot: the server was down at that time. Start it if
+            # the slot is recent; the schedule library would otherwise wait until tomorrow.
+            if _slot_label(times, now) != slot[-5:]:
+                return False
+            logger.warning("Scheduled run for %s was missed while the server was down; starting it now", slot)
+            return True
+        if record.get("status") != "started":
             return False
         try:
             started = datetime.fromisoformat(record["started_at"])

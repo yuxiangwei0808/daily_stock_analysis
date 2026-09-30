@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 DISCORD_MAX_CONTENT_LENGTH = 2000
 DISCORD_MAX_RETRIES = 3
+DISCORD_MAX_RETRY_AFTER_SECONDS = 30.0
 DISCORD_CHUNK_SLEEP_SECONDS = 1
 
 
@@ -285,6 +286,12 @@ class DiscordSender:
 
     @staticmethod
     def _get_retry_after_seconds(response, attempt: int) -> float:
+        # A long rate-limit wait would hold the caller (a report push, the alert sender) for
+        # minutes; after the cap the retry simply fails and is reported as a failed send.
+        return min(DISCORD_MAX_RETRY_AFTER_SECONDS, DiscordSender._retry_after_hint(response, attempt))
+
+    @staticmethod
+    def _retry_after_hint(response, attempt: int) -> float:
         try:
             retry_after = response.json().get('retry_after')
             if retry_after is not None:
