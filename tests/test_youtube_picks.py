@@ -98,7 +98,7 @@ def test_the_scan_records_picks_once_and_retries_a_failed_video(repo):
             raise RuntimeError("model down")
         return json.dumps({"picks": answers.get(video_id, [])})
 
-    def captions(video_id):
+    def captions(video_id, fetch=True):
         if video_id in {"spoken", "silent"}:
             return ""  # no captions
         return "words"
@@ -123,13 +123,42 @@ def test_the_scan_records_picks_once_and_retries_a_failed_video(repo):
     assert "silent" in repo.setting(yp.PROCESSED_KEY)
 
 
+def test_rate_limited_captions_wait_instead_of_transcribing(repo):
+    feed = [_video("recent", 5, "recent"), _video("older", 24 * 10, "older")]
+    clock = {"t": 0.0}
+    asked, transcribed = [], []
+
+    def captions(video_id, fetch=True):
+        asked.append((video_id, fetch))
+        raise yp.CaptionsBlocked("429" if fetch else "paused")
+
+    def transcribe(video_id, should_stop):
+        transcribed.append(video_id)
+        return "spoken words"
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: feed, read_captions=captions,
+                            transcribe=transcribe, generate=lambda prompt: '{"picks": [{"ticker": "MU", "stance": "bullish"}]}',
+                            trading_day=_weekday, clock=lambda: clock["t"])
+    assert job.run(NOW) == 0 and transcribed == []  # captions exist: no CPU spent on the audio
+    assert asked == [("older", True), ("recent", False)]  # one refusal pauses caption downloads
+    assert not repo.setting(yp.PROCESSED_KEY)
+    clock["t"] += yp.CAPTION_PAUSE_SECONDS + 1
+    asked.clear()
+    job.run(NOW + timedelta(hours=7))
+    assert asked[0] == ("older", True) and transcribed == []  # asked again after the pause, still waiting
+    job.run(NOW + timedelta(days=1, hours=1))  # refused for a day: the audio is read, last week's videos only
+    assert transcribed == ["recent"]
+    assert set(repo.setting(yp.PROCESSED_KEY)) == {"recent", "older"}  # the older one is skipped, not transcribed
+    [row] = repo.tracked_ideas()
+    assert row["video_id"] == "recent" and row["source"] == "audio"
+
+
 def test_a_stop_ends_the_pass_during_a_transcription(repo):
     feed = [_video("a", 2, "a"), _video("b", 3, "b")]
 
     def transcribe(video_id, should_stop):
         raise InterruptedError("stopping")
     job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: feed,
-                            read_captions=lambda vid: "", transcribe=transcribe,
+                            read_captions=lambda vid, fetch=True: "", transcribe=transcribe,
                             generate=lambda prompt: '{"picks": []}', trading_day=_weekday)
     assert job.run(NOW) == 0 and not repo.setting(yp.PROCESSED_KEY)
 

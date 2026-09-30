@@ -9,6 +9,8 @@ captions is transcribed locally when ``YOUTUBE_TRANSCRIBE_AUDIO`` is on (yt-dlp 
 the audio into a temporary folder, faster-whisper transcribes it on the CPU, and the
 folder is deleted right away). Titles and descriptions say too little to read a call
 from, so a video with no transcript is skipped (retried on later passes, then dropped).
+Captions that YouTube refuses to send (rate limit) are waited for, not replaced by the
+audio, until they have been refused for a day; audio is read for the last week only.
 The model is ``YOUTUBE_PICKS_BACKEND`` (default: the routine ``GENERATION_BACKEND``); a
 low-cost LiteLLM model reads a video for a fraction of a cent.
 
@@ -40,6 +42,9 @@ RECENT_DAYS = 30
 MAX_TRANSCRIPT_CHARS = 60000
 MAX_PICKS_PER_VIDEO = 10
 TRANSCRIPT_ATTEMPTS = 3  # passes a video without a transcript is retried before it is dropped
+CAPTION_PAUSE_SECONDS = 6 * 3600  # after YouTube rate-limits caption downloads, stop asking for this long
+BLOCKED_AUDIO_AFTER = timedelta(days=1)  # captions refused this long: transcribe the audio instead
+AUDIO_BACKFILL_DAYS = 7  # audio is transcribed only for videos of the last week (CPU time)
 MAX_AUDIO_SECONDS = 2 * 3600  # longer videos (live streams) are not transcribed
 AUDIO_PREFIX = "dsa-yt-audio-"
 PROCESSED_KEY = "youtube_processed"
@@ -100,8 +105,13 @@ def _pick_track(tracks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def captions(video_id: str) -> str:
-    """The video's caption text, or "" when it has none (or YouTube refuses)."""
+class CaptionsBlocked(Exception):
+    """The video has captions, but they were not downloaded: YouTube refused (rate limit) or fetching is paused."""
+
+
+def captions(video_id: str, fetch: bool = True) -> str:
+    """The video's caption text, or "" when it has none. Raises CaptionsBlocked when it has captions
+    that YouTube refuses to send (HTTP 429/403), or that ``fetch=False`` says not to ask for."""
     import requests
     response = requests.post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", timeout=20,
                              json={"context": {"client": _ANDROID}, "videoId": video_id},
@@ -112,7 +122,13 @@ def captions(video_id: str) -> str:
     track = _pick_track(tracks)
     if track is None:
         return ""
-    text = re.sub(r"<[^>]+>", " ", _get(track["baseUrl"]).text)
+    if not fetch:
+        raise CaptionsBlocked("paused")
+    reply = requests.get(track["baseUrl"], timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    if reply.status_code in (403, 429):
+        raise CaptionsBlocked(str(reply.status_code))
+    reply.raise_for_status()
+    text = re.sub(r"<[^>]+>", " ", reply.text)
     return " ".join(html.unescape(text).split())
 
 
@@ -342,6 +358,8 @@ class YouTubeScanJob:
         # Local transcription of videos without captions, when YOUTUBE_TRANSCRIBE_AUDIO is on.
         self._transcribe = transcribe if transcribe is not None else (transcribe_audio if transcribe_enabled() else None)
         self._missing: Dict[str, int] = {}  # video -> passes without a transcript
+        self._blocked_since: Dict[str, datetime] = {}  # video -> first time its captions were refused
+        self._captions_paused_until = 0.0
         self._stopping = threading.Event()
         self._generate = generate
         self._trading_day = trading_day
@@ -381,16 +399,31 @@ class YouTubeScanJob:
         logger.info("YouTube scan: %d picks recorded", added)
         return added
 
-    def _transcript(self, video_id: str) -> Tuple[str, str]:
-        """(text, source): the captions, else the transcribed audio, else ("", "")."""
+    def _transcript(self, video: Dict[str, Any], now: datetime) -> Tuple[str, str]:
+        """(text, source): "captions", "audio", "" (no transcript: retried, then dropped) or "skip" (too
+        old to transcribe). Raises _Deferred when the captions exist but YouTube is refusing them for now."""
+        video_id = video["video_id"]
+        fetch = self._clock() >= self._captions_paused_until
         try:
-            text = self._captions(video_id)
+            text = self._captions(video_id, fetch=fetch)
             if text:
+                self._blocked_since.pop(video_id, None)
                 return text, "captions"
-        except Exception as exc:
+        except CaptionsBlocked as exc:
+            if fetch:  # refused just now: stop asking for a while, YouTube lifts these blocks slowly
+                self._captions_paused_until = self._clock() + CAPTION_PAUSE_SECONDS
+                logger.warning("YouTube refused captions (%s); captioned videos wait %d hours", exc,
+                               CAPTION_PAUSE_SECONDS // 3600)
+            if now - self._blocked_since.setdefault(video_id, now) < BLOCKED_AUDIO_AFTER or self._transcribe is None:
+                raise _Deferred() from exc
+            # Refused for a day: the audio is the only way left to read the video.
+        except Exception as exc:  # the video page or the network failed: try again on the next pass
             logger.info("YouTube captions unavailable for %s: %s", video_id, type(exc).__name__)
+            raise _Deferred() from exc
         if self._transcribe is None:
             return "", ""
+        if video["published"] < now - timedelta(days=AUDIO_BACKFILL_DAYS):
+            return "", "skip"
         started = time.monotonic()
         text = self._transcribe(video_id, should_stop=self._stopping.is_set)
         logger.info("YouTube audio for %s transcribed in %.0f s", video_id, time.monotonic() - started)
@@ -410,15 +443,17 @@ class YouTubeScanJob:
                 if video["video_id"] in processed or video["published"] < cutoff:
                     continue
                 try:
-                    text, source = self._transcript(video["video_id"])
+                    text, source = self._transcript(video, now)
                 except InterruptedError:
                     return added
+                except _Deferred:
+                    continue  # its captions come on a later pass
                 except Exception as exc:  # download or transcription failed: counted like a missing transcript
                     logger.warning("YouTube transcription failed for %s: %s", video["video_id"], type(exc).__name__)
                     text, source = "", ""
                 if not text:
                     misses = self._missing[video["video_id"]] = self._missing.get(video["video_id"], 0) + 1
-                    if misses >= TRANSCRIPT_ATTEMPTS:  # captions rarely arrive later; stop asking
+                    if misses >= TRANSCRIPT_ATTEMPTS or source == "skip":  # captions rarely arrive later; stop asking
                         processed[video["video_id"]] = video["published"].date().isoformat()
                         self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
                         logger.info("YouTube video %s has no transcript; skipped", video["video_id"])
@@ -439,6 +474,10 @@ class YouTubeScanJob:
                 # Saved after each video: a restart never pays for the same video twice.
                 self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
         return added
+
+
+class _Deferred(Exception):
+    """The video is left for a later pass without counting as a miss."""
 
 
 def _pruned(processed: Dict[str, str], now: datetime) -> Dict[str, str]:

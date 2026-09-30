@@ -402,7 +402,11 @@ left by a killed process is removed on the next pass, and a server stop ends a t
 at its next segment. The model (about 1.6 GB) downloads on first use into
 `YOUTUBE_WHISPER_DIR` (default: the Hugging Face cache) and is released after each pass.
 Titles and descriptions say too little to read a call from: a video without a transcript is
-retried on the next two passes and then skipped. Videos over two hours (live streams) are not
+retried on the next two passes and then skipped. When YouTube rate-limits caption downloads
+(HTTP 429), captioned videos are not transcribed from audio: caption requests pause for 6 hours
+and the videos wait for a later pass; only captions refused for a whole day fall back to the
+audio. Audio is transcribed only for videos of the last 7 days, so the first pass after a restart
+does not spend hours of CPU on the 30-day backfill; older videos without captions are skipped. Videos over two hours (live streams) are not
 transcribed. yt-dlp downloads go against YouTube's terms for automated access and can stop
 working when YouTube changes; captioned channels are unaffected.
 
