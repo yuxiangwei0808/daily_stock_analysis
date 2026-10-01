@@ -42,7 +42,8 @@ export function TradeJournalCard() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    tradeDeskApi.getTradeJournal().then((result) => setJournal(result.journal)).catch(() => undefined);
+    tradeDeskApi.getTradeJournal().then((result) => setJournal(result.journal))
+      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'The saved journal could not be loaded'));
   }, []);
   const refresh = async () => {
     setBusy(true); setError('');
@@ -67,6 +68,12 @@ export function TradeJournalCard() {
             <strong style={{ color: tone(journal.total.totalPnl) }}>{money(journal.total.totalPnl)}</strong> · win rate {pct(journal.total.winRate, false)}
             {journal.total.avgHoldDays != null ? ` · average hold ${journal.total.avgHoldDays} days` : ''}
           </p>
+          {journal.unmatchedCloses ? (
+            <p className="text-xs text-secondary-text" data-testid="journal-unmatched">
+              {journal.unmatchedCloses} sale{journal.unmatchedCloses === 1 ? '' : 's'} of positions held without a matching fill
+              (bought before this history, or delivered by an assignment) are not counted: their cost is unknown.
+            </p>
+          ) : null}
           <div className="grid gap-4 lg:grid-cols-3">
             <StatsTable title="By type" rows={journal.byType} />
             <StatsTable title="By holding time" rows={journal.byHold} />

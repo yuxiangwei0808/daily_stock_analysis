@@ -22,6 +22,7 @@ answers show a ticker's picks from the last ``RECENT_DAYS`` days as a reference.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import os
 import re
@@ -326,11 +327,7 @@ def extract_picks(channel: str, video: Dict[str, Any], text: str,
     if not text:
         raise ValueError("no transcript")  # a title or description is not enough to read a call from
     prompt = f"{PROMPT}\n\nChannel: {channel}\nTitle: {video['title']}\nTranscript:\n{text[:MAX_TRANSCRIPT_CHARS]}"
-    raw = (generate or _generate)(prompt)
-    from src.agent.runner import try_parse_json
-    data = try_parse_json(raw or "")
-    if not isinstance(data, dict) or not isinstance(data.get("picks"), list):
-        raise ValueError("the model did not return the picks JSON")
+    data = _picks_json((generate or _generate)(prompt))
     picks, seen = [], set()
     for row in data["picks"]:
         if not isinstance(row, dict):
@@ -347,10 +344,37 @@ def extract_picks(channel: str, video: Dict[str, Any], text: str,
     return picks[:MAX_PICKS_PER_VIDEO]
 
 
+def _picks_json(raw: Optional[str]) -> Dict[str, Any]:
+    from src.agent.runner import try_parse_json
+    data = try_parse_json(raw or "")
+    if not isinstance(data, dict) or not isinstance(data.get("picks"), list):
+        raise ValueError(f"the model did not return the picks JSON ({len(raw or '')} characters)")
+    return data
+
+
+def _complete_picks_json(raw: Optional[str]) -> None:
+    """Raises unless the reply holds the whole picks JSON. A reply cut off mid-list would be
+    "repaired" by ``try_parse_json`` into fewer picks, so this check parses strictly."""
+    text = (raw or "").strip()
+    start, end = text.find("{"), text.rfind("}")
+    for candidate in [text, *re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL),
+                      text[start:end + 1] if 0 <= start < end else ""]:
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("picks"), list):
+            return
+    raise ValueError(f"the model did not return the complete picks JSON ({len(text)} characters)")
+
+
 def _generate(prompt: str) -> str:
     from src.services.trade_desk.advisor import _generation_backend
     backend, _backend_id = _generation_backend(os.getenv("YOUTUBE_PICKS_BACKEND", "").strip() or None)
-    return backend.generate(prompt, {"temperature": 0, "max_output_tokens": 2048}).text or ""
+    # A reply that is not the picks JSON (e.g. cut off) counts as that model failing, so the next
+    # configured model is tried; thinking models spend part of the output budget before answering.
+    return backend.generate(prompt, {"temperature": 0, "max_output_tokens": 8192},
+                            response_validator=_complete_picks_json).text or ""
 
 
 def _session_close(day: date) -> dtime:
@@ -554,10 +578,16 @@ class YouTubeScanJob:
         except OSError as exc:
             logger.info("Could not clear old audio folders: %s", type(exc).__name__)
         self._caption_fetches = self._requests = self._model_trouble = self._audio = 0
+        loaded = dict(processed)
         try:
             added = self._pass(now, processed, cutoff, trading)
         finally:
             release_whisper()
+            if processed != loaded:  # e.g. videos found too old, so a restart does not look them up again
+                try:
+                    self.repo.set_setting(PROCESSED_KEY, _pruned(processed, now))
+                except Exception as exc:  # a locked database: they are marked again next pass
+                    logger.info("YouTube processed list not saved: %s", type(exc).__name__)
         self.today_picks = [pick for pick in self.today_picks
                             if datetime.fromisoformat(pick["published_at"]) >= now - timedelta(days=1)]
         logger.info("YouTube scan: %d picks recorded", added)
@@ -688,7 +718,7 @@ class YouTubeScanJob:
                 except Exception as exc:  # the model failed: the transcript is kept for the next pass
                     video_id = video["video_id"]
                     failures = self._model_failures[video_id] = self._model_failures.get(video_id, 0) + 1
-                    logger.warning("YouTube picks failed for %s: %s", video_id, type(exc).__name__)
+                    logger.warning("YouTube picks failed for %s: %s: %s", video_id, type(exc).__name__, str(exc)[:200])
                     if failures >= MODEL_ATTEMPTS:
                         self._texts.pop(video_id, None)
                         processed[video_id] = video["published"].date().isoformat()

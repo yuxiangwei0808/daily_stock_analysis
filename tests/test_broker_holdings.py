@@ -197,6 +197,25 @@ def test_short_term_option_defaults(store, monkeypatch):
     assert "expiry" not in {payload["kind"] for _, payload, _ in events2}
 
 
+def test_a_quote_too_wide_at_the_open_does_not_fire_profit_or_loss_alerts(store):
+    raw = store.raw()
+    raw["positions"] = [{"code": "US.SOXS261016C35000", "name": "SOXS 261016 35.00C", "qty": 1.0, "side": "LONG",
+                         "average_cost": 0.26, "price": 0.26}]
+    store.repo.set_setting("broker_holdings", raw)
+    quotes = store.service.provider("live").quotes
+    quotes.update({"SOXS261016C35000": {"price": 0.26, "bid": 0.30, "ask": 1.50}, "SOXS": {"price": 32.7}})
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY)
+    assert not {"profit", "loss"} & {payload["kind"] for _, payload, _ in events}  # mid 0.90 would read +246%
+    quotes["SOXS261016C35000"] = {"price": 0.60, "bid": 0.58, "ask": 0.62}  # settled: a real +131%
+    monitor.check(MIDDAY + timedelta(minutes=5))
+    assert [payload["message"].split(":")[0] for _, payload, _ in events if payload["kind"] == "profit"] == \
+        ["Up 50% on cost", "Up 100% on cost"]
+    worthless = h.build_view({"positions": [{"code": "US.SOXS261016C35000", "qty": 1.0, "side": "LONG",
+                                             "average_cost": 0.26}]}, {"SOXS261016C35000": {"bid": 0.0, "ask": 0.01}}, TODAY)
+    assert worthless["options"][0]["quotes_wide"] is False  # a nearly worthless option still reports its loss
+
+
 def test_expiration_day_alerts_at_the_open_and_the_last_hour(store):
     raw = store.raw()
     for row in raw["positions"]:

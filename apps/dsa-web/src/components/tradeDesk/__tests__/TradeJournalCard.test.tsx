@@ -18,7 +18,7 @@ describe('TradeJournalCard', () => {
       byUnderlying: [],
       best: [{ code: 'MU', ticker: 'MU', kind: 'call', position: 'long', opened: '2026-09-05T10:00:00', closed: '2026-09-25T10:00:00', pnl: 900, returnPct: 150, how: 'closed' }],
       worst: [],
-      openLotsNote: 'Open positions are not counted until they are closed or expire.',
+      openLotsNote: 'Open positions are not counted until they are closed or expire.', unmatchedCloses: 2,
     } });
     render(<TradeJournalCard />);
     fireEvent.click(await screen.findByRole('button', { name: /Read fills from moomoo/ }));
@@ -27,5 +27,12 @@ describe('TradeJournalCard', () => {
     expect(card).toHaveTextContent('Long calls');
     expect(card).not.toHaveTextContent('Over 20 days');  // empty buckets are left out
     expect(card).toHaveTextContent('MU long calls · 09-05→09-25');
+    expect(screen.getByTestId('journal-unmatched')).toHaveTextContent('2 sales of positions held without a matching fill');
+  });
+
+  it('says when the saved journal could not be loaded', async () => {
+    api.getTradeJournal.mockRejectedValue(new Error('Login required'));
+    render(<TradeJournalCard />);
+    expect(await screen.findByText('Login required')).toBeInTheDocument();
   });
 });

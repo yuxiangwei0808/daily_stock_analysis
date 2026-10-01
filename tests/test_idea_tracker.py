@@ -244,7 +244,10 @@ def test_tracker_job_reads_report_calls_before_settling(repo, monkeypatch):
 def test_records_without_bars_close_as_no_data_after_a_month(repo):
     repo.track_idea("idea:q:GONE", _record(ticker="GONE", signal_day="2026-08-01"))
     repo.track_idea("idea:q:NEW", _record(ticker="NEW", signal_day="2026-09-25"))
-    it.settle_open(repo, date(2026, 9, 30), bars=lambda tickers: {"SPY": []}, nx_bars=lambda tickers: {})
+    spy = _bars("2026-07-31", [(100, 100, 100, 100.0)] * 60)
+    it.settle_open(repo, date(2026, 9, 30), bars=lambda tickers: {}, nx_bars=lambda tickers: {})
+    assert all(r["status"] == "open" for r in repo.tracked_ideas())  # a failed download closes nothing
+    it.settle_open(repo, date(2026, 9, 30), bars=lambda tickers: {"SPY": spy}, nx_bars=lambda tickers: {})
     records = {r["ticker"]: r for r in repo.tracked_ideas()}
     assert records["GONE"]["status"] == "closed" and records["GONE"]["reason"] == "no_data"
     assert records["NEW"]["status"] == "open"
@@ -338,6 +341,18 @@ def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict()
     assert "breakout" not in board  # nothing tracked, nothing listed
 
 
+def test_a_few_months_need_a_larger_t_before_a_source_is_called_ahead():
+    def month_rows(month, excess, n=12):
+        return [{"kind": "idea", "verdict": "high", "direction": "long", "status": "closed",
+                 "signal_day": f"2026-{month:02d}-{10 + i:02d}", "return_pct": 1.0 + excess, "spy_return_pct": 1.0}
+                for i in range(n)]
+    # Monthly means 1.0, 0.2 and 0.6: t = 2.6, past 2 but short of the 4.30 three months need.
+    board = {item["key"]: item for item in it.scoreboard(month_rows(7, 1.0) + month_rows(8, 0.2) + month_rows(9, 0.6))}
+    assert board["idea:high"]["t"] == pytest.approx(2.6, abs=0.01)
+    assert board["idea:high"]["t_needed"] == pytest.approx(4.30) and board["idea:high"]["verdict"] == "no_difference"
+    assert it.t_needed(1) is None and it.t_needed(2) == pytest.approx(12.71) and it.t_needed(40) == pytest.approx(1.96)
+
+
 def test_a_halted_ticker_closes_at_its_last_price_instead_of_staying_open(repo):
     repo.track_idea("social:2026-09-01:PUMP", {"kind": "social", "group": "hot", "verdict": "social", "ticker": "PUMP",
                                               "direction": "long", "signal_day": "2026-09-01", "entry": None})
@@ -347,6 +362,29 @@ def test_a_halted_ticker_closes_at_its_last_price_instead_of_staying_open(repo):
     [row] = repo.tracked_ideas()
     assert row["status"] == "closed" and row["reason"] == "halted"
     assert row["return_20d_pct"] == pytest.approx(-88.0) and row["spy_20d_pct"] == pytest.approx(0.0)
+
+
+def test_the_signal_close_is_kept_on_the_signal_day_so_a_split_the_next_day_is_caught(repo):
+    repo.track_idea("breakout:2026-09-01:SPLT:up", {"kind": "breakout", "verdict": "breakout", "ticker": "SPLT",
+                                                    "direction": "long", "signal_day": "2026-09-01", "entry": 100.0,
+                                                    "stop": 90.0, "target": 130.0})
+    spy = _bars("2026-08-31", [(100, 100, 100, 100.0)] * 12)
+    signal_day = _bars("2026-08-31", [(100, 101, 99, 100.0)])  # the after-close run on the signal day
+    it.settle_open(repo, date(2026, 9, 1), bars=lambda tickers: {"SPY": spy, "SPLT": signal_day}, nx_bars=lambda tickers: {})
+    assert repo.tracked_ideas()[0]["ref_close"] == pytest.approx(100.0)
+    # A 10:1 split goes ex the next day: the whole history is rescaled.
+    after = [{**bar, **{k: bar[k] / 10 for k in ("open", "high", "low", "close")}} for bar in _bars("2026-08-31", [(100, 101, 99, 100.0)] * 2)]
+    it.settle_open(repo, date(2026, 9, 2), bars=lambda tickers: {"SPY": spy, "SPLT": after}, nx_bars=lambda tickers: {})
+    [row] = repo.tracked_ideas()
+    assert row["status"] == "open" and row["return_pct"] == pytest.approx(-0.05)  # not a -90% stop-out
+
+
+def test_records_wait_when_spy_is_missing_instead_of_closing_without_a_benchmark(repo):
+    repo.track_idea("social:2026-09-01:AAA", {"kind": "social", "group": "hot", "verdict": "social", "ticker": "AAA",
+                                             "direction": "long", "signal_day": "2026-09-01", "entry": None})
+    aaa = _bars("2026-08-31", [(10, 10, 10, 10.0)] * 30)
+    assert it.settle_open(repo, date(2026, 10, 1), bars=lambda tickers: {"AAA": aaa}, nx_bars=lambda tickers: {}) == 0
+    assert repo.tracked_ideas()[0]["status"] == "open"
 
 
 def test_a_split_after_the_signal_does_not_skew_returns(repo):

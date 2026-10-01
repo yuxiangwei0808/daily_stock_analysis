@@ -150,7 +150,7 @@ export function TrackRecordCard() {
               <li key={`${item.ticker}-${item.signalDay}-${index}`} className="flex justify-between gap-2 rounded bg-elevated/40 px-2 py-1">
                 <span><span className="font-mono text-foreground">{item.ticker}</span> {item.direction} · {item.verdict} · {item.signalDay}{item.nxAlignment ? ` · NX ${item.nxAlignment}` : ''}</span>
                 <span className={item.status === 'closed' ? ((item.returnPct ?? 0) >= 0 ? 'text-success' : 'text-danger') : ''}>
-                  {item.status === 'closed' ? `${pct(item.returnPct)} (${item.reason})` : `${t('tradeDesk.trackOpenNow')} ${pct(item.returnPct)}`}
+                  {item.status === 'closed' ? `${pct(item.returnPct)}${item.reason ? ` (${item.reason})` : ''}` : `${t('tradeDesk.trackOpenNow')} ${pct(item.returnPct)}`}
                 </span>
               </li>
             ))}

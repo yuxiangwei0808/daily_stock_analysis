@@ -242,7 +242,9 @@ its brief with some stocks missing needs attention, and with fewer than half ana
 failing so the watchdog posts it), the alert monitor, plan monitoring, broker holdings sync, market pulse, trade
 opportunities, breakout watch, idea tracker, YouTube picks (including a caption rate limit),
 social scan and Discord delivery. Work a component hands to a background thread (the opportunity
-scan, breakout levels, holdings tasks) reports its last failure too. The OpenD check runs on its own
+scan, breakout levels, holdings tasks) reports its last failure too. OpenD reports no quote-rights
+fields, so a connection logged in to the quote server reads as working (a denied right, a logged-out
+quote server or an exhausted quota reads as failing). The OpenD check runs on its own
 thread and reads as failing after 5 seconds (the moomoo SDK otherwise retries a lost connection
 forever). The worker's watchdog (`trade_desk/status.py`) posts `system_status` messages to the
 digest category: a summary two minutes after each start ("✅ Server started · <version> · all
@@ -467,7 +469,8 @@ stream's chat replay does not count) is not transcribed from audio just because 
 no caption track: it waits on its own for a day, then its audio is read. At most 6 videos are
 transcribed per pass. A new video's full spoken text goes to `YOUTUBE_PICKS_BACKEND` (default: the routine
 `GENERATION_BACKEND`). The model returns only explicit calls as JSON: ticker, bullish or
-bearish, conviction, horizon and a short reason. Tickers are validated and at most 10 picks
+bearish, conviction, horizon and a short reason; a reply that is not the complete JSON (e.g. cut
+off) counts as that model failing, so the channel's next model is tried. Tickers are validated and at most 10 picks
 per video are kept. A video is marked read once its picks are stored (setting
 `youtube_processed`), so a restart never pays for it twice; a failed model call is retried on
 the next pass. The first pass reads the last 30 days to seed the record.
@@ -520,8 +523,10 @@ scoreboard: every tracked source side by side — trade ideas by conviction, can
 rejected, breakout alerts, ideas where NX agrees or not, bullish and bearish report calls, the
 social scan's names and each YouTube channel — with closed and open counts and the average result
 against SPY in the direction of the call. A source gets a verdict only with at least 30 closed
-records: "ahead" or "behind" SPY when the month-by-month results are consistent (|t| ≥ 2),
-otherwise "no clear difference". A source that stays behind is a candidate to switch off.
+records: "ahead" or "behind" SPY when the month-by-month results are consistent (a month-clustered
+t past the two-sided 5% critical value for that many months: 12.7 with 2 months, 4.3 with 3, 3.2
+with 4, near 2 only with a year or more), otherwise "no clear difference". With a dozen sources,
+one of them can still clear that bar by chance. A source that stays behind is a candidate to switch off.
 
 ## Broker holdings and your alerts
 
@@ -544,7 +549,9 @@ unlocked and nothing is ordered. The snapshot is stored locally
   days before expiry (from 09:45), expiration day at 09:45 and 15:00, a short leg
   in the money within 2 trading days (assignment risk, daily), 75 % of a bounded
   maximum profit (otherwise +50 % and +100 % on cost), −50 % on cost, earnings on
-  or before expiry. Stocks: price below the prior 20-day low or a first drop below
+  or before expiry. The profit and loss levels wait while a leg's bid/ask spread is
+  over half its mid (and over $0.10), as often in the first minutes after the open,
+  so a wide quote does not read as +200 %. Stocks: price below the prior 20-day low or a first drop below
   the 50-day average (daily each), earnings within 7 days. Leveraged/inverse funds
   get no earnings lookups.
 - **Your alerts** (`POST /holdings/rules`, `PATCH`/`DELETE /holdings/rules/{id}`):
@@ -606,10 +613,12 @@ The daily portfolio summary on Discord adds one line in percentages only, e.g. "
 The Journal tab's **Your trades** card reads a year of your filled trades from moomoo
 (`POST /holdings/journal/refresh`; read-only: `history_deal_list_query` in 90-day windows plus
 today's `deal_list_query`, trading is never unlocked) and builds round trips per contract, first in,
-first out (`trade_desk/journal.py`). What was already held when the history begins (today's
-quantity less the net fills: shares bought over a year ago, or delivered by an assignment) is
-seeded at an unknown cost, so selling it closes it without a round trip ("unmatched closes")
-instead of looking like a new short. Corrected fills (status CHANGED) count; cancelled ones do
+first out (`trade_desk/journal.py`). Stock fills before a split are restated in today's shares
+(10× the shares at a tenth of the price for a 10:1 split). What is held without a matching fill
+(today's quantity less the net fills: shares bought over a year ago, or delivered by an assignment
+or exercise) has an unknown cost; a sale draws on it only when no lot from the history is left to
+close, so it makes no round trip ("unmatched closes", shown on the card) instead of looking like a
+new short, and a later assignment never takes the place of an earlier, known purchase. Corrected fills (status CHANGED) count; cancelled ones do
 not. Options still open after expiry settle at intrinsic value from the underlying's actual close
 on the expiry day (no dividend adjustment, later splits undone; worthless when that close is
 unknown, flagged); open positions are not counted; spreads count as their legs; amounts are gross of commissions. The card

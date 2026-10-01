@@ -51,7 +51,8 @@ export default function StatusPage() {
         <>
           <div className="mt-4 flex items-center gap-3 rounded-2xl border border-border/50 bg-card/50 px-4 py-3" data-testid="status-overall">
             <span className={`h-3 w-3 shrink-0 rounded-full ${STATE_STYLE[status.overall as SystemStatusComponent['state']]?.dot ?? STATE_STYLE.ok.dot}`} />
-            <span className="text-sm font-semibold text-foreground">{OVERALL[status.overall] ?? status.overall}</span>
+            {/* A failed refresh keeps the last result on screen, marked as such. */}
+            <span className="text-sm font-semibold text-foreground">{error ? 'Last known: ' : ''}{OVERALL[status.overall] ?? status.overall}</span>
             <span className="ml-auto text-xs text-muted-text">checked {new Date(status.checkedAt).toLocaleTimeString()}</span>
           </div>
           <Card variant="bordered" padding="none" className="mt-4 overflow-hidden">

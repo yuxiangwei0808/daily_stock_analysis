@@ -28,8 +28,25 @@ def _when(text: str) -> datetime:
     return datetime.fromisoformat(str(text).replace("/", "-")[:19])
 
 
+def split_adjusted(deals: List[Dict[str, Any]], splits: Dict[str, List[tuple]]) -> List[Dict[str, Any]]:
+    """Stock fills restated in today's shares: a fill before a 10:1 split counts 10x the shares at a
+    tenth of the price (the broker's holdings, and later fills, are in post-split shares)."""
+    from .holdings import parse_code
+    out = []
+    for deal in deals:
+        info = parse_code(_bare(deal["code"]))
+        day = str(deal["time"]).replace("/", "-")[:10]
+        ratio = 1.0
+        if info["kind"] == "stock":
+            for when, split in splits.get(info["ticker"]) or []:
+                if when > day and split > 0:
+                    ratio *= split
+        out.append(deal if ratio == 1.0 else {**deal, "qty": deal["qty"] * ratio, "price": deal["price"] / ratio})
+    return out
+
+
 def starting_positions(deals: List[Dict[str, Any]], current: Dict[str, float], today: date) -> Dict[str, float]:
-    """What was already held when the fill history begins: today's quantity less the net fills.
+    """Held without a matching fill: today's quantity less the net fills.
 
     Shares bought before the window, or delivered by an assignment or exercise (neither is a fill),
     would otherwise make their later sale look like a new short. Expired options are no longer
@@ -65,20 +82,18 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
                 starting: Optional[Dict[str, float]] = None, unmatched: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """Closed round trips from fills, oldest first; expired options settle at intrinsic value.
 
-    ``starting`` seeds positions held before the first fill at an unknown cost: closing them makes
-    no round trip (``unmatched`` counts those closes).
+    ``starting`` is held without a matching fill at an unknown cost: bought before the history, or
+    delivered by an assignment or exercise at some point in it. It is drawn on only when a fill has
+    no lot of the history left to close, so a later assignment never takes the place of an earlier,
+    known purchase; closing it makes no round trip (``unmatched`` counts those closes).
     """
     from .holdings import parse_code
-    lots: Dict[str, List[Dict[str, Any]]] = {code: [{"qty": qty, "price": None, "time": None}]
-                                            for code, qty in (starting or {}).items()}
+    lots: Dict[str, List[Dict[str, Any]]] = {}
+    reserve = dict(starting or {})
     trips: List[Dict[str, Any]] = []
 
     def close(code: str, info: Dict[str, Any], lot: Dict[str, Any], qty: float, price: float, when: datetime,
               how: str) -> None:
-        if lot["price"] is None:  # held before the history begins: its cost is unknown
-            if unmatched is not None:
-                unmatched.append(1)
-            return
         multiplier = 100 if info["kind"] == "option" else 1
         long = lot["qty"] > 0
         pnl = (price - lot["price"]) * qty * multiplier * (1 if long else -1)
@@ -106,6 +121,13 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
             signed += -matched if signed > 0 else matched
             if abs(lot["qty"]) < 1e-9:
                 book.pop(0)
+        held = reserve.get(code, 0.0)
+        if abs(signed) > 1e-9 and abs(held) > 1e-9 and (held > 0) != (signed > 0):
+            drawn = min(abs(signed), abs(held))  # closes what was held at an unknown cost: no round trip
+            reserve[code] = held - drawn if held > 0 else held + drawn
+            signed += -drawn if signed > 0 else drawn
+            if unmatched is not None:
+                unmatched.append(1)
         if abs(signed) > 1e-9:
             book.append({"qty": signed, "price": deal["price"], "time": when})
     for code, book in lots.items():
@@ -158,8 +180,10 @@ def signal_match(trip: Dict[str, Any], signals: List[Dict[str, Any]]) -> str:
 
 def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: date,
           expiry_close: Optional[Callable[[str, date], Optional[float]]] = None,
-          current: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-    """``current`` is today's quantity per code (from the broker holdings), to seed what was held earlier."""
+          current: Optional[Dict[str, float]] = None, splits: Optional[Dict[str, List[tuple]]] = None) -> Dict[str, Any]:
+    """``current`` is today's quantity per code (from the broker holdings), to seed what was held earlier;
+    ``splits`` the (date, ratio) splits per stock ticker, to restate older fills in today's shares."""
+    deals = split_adjusted(deals, splits or {})
     unmatched: List[int] = []
     trips = round_trips(deals, today, expiry_close, starting_positions(deals, current or {}, today), unmatched)
     for trip in trips:

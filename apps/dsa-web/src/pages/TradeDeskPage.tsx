@@ -69,6 +69,7 @@ const TradeDeskPage: React.FC = () => {
   // Incremented by each list request and each locally created job so an
   // older list response cannot drop a newer job or move the selection.
   const adviceListSequence = useRef(0);
+  const archiveSequence = useRef(0);  // its own: opening the archive must not discard a list refresh in flight
   const sseRefreshTimer = useRef<number | null>(null);
 
   useEffect(() => { document.title = 'Trade Desk - DSA'; }, []);
@@ -223,10 +224,10 @@ const TradeDeskPage: React.FC = () => {
     setAdviceScope(scope);
     if (scope !== 'archive') return;
     archiveLoadedRef.current = true;  // later refreshes keep the archive current too
-    const sequence = ++adviceListSequence.current;
+    const sequence = ++archiveSequence.current;
     try {
       const result = await tradeDeskApi.listAdvice('archive');
-      if (sequence !== adviceListSequence.current) return;
+      if (sequence !== archiveSequence.current) return;
       setArchive(result.items || []);
       if (result.counts) setAdviceCounts(result.counts);
     } catch (archiveError) { setError(errorMessage(archiveError)); }
@@ -269,6 +270,7 @@ const TradeDeskPage: React.FC = () => {
   const removeAdvice = (ids: string[]) => {
     const gone = new Set(ids);
     adviceListSequence.current += 1;  // a list request already in flight must not bring these back
+    archiveSequence.current += 1;
     setPinned((items) => Object.fromEntries(Object.entries(items).filter(([id]) => !gone.has(id))));
     if (linkedAdviceId && gone.has(linkedAdviceId)) dropLinkedAdvice();
     const activeGone = advice.filter((item) => gone.has(item.id)).length;

@@ -88,9 +88,11 @@ def _opend(service: Any) -> Dict[str, Any]:
     if live.get("available") or live.get("status") == "ready":
         return {"state": "ok", "detail": message}
     if live.get("status") == "degraded" and live.get("connected"):
-        # Connected and quoting, but OpenD does not report the account's quote rights: worth a look,
-        # not an outage (the watchdog only posts failures).
-        return {"state": "warn", "detail": message}
+        # OpenD's global state carries no quote-rights fields, so a healthy connection reads "degraded";
+        # a denial or a logged-out quote server would have made it "blocked". Logged in is working.
+        if live.get("quote_logged_in") is True:
+            return {"state": "ok", "detail": "connected and logged in to quotes (OpenD does not report quote rights)"}
+        return {"state": "warn", "detail": message}  # worth a look, not an outage (the watchdog posts failures)
     return {"state": "error", "detail": message}
 
 

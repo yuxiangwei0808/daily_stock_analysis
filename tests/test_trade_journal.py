@@ -73,6 +73,22 @@ def test_sales_of_shares_held_before_the_history_close_them_instead_of_opening_s
     assert j.build(short, [], TODAY, current={})["by_type"][0]["label"] == "Short stock"
 
 
+def test_a_later_assignment_does_not_take_the_place_of_an_earlier_known_purchase():
+    # Jan buy, Feb sale, then a short put assigned in March (no fill) and those shares sold in June.
+    deals = [deal("AAPL", "BUY", 100, 150.0, "2026-01-05 10:00:00"), deal("AAPL", "SELL", 100, 160.0, "2026-02-05 10:00:00"),
+             deal("AAPL", "SELL", 100, 170.0, "2026-06-05 10:00:00")]
+    result = j.build(deals, [], TODAY, current={})
+    assert result["total"]["trades"] == 1 and result["total"]["total_pnl"] == 1000.0  # the Jan/Feb trade
+    assert result["unmatched_closes"] == 1  # the assigned shares: their cost is unknown
+
+
+def test_fills_before_a_split_are_restated_in_todays_shares():
+    deals = [deal("NVDA", "BUY", 10, 1000.0, "2026-05-01 10:00:00"), deal("NVDA", "SELL", 100, 110.0, "2026-07-01 10:00:00")]
+    result = j.build(deals, [], TODAY, current={}, splits={"NVDA": [("2026-06-10", 10.0)]})
+    assert result["total"]["trades"] == 1 and result["total"]["total_pnl"] == pytest.approx(1000.0)  # not -9,000
+    assert result["unmatched_closes"] == 0
+
+
 def test_a_signal_counts_only_if_it_existed_before_the_trade():
     trip = {"ticker": "MU", "opened": "2026-09-10T10:05:00", "view": "long"}
     after_close = {"ticker": "MU", "signal_day": "2026-09-10", "direction": "long", "kind": "social",

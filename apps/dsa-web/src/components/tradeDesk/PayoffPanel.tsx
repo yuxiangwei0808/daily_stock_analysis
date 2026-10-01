@@ -62,7 +62,8 @@ export function PayoffPanel({ candidate, spot }: { candidate: StrategyCandidate;
   const { t } = useUiLanguage();
   const payoff = candidate.payoff;
   const points = payoff.points || [];
-  const strikes = candidate.legs.filter((leg) => leg.right !== 'stock').map((leg) => Number(leg.strike)).filter((x) => Number.isFinite(x) && x > 0);
+  // A straddle's call and put share a strike: one line each.
+  const strikes = [...new Set(candidate.legs.filter((leg) => leg.right !== 'stock').map((leg) => Number(leg.strike)).filter((x) => Number.isFinite(x) && x > 0))];
   const breakevens = (payoff.breakevens || []).map(Number).filter((x) => Number.isFinite(x) && x > 0);
   const now = spot != null && Number.isFinite(spot) && spot > 0 ? spot : null;
   // Keep the current price and a ±10% move in view along with the strikes and breakevens.

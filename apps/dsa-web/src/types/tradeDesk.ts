@@ -584,4 +584,6 @@ export interface TradeJournal {
   best: TradeJournalTrip[];
   worst: TradeJournalTrip[];
   openLotsNote: string;
+  /** Sales of positions held without a matching fill (bought before the history, or assigned): not counted. */
+  unmatchedCloses?: number;
 }

@@ -47,6 +47,7 @@ ASSIGNMENT_DAYS = 2
 PROFIT_OF_MAX = 75.0
 PROFIT_ON_COST = (50.0, 100.0)
 LOSS_ON_COST = -50.0
+WIDE_SPREAD_MIN = 0.10  # per share: a spread this small is never "too wide", even on a nearly worthless option
 STOCK_EARNINGS_DAYS = 7
 SUMMARY_AT = dtime(16, 15)  # after the post-close sync at 16:05
 LEVELS_RETRY_SECONDS = 300
@@ -119,6 +120,17 @@ def _mark(quote: Optional[Dict[str, Any]], fallback: Optional[float]) -> Optiona
     return fallback
 
 
+def _wide(quote: Optional[Dict[str, Any]]) -> bool:
+    """A quote too wide to mark P&L by, as often in the first minutes after the open: a spread over
+    half the mid (and over 10 cents). A bid of 0.30 and an ask of 1.50 would read +240% on a 0.26 cost."""
+    if not quote:
+        return False
+    bid, ask = quote.get("bid") or 0, quote.get("ask") or 0
+    if ask <= 0 or not 0 <= bid <= ask:
+        return False
+    return ask - bid > max(WIDE_SPREAD_MIN, (bid + ask) / 4)
+
+
 def _intrinsic(legs: List[Dict[str, Any]], spot: float) -> float:
     return sum(leg["qty"] * 100 * (max(0.0, spot - leg["strike"]) if leg["right"] == "call"
                                    else max(0.0, leg["strike"] - spot)) for leg in legs)
@@ -159,7 +171,7 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
         mark = _mark(quotes.get(info["ticker"]), row.get("price"))
         groups.setdefault((info["underlying"], info["expiry"]), []).append(
             {**info, "code": info["ticker"], "name": row.get("name", ""), "qty": qty,
-             "average_cost": row.get("average_cost"), "mark": mark,
+             "average_cost": row.get("average_cost"), "mark": mark, "wide": _wide(quotes.get(info["ticker"])),
              "prev_close": (quotes.get(info["ticker"]) or {}).get("prev_close")})
     options = []
     for (underlying, expiry), legs in sorted(groups.items()):
@@ -186,6 +198,7 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
                         "expiry": expiry.isoformat(), "days_left": trading_days_until(expiry, today),
                         "label": _label(legs), "legs": legs, "cost": cost, "value": value, "max_value": max_value,
                         "pnl_pct": pnl_pct, "pct_of_max": pct_of_max, "underlying_price": spot, "day_pct": day_pct,
+                        "quotes_wide": any(leg["wide"] for leg in legs),
                         "weight_pct": abs(value) / total * 100 if total and value is not None else None})
     return {"account": raw.get("account"), "account_type": raw.get("account_type"),
             "synced_at": raw.get("synced_at"), "total_assets": total, "cash": raw.get("cash"),
@@ -552,7 +565,16 @@ class Holdings:
         for row in self.raw().get("positions") or []:
             code = parse_code(row["code"])["ticker"]
             current[code] = float(row["qty"]) * (-1 if row.get("side") == "SHORT" and row["qty"] > 0 else 1)
-        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close, current)
+        stocks = sorted({info["ticker"] for info in (parse_code(deal["code"]) for deal in deals) if info["kind"] == "stock"})
+        stock_splits: Dict[str, List[tuple]] = {}
+        for ticker in stocks:  # fills before a split are in pre-split shares
+            try:
+                stock_splits[ticker] = [(when, ratio) for when, ratio in split_ratios(ticker)
+                                        if when > (today - timedelta(days=366)).isoformat()]
+            except Exception as exc:
+                logger.info("Journal split history unavailable for %s: %s", ticker, type(exc).__name__)
+        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close, current,
+                               splits=stock_splits)
         result.update(built_at=utcnow().isoformat(), fills=len(deals))
         self.repo.set_setting("trade_journal", result)
         return result
@@ -888,15 +910,17 @@ class HoldingsMonitor:
                                 f"Assignment risk: short {leg['strike']:g}{'C' if leg['right'] == 'call' else 'P'} is in "
                                 f"the money ({ticker} {spot:.2f}). {text}",
                                 f"hold-assign:{key}:{leg['code']}:{day.isoformat()}")
-        if position.get("pct_of_max") is not None:
-            if position["pct_of_max"] >= PROFIT_OF_MAX:
-                self._alert("profit", ticker, f"Profit target: {text}", f"hold-profit:{key}:{PROFIT_OF_MAX:g}")
-        elif position.get("pnl_pct") is not None:
-            for level in PROFIT_ON_COST:
-                if position["pnl_pct"] >= level:
-                    self._alert("profit", ticker, f"Up {level:g}% on cost: {text}", f"hold-profit:{key}:{level:g}")
-        if position.get("pnl_pct") is not None and position["pnl_pct"] <= LOSS_ON_COST:
-            self._alert("loss", ticker, f"Down {abs(LOSS_ON_COST):g}% on cost: {text}", f"hold-loss:{key}:{LOSS_ON_COST:g}")
+        if not position.get("quotes_wide"):  # P&L from a quote this wide is noise: checked once quotes settle
+            if position.get("pct_of_max") is not None:
+                if position["pct_of_max"] >= PROFIT_OF_MAX:
+                    self._alert("profit", ticker, f"Profit target: {text}", f"hold-profit:{key}:{PROFIT_OF_MAX:g}")
+            elif position.get("pnl_pct") is not None:
+                for level in PROFIT_ON_COST:
+                    if position["pnl_pct"] >= level:
+                        self._alert("profit", ticker, f"Up {level:g}% on cost: {text}", f"hold-profit:{key}:{level:g}")
+            if position.get("pnl_pct") is not None and position["pnl_pct"] <= LOSS_ON_COST:
+                self._alert("loss", ticker, f"Down {abs(LOSS_ON_COST):g}% on cost: {text}",
+                            f"hold-loss:{key}:{LOSS_ON_COST:g}")
         when = self._earnings(ticker, day)
         if when and when <= date.fromisoformat(position["expiry"]):
             self._alert("earnings", ticker, f"Earnings {when:%b} {when.day} fall before this expiry: {text}",

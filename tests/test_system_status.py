@@ -174,7 +174,11 @@ def test_a_connected_opend_with_unverified_rights_is_a_warning_not_a_failure(mon
     degraded = {"live": {"available": False, "status": "degraded", "connected": True,
                          "message": "OpenD connected, but quote rights or subscription quota could not be verified"}}
     states = {item["key"]: item for item in st.build(_service(health=lambda: degraded), NOW)["components"]}
-    assert states["opend"]["state"] == "warn"
+    assert states["opend"]["state"] == "warn"  # login state unknown
+    monkeypatch.setattr(st, "_probe", None)
+    degraded["live"]["quote_logged_in"] = True  # OpenD never reports rights: logged in is the working state
+    states = {item["key"]: item for item in st.build(_service(health=lambda: degraded), NOW)["components"]}
+    assert states["opend"]["state"] == "ok" and "logged in" in states["opend"]["detail"]
     monkeypatch.setattr(st, "_probe", None)
     blocked = {"live": {"available": False, "status": "blocked", "connected": False, "message": "opend_not_configured"}}
     states = {item["key"]: item for item in st.build(_service(health=lambda: blocked), NOW)["components"]}

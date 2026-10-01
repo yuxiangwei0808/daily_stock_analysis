@@ -61,6 +61,9 @@ describe('payoff readings', () => {
     const condor = [{ price: 0, pnl: -300 }, { price: 90, pnl: -300 }, { price: 95, pnl: 200 }, { price: 105, pnl: 200 }, { price: 110, pnl: -300 }, { price: 220, pnl: -300 }];
     expect(extremeRange(condor, 200, false)).toBe('between 95.00 and 105.00');
     expect(extremeRange(condor, -300, false)).toBe('at or below 90.00 or at or above 110.00');
+    // A covered call's worst case is only at a price of zero.
+    const covered = [{ price: 0, pnl: -9800 }, { price: 100, pnl: 200 }, { price: 300, pnl: 200 }];
+    expect(extremeRange(covered, -9800, false)).toBe('if the stock goes to zero');
   });
 
   it('picks round axis ticks', () => {

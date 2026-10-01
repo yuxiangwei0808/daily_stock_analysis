@@ -446,3 +446,35 @@ def test_an_age_restricted_video_is_unreadable_not_a_block(monkeypatch):
     reply.json = lambda: {"playabilityStatus": {"status": "LOGIN_REQUIRED", "reason": "Sign in to confirm you're not a bot"}}
     with pytest.raises(yp.CaptionsBlocked, match="login_required"):
         yp.captions("vid")
+
+
+def test_a_reply_that_is_not_the_picks_json_fails_that_model_so_the_next_is_tried(monkeypatch):
+    from src.services.trade_desk import advisor
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, config, response_validator=None):
+            calls.append(config)
+            for cut_off in ('{"picks": [{"ticker": "NVDA", "stance": "bullish"}, {"ticker": "MU', 'no JSON at all'):
+                with pytest.raises(ValueError, match="complete picks JSON"):
+                    response_validator(cut_off)  # repair would turn the first into one pick instead of two
+            response_validator('```json\n{"picks": []}\n```')
+            response_validator('Here you go: {"picks": []}')
+            return SimpleNamespace(text='{"picks": []}')
+    monkeypatch.setattr(advisor, "_generation_backend", lambda backend_id=None: (Backend(), "litellm"))
+    assert yp.extract_picks("x", {"title": "t"}, "words") == []
+    assert calls[0]["max_output_tokens"] >= 4096  # room for a thinking model's reasoning before the JSON
+
+
+def test_videos_found_too_old_are_saved_so_a_restart_does_not_look_them_up_again(repo):
+    listed = [{"video_id": "old", "title": "t", "published": None, "description": ""}]
+    looked_up = []
+
+    def details(video_id):
+        looked_up.append(video_id)
+        return {"published": NOW - timedelta(days=45), "live_status": "not_live", "has_captions": True}
+    for _ in range(2):  # a new job each time, as after a restart
+        job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: listed, read_details=details,
+                                read_captions=lambda vid, fetch=True: "", generate=lambda prompt: "", trading_day=_weekday)
+        job.run(NOW)
+    assert looked_up == ["old"] and "old" in repo.setting(yp.PROCESSED_KEY)

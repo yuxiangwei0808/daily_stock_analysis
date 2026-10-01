@@ -108,6 +108,7 @@ export function extremeRange(points: PayoffPoint[], value: number, unboundedAbov
     const fromZero = low <= 0;
     const toTop = high >= top && !unboundedAbove;
     if (fromZero && toTop) return 'at any price';
+    if (fromZero && high <= 0) return 'if the stock goes to zero';
     if (fromZero) return `at or below ${fmt(high)}`;
     if (toTop) return `at or above ${fmt(low)}`;
     return low === high ? `at ${fmt(low)}` : `between ${fmt(low)} and ${fmt(high)}`;

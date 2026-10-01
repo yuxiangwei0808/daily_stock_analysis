@@ -271,6 +271,8 @@ def settle_open(repo: Any, today: date,
         return source.get(ticker) or source.get(str(ticker).replace("-", "."))
 
     market, closed = history.get("SPY") or [], 0
+    if not market:  # a record closed now would have no vs-SPY figures for good; NX states are still filled
+        logger.info("Idea tracker: no SPY bars today; settling waits for the next run")
     missing_nx = list(dict.fromkeys(record["ticker"] for record in open_records if "nx" not in record))
     long_history: Dict[str, List[Dict[str, Any]]] = {}
     if missing_nx:
@@ -286,7 +288,9 @@ def settle_open(repo: Any, today: date,
         stock_bars = bars_for(history, record["ticker"]) or []
         halted = _halted(stock_bars, market, record["signal_day"], today)
         priced, ref_update = _split_safe(record, stock_bars)
-        if kind in HORIZONS:
+        if not market:
+            update = None
+        elif kind in HORIZONS:
             update = settle_verdict(priced, stock_bars, market, today, HORIZONS[kind], halted=halted)
         else:
             update = settle(priced, stock_bars, market, today)
@@ -304,12 +308,14 @@ def settle_open(repo: Any, today: date,
                                           float(entry), record["direction"])
             if nx_update["nx"] and record["direction"] == "none":
                 nx_update["nx"]["alignment"] = None  # "watch" takes no side
-        if update is None and (today - date.fromisoformat(str(record["signal_day"])[:10])).days > NO_DATA_DAYS:
+        if (update is None and market  # with no SPY either, the download failed: nothing is "no data"
+                and (today - date.fromisoformat(str(record["signal_day"])[:10])).days > NO_DATA_DAYS):
             update = {"status": "closed", "reason": "no_data"}  # delisted or unknown: stop re-downloading it
         if update is None:
-            if nx_update:
+            # The signal day's close is kept now, before a split can rescale tomorrow's download.
+            if nx_update or ref_update:
                 payload = {key: value for key, value in record.items() if key not in {"id", "status", "created_at"}}
-                repo.update_tracked_idea(record["id"], {**payload, **nx_update}, record["status"])
+                repo.update_tracked_idea(record["id"], {**payload, **nx_update, **ref_update}, record["status"])
             continue
         update.update(nx_update)
         status = update.pop("status", "open")
@@ -391,6 +397,18 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
 
 
 SCOREBOARD_MIN = 30  # closed records before a source gets a verdict
+# Two-sided 5% critical t by degrees of freedom (months - 1): with a handful of months, |t| >= 2 would
+# call a source "ahead" or "behind" on noise far more often than 1 time in 20.
+_T_CRITICAL = {1: 12.71, 2: 4.30, 3: 3.18, 4: 2.78, 5: 2.57, 6: 2.45, 7: 2.36, 8: 2.31, 9: 2.26, 10: 2.23,
+               12: 2.18, 15: 2.13, 20: 2.09, 30: 2.04}
+
+
+def t_needed(months: int) -> Optional[float]:
+    """The |t| a month-clustered mean needs over ``months`` months (None under 2 months)."""
+    if months < 2:
+        return None
+    df = months - 1
+    return next((_T_CRITICAL[key] for key in sorted(_T_CRITICAL) if key >= df), 1.96)
 
 
 def _excess(record: Dict[str, Any], stock_key: str, spy_key: str) -> Optional[float]:
@@ -406,7 +424,7 @@ def _excess(record: Dict[str, Any], stock_key: str, spy_key: str) -> Optional[fl
 def scoreboard(everything: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Every tracked source side by side: closed count, average result vs SPY in the call's direction,
     a month-clustered t, and a verdict ("too_early" under SCOREBOARD_MIN closed, else "ahead" /
-    "behind" when |t| >= 2, else "no_difference")."""
+    "behind" when |t| reaches the 5% critical value for that many months, else "no_difference")."""
     import math
 
     def closed(rows):
@@ -427,13 +445,15 @@ def scoreboard(everything: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             centre = sum(means) / len(means)
             spread = math.sqrt(sum((m - centre) ** 2 for m in means) / (len(means) - 1))
             t = centre / (spread / math.sqrt(len(means))) if spread > 0 else None
+        needed = t_needed(len(means))
         verdict = ("too_early" if len(values) < SCOREBOARD_MIN else
-                   "ahead" if t is not None and t >= 2 and (mean or 0) > 0 else
-                   "behind" if t is not None and t <= -2 and (mean or 0) < 0 else "no_difference")
+                   "ahead" if t is not None and t >= needed and (mean or 0) > 0 else
+                   "behind" if t is not None and t <= -needed and (mean or 0) < 0 else "no_difference")
         sources.append({"key": key, "label": label, "horizon": horizon, "closed": len(values),
                         "open": sum(1 for r in rows if r["status"] == "open"),
                         "avg_vs_spy_pct": round(mean, 3) if mean is not None else None,
-                        "t": round(t, 2) if t is not None else None, "verdict": verdict})
+                        "t": round(t, 2) if t is not None else None, "t_needed": needed, "months": len(means),
+                        "verdict": verdict})
     ideas = [r for r in everything if r.get("kind") in (None, "idea")]
     for verdict, label in (("high", "Trade ideas · high conviction"), ("medium", "Trade ideas · medium conviction"),
                            ("rejected", "Candidates the review rejected")):
