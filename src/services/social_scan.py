@@ -348,9 +348,15 @@ class DigestJob:
 
     def _already_sent(self, day: date) -> bool:
         from datetime import timedelta
+        from zoneinfo import ZoneInfo
         since = (datetime.combine(day, datetime.min.time()) - timedelta(days=1)).isoformat()
-        return any(event["payload"].get("day") == day.isoformat()
-                   for event in self.repo.events(limit=10, newest=True, types=["social_digest"], since=since))
+        for event in self.repo.events(limit=10, newest=True, types=["social_digest"], since=since):
+            sent_day = event["payload"].get("day")
+            if not sent_day:  # digests stored before the day was recorded: their New York send date
+                sent_day = datetime.fromisoformat(event["created_at"]).astimezone(ZoneInfo("America/New_York")).date().isoformat()
+            if sent_day == day.isoformat():
+                return True
+        return False
 
 
 def _trading_day(day: date) -> bool:

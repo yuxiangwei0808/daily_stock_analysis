@@ -84,8 +84,14 @@ def _opend(service: Any) -> Dict[str, Any]:
         return {"state": "error", "detail": "not answering (the check has waited over 5 seconds)"}
     except Exception as exc:
         return {"state": "error", "detail": type(exc).__name__}
-    return {"state": "ok" if live.get("available") else "error",
-            "detail": str(live.get("message") or ("connected" if live.get("available") else "unavailable"))}
+    message = str(live.get("message") or ("connected" if live.get("available") else "unavailable"))
+    if live.get("available") or live.get("status") == "ready":
+        return {"state": "ok", "detail": message}
+    if live.get("status") == "degraded" and live.get("connected"):
+        # Connected and quoting, but OpenD does not report the account's quote rights: worth a look,
+        # not an outage (the watchdog only posts failures).
+        return {"state": "warn", "detail": message}
+    return {"state": "error", "detail": message}
 
 
 def _part(worker: Any, name: str, now: datetime) -> Dict[str, Any]:

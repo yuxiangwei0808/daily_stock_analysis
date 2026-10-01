@@ -47,6 +47,7 @@ CAPTION_SPACING_SECONDS = 10.0  # between caption downloads: bursts are what tri
 CAPTIONS_PER_PASS = 25  # the rest wait for the next pass (every 3 hours)
 REQUESTS_PER_PASS = 60  # video-page and caption requests together
 MODEL_ATTEMPTS = 3  # passes a video is retried when the model fails, before it is dropped
+AUDIO_PER_PASS = 6  # CPU transcriptions per pass (about 6 minutes each), so a long caption block stays bounded
 BLOCKED_AUDIO_AFTER = timedelta(days=1)  # captions refused this long: transcribe the audio instead
 AUDIO_BACKFILL_DAYS = 7  # audio is transcribed only for videos of the last week (CPU time)
 MAX_AUDIO_SECONDS = 2 * 3600  # longer videos (live streams) are not transcribed
@@ -85,8 +86,14 @@ def _get(url: str, **kwargs) -> Any:
 
 
 def feed(channel_id: str) -> List[Dict[str, Any]]:
-    """The channel's latest videos (the feed lists about 15), newest first."""
-    root = ET.fromstring(_get(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}").content)
+    """The channel's latest videos, newest first: its RSS feed, or the channel's video and live tabs
+    (read with yt-dlp) when the feed is down (YouTube's feeds have returned 404 for days at a time).
+    Listed videos have no publish time yet: the job reads it with ``video_details``."""
+    try:
+        root = ET.fromstring(_get(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}").content)
+    except Exception as exc:
+        logger.info("YouTube RSS unavailable (%s); listing the channel instead", type(exc).__name__)
+        return channel_listing(channel_id)
     videos = []
     for entry in root.findall("a:entry", _NS):
         published = datetime.fromisoformat(entry.find("a:published", _NS).text.replace("Z", "+00:00"))
@@ -95,6 +102,67 @@ def feed(channel_id: str) -> List[Dict[str, Any]]:
                        "published": published.astimezone(timezone.utc),
                        "description": (description.text or "") if description is not None else ""})
     return videos
+
+
+class _QuietLog:
+    """yt-dlp prints some errors even when quiet (e.g. a channel without a live tab); the job reports its own."""
+
+    def debug(self, message: str) -> None:
+        pass
+
+    info = warning = debug
+
+    def error(self, message: str) -> None:
+        logger.debug("yt-dlp: %s", message)
+
+
+def _ydl_options(**extra: Any) -> Dict[str, Any]:
+    options: Dict[str, Any] = {"quiet": True, "no_warnings": True, "logger": _QuietLog(), **extra}
+    deno = _deno_path()
+    if deno:  # YouTube's player challenges need a JavaScript runtime; without one formats go missing
+        options["js_runtimes"] = {"deno": {"path": deno}}
+    return options
+
+
+def channel_listing(channel_id: str, limit: int = 15) -> List[Dict[str, Any]]:
+    """The newest uploads and live streams on the channel page (ids and titles only)."""
+    import yt_dlp
+    videos, seen = [], set()
+    with yt_dlp.YoutubeDL(_ydl_options(extract_flat="in_playlist", playlistend=limit)) as downloader:
+        for tab in ("videos", "streams"):
+            try:
+                info = downloader.extract_info(f"https://www.youtube.com/channel/{channel_id}/{tab}", download=False)
+            except Exception:  # a channel without a live tab
+                continue
+            for entry in info.get("entries") or []:
+                video_id = entry.get("id")
+                if video_id and video_id not in seen:
+                    seen.add(video_id)
+                    videos.append({"video_id": video_id, "title": entry.get("title") or "", "published": None,
+                                   "description": ""})
+    if not videos:
+        raise LookupError("the channel page listed no videos")
+    return videos
+
+
+def video_details(video_id: str) -> Dict[str, Any]:
+    """Publish time, description, live status and whether the video has captions (yt-dlp).
+
+    A finished live stream counts from its end (that is when its whole content exists). Captions
+    exist when the channel uploaded subtitles or YouTube made automatic ones in the spoken language
+    (yt-dlp marks those "<lang>-orig"; the other automatic languages are machine translations).
+    """
+    import yt_dlp
+    with yt_dlp.YoutubeDL(_ydl_options(skip_download=True)) as downloader:
+        info = downloader.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+    stamp = info.get("timestamp") or info.get("release_timestamp")
+    if info.get("live_status") == "was_live" and info.get("release_timestamp") and info.get("duration"):
+        stamp = info["release_timestamp"] + info["duration"]
+    automatic = info.get("automatic_captions") or {}
+    return {"published": datetime.fromtimestamp(stamp, timezone.utc) if stamp else None,
+            "title": info.get("title") or "", "description": info.get("description") or "",
+            "live_status": info.get("live_status"),
+            "has_captions": bool(info.get("subtitles")) or any(key.endswith("-orig") for key in automatic)}
 
 
 def _pick_track(tracks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -206,12 +274,9 @@ def transcribe_audio(video_id: str, should_stop: Callable[[], bool] = lambda: Fa
     import yt_dlp
     from yt_dlp.utils import match_filter_func
     with tempfile.TemporaryDirectory(prefix=AUDIO_PREFIX) as folder:
-        options = {"format": "bestaudio[ext=m4a]/bestaudio", "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
-                   "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
-                   "match_filter": match_filter_func(f"duration <= {MAX_AUDIO_SECONDS} & !is_live")}
-        deno = _deno_path()
-        if deno:  # YouTube's player challenges need a JavaScript runtime; without one formats go missing
-            options["js_runtimes"] = {"deno": {"path": deno}}
+        options = _ydl_options(format="bestaudio[ext=m4a]/bestaudio", outtmpl=os.path.join(folder, "%(id)s.%(ext)s"),
+                               noprogress=True, noplaylist=True,
+                               match_filter=match_filter_func(f"duration <= {MAX_AUDIO_SECONDS} & !is_live"))
 
         def stop_hook(_status: Dict[str, Any]) -> None:
             if should_stop():
@@ -406,6 +471,7 @@ class YouTubeScanJob:
     def __init__(self, repo: Any, *, channel_list: Optional[List[Tuple[str, str]]] = None,
                  read_feed: Callable[[str], List[Dict[str, Any]]] = feed,
                  read_captions: Callable[[str], str] = captions,
+                 read_details: Callable[[str], Dict[str, Any]] = video_details,
                  transcribe: Optional[Callable[..., str]] = None,
                  generate: Optional[Callable[[str], str]] = None,
                  trading_day: Optional[Callable[[date], bool]] = None,
@@ -415,6 +481,8 @@ class YouTubeScanJob:
         self._channels = channel_list
         self._feed = read_feed
         self._captions = read_captions
+        self._details = read_details
+        self._known: Dict[str, Dict[str, Any]] = {}  # details read earlier this process (deferred videos)
         # Local transcription of videos without captions, when YOUTUBE_TRANSCRIBE_AUDIO is on.
         self._transcribe = transcribe if transcribe is not None else (transcribe_audio if transcribe_enabled() else None)
         self._missing: Dict[str, int] = {}  # video -> passes without a transcript
@@ -423,6 +491,7 @@ class YouTubeScanJob:
         self._caption_fetches = 0  # this pass
         self._requests = 0  # this pass
         self._model_trouble = 0  # model failures in a row, this pass
+        self._audio = 0  # transcriptions this pass
         self._texts: Dict[str, Tuple[str, str]] = {}  # transcripts kept for a model retry
         self._model_failures: Dict[str, int] = {}
         self._spacing = CAPTION_SPACING_SECONDS
@@ -469,7 +538,7 @@ class YouTubeScanJob:
             clear_stale_audio()
         except OSError as exc:
             logger.info("Could not clear old audio folders: %s", type(exc).__name__)
-        self._caption_fetches = self._requests = self._model_trouble = 0
+        self._caption_fetches = self._requests = self._model_trouble = self._audio = 0
         try:
             added = self._pass(now, processed, cutoff, trading)
         finally:
@@ -478,6 +547,26 @@ class YouTubeScanJob:
                             if datetime.fromisoformat(pick["published_at"]) >= now - timedelta(days=1)]
         logger.info("YouTube scan: %d picks recorded", added)
         return added
+
+    def _complete(self, video: Dict[str, Any]) -> bool:
+        """Fills a listed video's publish time, description, live status and captions flag."""
+        video_id = video["video_id"]
+        if video_id not in self._known:
+            if self._requests >= REQUESTS_PER_PASS:
+                return False
+            if self._requests:
+                self._stopping.wait(self._spacing)
+            self._requests += 1
+            try:
+                self._known[video_id] = self._details(video_id)
+            except Exception as exc:  # private, removed or refused: tried again next pass
+                logger.info("YouTube details unavailable for %s: %s", video_id, type(exc).__name__)
+                return False
+        details = self._known[video_id]
+        if details.get("published") is None:
+            return False
+        video.update({key: value for key, value in details.items() if value is not None and (key != "title" or value)})
+        return True
 
     def _transcript(self, video: Dict[str, Any], now: datetime) -> Tuple[str, str]:
         """(text, source): "captions", "audio", "" (no transcript: retried, then dropped) or "skip" (too
@@ -497,6 +586,8 @@ class YouTubeScanJob:
             if text:
                 self._blocked_since.pop(video_id, None)
                 return text, "captions"
+            if video.get("has_captions"):  # yt-dlp sees captions the video page did not list: a block
+                raise CaptionsBlocked("no_tracks" if fetch else "paused")
         except VideoNotReady as exc:
             raise _Deferred() from exc  # an upcoming or live stream: read once it has aired
         except CaptionsBlocked as exc:
@@ -514,11 +605,12 @@ class YouTubeScanJob:
             raise _Deferred() from exc
         if self._transcribe is None:
             return "", ""
-        if self._model_trouble:
-            raise _Deferred()  # the model just failed: no CPU spent on audio it may not read
+        if self._model_trouble or self._audio >= AUDIO_PER_PASS:
+            raise _Deferred()  # the model just failed, or this pass's CPU budget is spent
         if video["published"] < now - timedelta(days=AUDIO_BACKFILL_DAYS):
             return "", "skip"
         started = time.monotonic()
+        self._audio += 1
         text = self._transcribe(video_id, should_stop=self._stopping.is_set)
         if text:
             logger.info("YouTube audio for %s transcribed in %.0f s", video_id, time.monotonic() - started)
@@ -527,17 +619,27 @@ class YouTubeScanJob:
         return "", ""
 
     def _pass(self, now, processed, cutoff, trading) -> int:
-        added = 0
+        added, listed, failed = 0, 0, []
         for name, channel_id in (self._channels if self._channels is not None else channels()):
             try:
                 videos = self._feed(channel_id)
+                listed += 1
             except Exception as exc:  # the next pass retries this channel
                 logger.info("YouTube feed unavailable for %s: %s", name, type(exc).__name__)
+                failed.append(type(exc).__name__)
                 continue
             for video in reversed(videos):  # oldest first
                 if self._stopping.is_set():
                     return added
-                if video["video_id"] in processed or video["published"] < cutoff:
+                if video["video_id"] in processed:
+                    continue
+                if video.get("published") is None:
+                    if not self._complete(video):
+                        continue  # read on a later pass
+                    if video.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+                        continue  # read once it has aired
+                if video["published"] < cutoff:
+                    processed[video["video_id"]] = video["published"].date().isoformat()  # too old: never looked up again
                     continue
                 try:
                     text, source = self._transcript(video, now)
@@ -590,6 +692,8 @@ class YouTubeScanJob:
                     logger.warning("YouTube picks not stored for %s: %s", video["video_id"], type(exc).__name__)
                     self._texts[video["video_id"]] = (text, source)
                     return added
+        if failed and not listed:  # nothing could be read: shown on the Status page
+            raise LookupError(f"no channel could be listed ({failed[0]})")
         return added
 
 

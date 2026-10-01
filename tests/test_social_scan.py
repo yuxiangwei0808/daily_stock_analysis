@@ -1,6 +1,6 @@
 """Social media scan: free sources merged per ticker, report context, the evening digest and its tracking."""
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -201,3 +201,14 @@ def test_without_reddit_the_order_follows_rank_and_nothing_is_tracked(web, repo)
     job = ss.DigestJob(repo, lambda *a: {"id": 1}, trading_day=lambda day: True)
     job.run(date(2026, 9, 29), datetime(2026, 9, 29, 20, 25, tzinfo=timezone.utc))
     assert repo.tracked_ideas() == [] and job.last_error is None  # sent as context, not tracked
+
+
+def test_a_digest_stored_without_its_day_still_counts_as_sent(web, repo):
+    from zoneinfo import ZoneInfo
+    event = repo.event("social_digest", {"underlying": "", "message": "📣 old format"}, "social-digest:old")
+    sent_day = datetime.fromisoformat(event["created_at"]).astimezone(ZoneInfo("America/New_York")).date()
+    job = ss.DigestJob(repo, lambda *a: {"id": 1}, trading_day=lambda day: True)
+    assert job._already_sent(sent_day)  # matched by its New York send date
+    assert not job._already_sent(sent_day - timedelta(days=1))
+    job.run(sent_day, datetime.now(timezone.utc))
+    assert repo.tracked_ideas() == []  # nothing tracked a second time

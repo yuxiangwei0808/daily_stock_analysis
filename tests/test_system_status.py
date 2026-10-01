@@ -150,3 +150,16 @@ def test_trade_desk_switched_off_reads_as_off(monkeypatch):
     service.worker.status = lambda: {"running": False, "leader": False, "last_tick": None}
     states = {item["key"]: item["state"] for item in st.build(service, NOW)["components"]}
     assert states["worker"] == "off"
+
+
+def test_a_connected_opend_with_unverified_rights_is_a_warning_not_a_failure(monkeypatch):
+    monkeypatch.setattr(st, "code_version", lambda root=None: "abc12345")
+    monkeypatch.setattr(st, "_probe", None)
+    degraded = {"live": {"available": False, "status": "degraded", "connected": True,
+                         "message": "OpenD connected, but quote rights or subscription quota could not be verified"}}
+    states = {item["key"]: item for item in st.build(_service(health=lambda: degraded), NOW)["components"]}
+    assert states["opend"]["state"] == "warn"
+    monkeypatch.setattr(st, "_probe", None)
+    blocked = {"live": {"available": False, "status": "blocked", "connected": False, "message": "opend_not_configured"}}
+    states = {item["key"]: item for item in st.build(_service(health=lambda: blocked), NOW)["components"]}
+    assert states["opend"]["state"] == "error"

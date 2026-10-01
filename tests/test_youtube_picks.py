@@ -121,7 +121,7 @@ def test_the_scan_records_picks_once_and_retries_a_failed_video(repo):
     assert rows["MU"]["signal_day"] == "2026-09-30" and rows["MU"]["entry"] is None and rows["MU"]["source"] == "captions"
     assert rows["TSM"]["source"] == "audio" and {pick["ticker"] for pick in job.today_picks} == {"MU", "TSM"}
     assert "silent" not in generated  # no transcript: the title is never sent to the model
-    assert set(repo.setting(yp.PROCESSED_KEY)) == {"new", "spoken"}  # failures retried; the old video never read
+    assert set(repo.setting(yp.PROCESSED_KEY)) == {"new", "spoken", "old"}  # failures retried; the old one set aside unread
     generated.clear()
     transcribed.clear()
     job.run(NOW)
@@ -324,3 +324,53 @@ def test_a_failing_model_keeps_the_transcript_and_gives_up_after_three_passes(re
         job.run(NOW)
     assert reads == ["v1"]  # read once; the retries reuse the transcript
     assert "v1" in repo.setting(yp.PROCESSED_KEY)  # dropped after the third failure
+
+
+
+def test_listed_videos_get_their_details_and_captioned_ones_are_never_transcribed(repo):
+    listed = [{"video_id": v, "title": v, "published": None, "description": ""} for v in ("cap", "nocap", "live", "gone")]
+    details = {
+        "cap": {"published": NOW - timedelta(hours=3), "description": "d", "live_status": "not_live", "has_captions": True},
+        "nocap": {"published": NOW - timedelta(hours=4), "description": "d", "live_status": "not_live", "has_captions": False},
+        "live": {"published": NOW - timedelta(hours=1), "description": "", "live_status": "is_live", "has_captions": False},
+    }
+    looked_up, transcribed = [], []
+
+    def read_details(video_id):
+        looked_up.append(video_id)
+        if video_id == "gone":
+            raise RuntimeError("private video")
+        return details[video_id]
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: listed, read_details=read_details,
+                            read_captions=lambda vid, fetch=True: "",  # the video page lists no tracks (a block)
+                            transcribe=lambda vid, should_stop: transcribed.append(vid) or "spoken words",
+                            generate=lambda prompt: '{"picks": []}', trading_day=_weekday)
+    job._spacing = 0
+    job.run(NOW)
+    assert transcribed == ["nocap"]  # "cap" has captions: it waits for them instead of costing CPU
+    assert "live" not in repo.setting(yp.PROCESSED_KEY)  # read once it has aired
+    looked_up.clear()
+    job.run(NOW)
+    assert looked_up == ["gone"]  # details are read once per video; a failed lookup is retried
+
+
+def test_no_channel_listed_is_an_error_the_status_page_shows(repo):
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: (_ for _ in ()).throw(LookupError("404")),
+                            read_captions=lambda vid, fetch=True: "", generate=lambda prompt: "", trading_day=_weekday)
+    job._run_recorded(NOW)
+    assert job.last_error == "LookupError"
+
+
+def test_audio_transcription_is_capped_per_pass(repo, monkeypatch):
+    monkeypatch.setattr(yp, "AUDIO_PER_PASS", 2)
+    feed = [_video(f"v{i}", i + 1, f"v{i}") for i in range(4)]
+    transcribed = []
+    job = yp.YouTubeScanJob(repo, channel_list=[("x", KEVIN)], read_feed=lambda cid: feed,
+                            read_captions=lambda vid, fetch=True: "",
+                            transcribe=lambda vid, should_stop: transcribed.append(vid) or "words",
+                            generate=lambda prompt: '{"picks": []}', trading_day=_weekday)
+    job._spacing = 0
+    job.run(NOW)
+    assert len(transcribed) == 2
+    job.run(NOW)
+    assert len(transcribed) == 4  # the rest on the next pass

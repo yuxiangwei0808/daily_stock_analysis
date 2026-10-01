@@ -456,7 +456,11 @@ X has no free API and Reddit's own JSON refuses this client, so neither is read 
 
 **YouTube picks** (`YOUTUBE_CHANNELS=Name=UC…,…`, channel ids, not handles, because a handle
 search can land on a clips or fan channel). Every 3 hours the worker reads each channel's RSS
-feed. A new video's full spoken text goes to `YOUTUBE_PICKS_BACKEND` (default: the routine
+feed, or, while YouTube's feeds are down (they have returned 404 for days at a time), the channel's
+video and live tabs with yt-dlp; each new video's publish time, live status and whether it has
+captions then come from yt-dlp too (a finished live stream counts from its end). A video yt-dlp
+shows with captions is never transcribed from audio just because the caption request came back
+empty: that is treated as a block and waits. At most 6 videos are transcribed per pass. A new video's full spoken text goes to `YOUTUBE_PICKS_BACKEND` (default: the routine
 `GENERATION_BACKEND`). The model returns only explicit calls as JSON: ticker, bullish or
 bearish, conviction, horizon and a short reason. Tickers are validated and at most 10 picks
 per video are kept. A video is marked read once its picks are stored (setting
