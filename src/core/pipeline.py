@@ -3699,6 +3699,9 @@ class StockAnalysisPipeline:
                 # 单股推送模式：只保存汇总报告，不再重复推送
                 logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
                 self._send_notifications(results, report_type, skip_push=True)
+                # Each stock was already sent as it finished; a restart must not re-send them.
+                from src.services.runtime_scheduler import mark_run_pushed
+                mark_run_pushed()
             elif merge_notification:
                 # 合并模式（Issue #190）：仅保存，不推送，由 main 层合并个股+大盘后统一发送
                 logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")

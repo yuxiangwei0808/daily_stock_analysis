@@ -237,7 +237,9 @@ The **Status** page (sidebar; `GET /api/v1/trade-desk/status`) lists every compo
 state — working, needs attention, failing, or off — and a one-line detail, refreshing every
 30 seconds: the running code version (and a warning when newer code is on disk, i.e. a
 restart is needed), moomoo OpenD quotes, scheduled reports (next run, last success, last
-error), the alert monitor, plan monitoring, broker holdings sync, market pulse, trade
+error, and how many stocks the last run analyzed out of how many it was given: a run that sent
+its brief with some stocks missing needs attention, and with fewer than half analyzed it counts as
+failing so the watchdog posts it), the alert monitor, plan monitoring, broker holdings sync, market pulse, trade
 opportunities, breakout watch, idea tracker, YouTube picks (including a caption rate limit),
 social scan and Discord delivery. Work a component hands to a background thread (the opportunity
 scan, breakout levels, holdings tasks) reports its last failure too. The OpenD check runs on its own
@@ -458,9 +460,12 @@ X has no free API and Reddit's own JSON refuses this client, so neither is read 
 search can land on a clips or fan channel). Every 3 hours the worker reads each channel's RSS
 feed, or, while YouTube's feeds are down (they have returned 404 for days at a time), the channel's
 video and live tabs with yt-dlp; each new video's publish time, live status and whether it has
-captions then come from yt-dlp too (a finished live stream counts from its end). A video yt-dlp
-shows with captions is never transcribed from audio just because the caption request came back
-empty: that is treated as a block and waits. At most 6 videos are transcribed per pass. A new video's full spoken text goes to `YOUTUBE_PICKS_BACKEND` (default: the routine
+captions then come from yt-dlp too (a finished live stream counts from its end; the feed's own
+time is not used, since for a stream or premiere it is when it was scheduled). A stream that has
+not aired yet is checked again each pass. A video yt-dlp shows with English or Chinese captions (a
+stream's chat replay does not count) is not transcribed from audio just because the player listed
+no caption track: it waits on its own for a day, then its audio is read. At most 6 videos are
+transcribed per pass. A new video's full spoken text goes to `YOUTUBE_PICKS_BACKEND` (default: the routine
 `GENERATION_BACKEND`). The model returns only explicit calls as JSON: ticker, bullish or
 bearish, conviction, horizon and a short reason. Tickers are validated and at most 10 picks
 per video are kept. A video is marked read once its picks are stored (setting
@@ -643,8 +648,11 @@ answer, and on a stale one) re-prices the same contracts from current quotes wit
 model again (`POST /advice/{id}/reprice`): legs, payoff, close-early curves, probability and
 scenarios are recalculated, the reasoning is kept, and the answer notes when prices were
 refreshed and that the explanation was written at the earlier prices. A candidate that cannot be
-priced keeps its earlier numbers and is counted in the note. **Run again** still asks the model
-anew.
+priced keeps its earlier numbers and is counted in the note. If the underlying is through a
+selected candidate's invalidation level, or its exit time has passed (when the answer was
+calculated, or at the refreshed price, even for a candidate whose own contracts could not be
+priced), the answer is stale and says the reasoning no longer holds instead of showing the
+refreshed-prices note. **Run again** still asks the model anew.
 
 ## Positions and operational behavior
 

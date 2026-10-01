@@ -348,10 +348,16 @@ def test_listed_videos_get_their_details_and_captioned_ones_are_never_transcribe
     job._spacing = 0
     job.run(NOW)
     assert transcribed == ["nocap"]  # "cap" has captions: it waits for them instead of costing CPU
+    assert not job.captions_paused()  # one video's unlisted track does not hold back the other channels
     assert "live" not in repo.setting(yp.PROCESSED_KEY)  # read once it has aired
     looked_up.clear()
     job.run(NOW)
-    assert looked_up == ["gone"]  # details are read once per video; a failed lookup is retried
+    assert looked_up == ["gone", "live"]  # final details are read once; a failed lookup and a live stream again
+    details["live"] = {"published": NOW, "description": "", "live_status": "was_live", "has_captions": False}
+    looked_up.clear()
+    job.run(NOW + timedelta(hours=2))
+    assert looked_up == ["gone", "live"] and transcribed == ["nocap", "live"]  # read once it has aired
+    assert "live" in repo.setting(yp.PROCESSED_KEY)
 
 
 def test_no_channel_listed_is_an_error_the_status_page_shows(repo):
@@ -374,3 +380,69 @@ def test_audio_transcription_is_capped_per_pass(repo, monkeypatch):
     assert len(transcribed) == 2
     job.run(NOW)
     assert len(transcribed) == 4  # the rest on the next pass
+
+
+def _fake_ytdlp(monkeypatch, info=None, error=None):
+    import yt_dlp
+
+    class FakeDownloader:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download):
+            if error:
+                raise error
+            return info
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeDownloader)
+
+
+@pytest.mark.parametrize("subtitles, automatic, expected", [
+    ({"live_chat": [{}]}, {"ja-orig": [{}], "en": [{}]}, False),  # chat replay and a translation are not captions
+    ({"en-US": [{}], "live_chat": [{}]}, {}, True),
+    ({}, {"zh-Hans-orig": [{}]}, True),
+    ({}, {}, False),
+])
+def test_video_details_counts_only_captions_the_job_can_read(monkeypatch, subtitles, automatic, expected):
+    _fake_ytdlp(monkeypatch, {"live_status": "was_live", "release_timestamp": 1_790_000_000, "duration": 3600,
+                              "title": "t", "subtitles": subtitles, "automatic_captions": automatic})
+    details = yp.video_details("vid")
+    assert details["has_captions"] is expected
+    assert details["published"] == datetime.fromtimestamp(1_790_000_000 + 3600, timezone.utc)  # a stream counts from its end
+
+
+def test_rss_publish_times_are_not_trusted(monkeypatch):
+    xml = (b'<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015" '
+           b'xmlns:media="http://search.yahoo.com/mrss/"><entry><yt:videoId>abc</yt:videoId><title>Live at 8pm</title>'
+           b'<published>2026-09-25T13:00:00+00:00</published><media:group><media:description>d</media:description>'
+           b'</media:group></entry></feed>')
+    monkeypatch.setattr(yp, "_get", lambda url, **kwargs: SimpleNamespace(content=xml))
+    # A scheduled stream's feed time is when it was scheduled: the job reads the real time per video.
+    assert yp.feed(KEVIN) == [{"video_id": "abc", "title": "Live at 8pm", "published": None, "description": "d"}]
+
+
+def test_a_stop_during_the_audio_download_is_a_stop_not_a_failure(monkeypatch, tmp_path):
+    from yt_dlp.utils import DownloadError
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    _fake_ytdlp(monkeypatch, error=DownloadError("interrupted"))  # how yt-dlp reports the hook's InterruptedError
+    with pytest.raises(InterruptedError):
+        yp.transcribe_audio("vid", should_stop=lambda: True)
+    with pytest.raises(DownloadError):
+        yp.transcribe_audio("vid")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_age_restricted_video_is_unreadable_not_a_block(monkeypatch):
+    import requests
+    reply = SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: {
+        "playabilityStatus": {"status": "LOGIN_REQUIRED", "reason": "Sign in to confirm your age"}})
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: reply)
+    assert yp.captions("vid") == ""
+    reply.json = lambda: {"playabilityStatus": {"status": "LOGIN_REQUIRED", "reason": "Sign in to confirm you're not a bot"}}
+    with pytest.raises(yp.CaptionsBlocked, match="login_required"):
+        yp.captions("vid")

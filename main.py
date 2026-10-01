@@ -91,6 +91,8 @@ logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
 _LAST_ANALYSIS_FAILURE_REASON: Optional[str] = None
+# Stocks analyzed vs requested in the last run (the scheduler shows a run where many failed).
+_LAST_ANALYSIS_COUNTS: Optional[Dict[str, int]] = None
 
 
 def _get_active_env_path() -> Path:
@@ -825,8 +827,9 @@ def run_full_analysis(
     from src.core.market_review import run_market_review
     from src.core.pipeline import StockAnalysisPipeline
 
-    global _LAST_ANALYSIS_FAILURE_REASON
+    global _LAST_ANALYSIS_FAILURE_REASON, _LAST_ANALYSIS_COUNTS
     _LAST_ANALYSIS_FAILURE_REASON = None
+    _LAST_ANALYSIS_COUNTS = None
 
     def _return_with_auto_backtest(result: bool) -> bool:
         _run_auto_backtest(config)
@@ -1003,6 +1006,8 @@ def run_full_analysis(
                 current_time=analysis_reference_time,
                 analysis_targets=analysis_targets,
             )
+            if not args.dry_run and stock_codes:
+                _LAST_ANALYSIS_COUNTS = {"analyzed": len(results), "requested": len(stock_codes)}
 
         if should_use_daily_market_context and not market_context_summary:
             (

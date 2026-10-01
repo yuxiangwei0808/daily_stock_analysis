@@ -8,6 +8,7 @@ import multiprocessing
 import os
 import signal
 import subprocess
+import sys
 import threading
 import _thread
 import time
@@ -179,7 +180,7 @@ def _run_scheduled_analysis_process(
     record = _read_run_record()
     if record.get("pid") == os.getpid() and record.get("status") == "started":
         _write_run_record({**record, "status": "finished", "finished_at": datetime.now().isoformat()})
-    result_queue.put({"success": success, "error": service._last_error})
+    result_queue.put({"success": success, "error": service._last_error, "counts": service._last_counts})
 
 
 def _posix_descendant_process_ids(root_pid: int) -> Set[int]:
@@ -384,6 +385,7 @@ class RuntimeSchedulerService:
         self._last_run_at: Optional[str] = None
         self._last_success_at: Optional[str] = None
         self._last_error: Optional[str] = None
+        self._last_counts: Optional[Dict[str, int]] = None  # stocks analyzed vs requested, last run
         self._last_skipped_at: Optional[str] = None
         self._last_skip_reason: Optional[str] = None
         self._analysis_process_target = _run_scheduled_analysis_process
@@ -431,7 +433,10 @@ class RuntimeSchedulerService:
 
                 runner = run_scheduled_analysis
             self._last_run_at = datetime.now().isoformat()
+            self._last_counts = None
             result = runner(config, self._make_schedule_args(), stock_codes)
+            # main.run_full_analysis leaves how many stocks it analyzed out of how many it was given.
+            self._last_counts = getattr(sys.modules.get(getattr(runner, "__module__", "")), "_LAST_ANALYSIS_COUNTS", None)
             if result is False:
                 raise RuntimeError("runtime scheduled analysis reported failure")
             self._last_success_at = datetime.now().isoformat()
@@ -605,6 +610,7 @@ class RuntimeSchedulerService:
                 process.start()
                 self._analysis_process = process
                 self._last_run_at = run_started_at.isoformat()
+                self._last_counts = None
             if slot:
                 previous = _read_run_record()
                 attempts = previous.get("attempts", 0) + 1 if previous.get("slot") == slot else 1
@@ -674,6 +680,7 @@ class RuntimeSchedulerService:
             with self._analysis_process_lock:
                 if generation != self._analysis_generation:
                     return
+                self._last_counts = result.get("counts")
                 if result.get("success"):
                     self._last_success_at = datetime.now().isoformat()
                     self._last_error = None
@@ -847,16 +854,17 @@ class RuntimeSchedulerService:
             launch, self._launch_checked = not self._launch_checked, True
             if not run_immediately and self._interrupted_slot(times, launch=launch):
                 label = _latest_slot(times, datetime.now())[-5:]
+                self._run_in_background_thread(partial(self._catch_up, label, scheduled_analysis))
 
-                def catch_up() -> None:
-                    # After a schedule edit the stopped run's watchdog can hold the lock for a
-                    # moment while it drains; wait briefly instead of recording a busy skip.
-                    deadline = time.monotonic() + 15
-                    while self._run_lock.locked() and time.monotonic() < deadline:
-                        time.sleep(0.2)
-                    self._catch_up_label = label  # the child keeps the approved slot even if it starts late
-                    scheduled_analysis()
-                self._run_in_background_thread(catch_up)
+    def _catch_up(self, label: str, start: Callable[[], bool], wait_seconds: float = 15) -> None:
+        # After a schedule edit the stopped run's watchdog can hold the lock for a
+        # moment while it drains; wait briefly instead of recording a busy skip.
+        deadline = time.monotonic() + wait_seconds
+        while self._run_lock.locked() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self._catch_up_label = label  # the child keeps the approved slot even if it starts late
+        if not start():
+            self._catch_up_label = None  # not started (still busy): a later run must not inherit this slot
 
     def _take_catch_up_label(self) -> Optional[str]:
         label, self._catch_up_label = self._catch_up_label, None
@@ -977,6 +985,7 @@ class RuntimeSchedulerService:
             # Unlocked read: may briefly show the baseline timeout string
             # until _apply_timeout_partial_outcome finishes. See that method.
             "last_error": self._last_error,
+            "last_counts": self._last_counts,
             "last_skipped_at": self._last_skipped_at,
             "last_skip_reason": self._last_skip_reason,
         }

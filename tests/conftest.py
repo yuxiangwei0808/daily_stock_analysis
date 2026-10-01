@@ -312,3 +312,11 @@ def _social_scans_off(monkeypatch):
     monkeypatch.delenv("SOCIAL_SCAN_ENABLED", raising=False)
     monkeypatch.delenv("YOUTUBE_CHANNELS", raising=False)
     monkeypatch.delenv("TRADE_DESK_DISCORD_ASK_USERS", raising=False)  # no Discord /ask bot in tests
+
+
+@pytest.fixture(autouse=True)
+def _no_shell_provider_keys(monkeypatch):
+    """Model API keys from the developer's shell (e.g. OPENAI_API_KEY in ~/.bashrc) count as direct-env
+    runtime sources in config validation; CI has none, so tests must not see them either."""
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(name, raising=False)

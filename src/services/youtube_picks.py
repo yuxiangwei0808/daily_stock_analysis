@@ -48,6 +48,7 @@ CAPTIONS_PER_PASS = 25  # the rest wait for the next pass (every 3 hours)
 REQUESTS_PER_PASS = 60  # video-page and caption requests together
 MODEL_ATTEMPTS = 3  # passes a video is retried when the model fails, before it is dropped
 AUDIO_PER_PASS = 6  # CPU transcriptions per pass (about 6 minutes each), so a long caption block stays bounded
+_NOT_AIRED = ("is_live", "is_upcoming", "post_live")  # yt-dlp live_status of a stream to read once it has aired
 BLOCKED_AUDIO_AFTER = timedelta(days=1)  # captions refused this long: transcribe the audio instead
 AUDIO_BACKFILL_DAYS = 7  # audio is transcribed only for videos of the last week (CPU time)
 MAX_AUDIO_SECONDS = 2 * 3600  # longer videos (live streams) are not transcribed
@@ -88,7 +89,8 @@ def _get(url: str, **kwargs) -> Any:
 def feed(channel_id: str) -> List[Dict[str, Any]]:
     """The channel's latest videos, newest first: its RSS feed, or the channel's video and live tabs
     (read with yt-dlp) when the feed is down (YouTube's feeds have returned 404 for days at a time).
-    Listed videos have no publish time yet: the job reads it with ``video_details``."""
+    Listed videos have no publish time yet: the job reads it with ``video_details``. The feed's own
+    time is not used: for a stream or premiere it is when it was scheduled, not when it aired."""
     try:
         root = ET.fromstring(_get(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}").content)
     except Exception as exc:
@@ -96,11 +98,9 @@ def feed(channel_id: str) -> List[Dict[str, Any]]:
         return channel_listing(channel_id)
     videos = []
     for entry in root.findall("a:entry", _NS):
-        published = datetime.fromisoformat(entry.find("a:published", _NS).text.replace("Z", "+00:00"))
         description = entry.find("media:group/media:description", _NS)
         videos.append({"video_id": entry.find("yt:videoId", _NS).text, "title": entry.find("a:title", _NS).text or "",
-                       "published": published.astimezone(timezone.utc),
-                       "description": (description.text or "") if description is not None else ""})
+                       "published": None, "description": (description.text or "") if description is not None else ""})
     return videos
 
 
@@ -149,8 +149,9 @@ def video_details(video_id: str) -> Dict[str, Any]:
     """Publish time, description, live status and whether the video has captions (yt-dlp).
 
     A finished live stream counts from its end (that is when its whole content exists). Captions
-    exist when the channel uploaded subtitles or YouTube made automatic ones in the spoken language
-    (yt-dlp marks those "<lang>-orig"; the other automatic languages are machine translations).
+    exist when the channel uploaded English or Chinese subtitles, or YouTube made automatic ones in
+    the spoken language when that is English or Chinese (yt-dlp marks those "<lang>-orig"; the other
+    automatic languages are machine translations). A stream's chat replay ("live_chat") is not captions.
     """
     import yt_dlp
     with yt_dlp.YoutubeDL(_ydl_options(skip_download=True)) as downloader:
@@ -162,7 +163,13 @@ def video_details(video_id: str) -> Dict[str, Any]:
     return {"published": datetime.fromtimestamp(stamp, timezone.utc) if stamp else None,
             "title": info.get("title") or "", "description": info.get("description") or "",
             "live_status": info.get("live_status"),
-            "has_captions": bool(info.get("subtitles")) or any(key.endswith("-orig") for key in automatic)}
+            "has_captions": any(_readable(key) for key in info.get("subtitles") or {})
+            or any(key.endswith("-orig") and _readable(key) for key in automatic)}
+
+
+def _readable(language: str) -> bool:
+    """Caption languages the job reads (see ``_pick_track``)."""
+    return str(language).lower().startswith(("en", "zh"))
 
 
 def _pick_track(tracks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -202,8 +209,11 @@ def captions(video_id: str, fetch: bool = True) -> str:
     data = response.json()
     status = str((data.get("playabilityStatus") or {}).get("status") or "")
     details = data.get("videoDetails") or {}
-    if status == "LOGIN_REQUIRED":  # "confirm you're not a bot": YouTube is refusing this server
-        raise CaptionsBlocked("login_required")
+    if status == "LOGIN_REQUIRED":
+        reason = str((data.get("playabilityStatus") or {}).get("reason") or "")
+        if re.search(r"\bage\b", reason, re.IGNORECASE):
+            return ""  # age-restricted: no transcript this server can read, for this video only
+        raise CaptionsBlocked("login_required")  # "confirm you're not a bot": YouTube is refusing this server
     if details.get("isUpcoming") or details.get("isLive") or status not in ("OK", ""):
         raise VideoNotReady(status or "live")
     tracks = (((data.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {}).get("captionTracks")) or []
@@ -283,7 +293,12 @@ def transcribe_audio(video_id: str, should_stop: Callable[[], bool] = lambda: Fa
                 raise InterruptedError("stopping")
         options["progress_hooks"] = [stop_hook]  # a server stop also ends a download
         with yt_dlp.YoutubeDL(options) as downloader:
-            downloader.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+            try:
+                downloader.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+            except Exception:
+                if should_stop():  # yt-dlp wraps the hook's InterruptedError (an OSError) in its own error
+                    raise InterruptedError("stopping") from None
+                raise
         files = [os.path.join(folder, name) for name in os.listdir(folder) if not name.endswith(".part")]
         if not files:
             return ""  # a live stream or a very long video
@@ -482,7 +497,7 @@ class YouTubeScanJob:
         self._feed = read_feed
         self._captions = read_captions
         self._details = read_details
-        self._known: Dict[str, Dict[str, Any]] = {}  # details read earlier this process (deferred videos)
+        self._known: Dict[str, Dict[str, Any]] = {}  # final details read earlier this process (deferred videos)
         # Local transcription of videos without captions, when YOUTUBE_TRANSCRIBE_AUDIO is on.
         self._transcribe = transcribe if transcribe is not None else (transcribe_audio if transcribe_enabled() else None)
         self._missing: Dict[str, int] = {}  # video -> passes without a transcript
@@ -549,20 +564,25 @@ class YouTubeScanJob:
         return added
 
     def _complete(self, video: Dict[str, Any]) -> bool:
-        """Fills a listed video's publish time, description, live status and captions flag."""
+        """Fills a listed video's publish time, description, live status and captions flag.
+
+        Details are kept for the process once final; a stream that has not aired yet (or a video
+        without a publish time) is read again on the next pass, since its status will change."""
         video_id = video["video_id"]
-        if video_id not in self._known:
+        details = self._known.get(video_id)
+        if details is None:
             if self._requests >= REQUESTS_PER_PASS:
                 return False
             if self._requests:
                 self._stopping.wait(self._spacing)
             self._requests += 1
             try:
-                self._known[video_id] = self._details(video_id)
+                details = self._details(video_id)
             except Exception as exc:  # private, removed or refused: tried again next pass
                 logger.info("YouTube details unavailable for %s: %s", video_id, type(exc).__name__)
                 return False
-        details = self._known[video_id]
+            if details.get("published") is not None and details.get("live_status") not in _NOT_AIRED:
+                self._known[video_id] = details
         if details.get("published") is None:
             return False
         video.update({key: value for key, value in details.items() if value is not None and (key != "title" or value)})
@@ -586,12 +606,14 @@ class YouTubeScanJob:
             if text:
                 self._blocked_since.pop(video_id, None)
                 return text, "captions"
-            if video.get("has_captions"):  # yt-dlp sees captions the video page did not list: a block
-                raise CaptionsBlocked("no_tracks" if fetch else "paused")
+            if video.get("has_captions"):  # yt-dlp sees captions the player did not list: refused, or not ready
+                raise CaptionsBlocked("no_tracks")
         except VideoNotReady as exc:
             raise _Deferred() from exc  # an upcoming or live stream: read once it has aired
         except CaptionsBlocked as exc:
-            if fetch or str(exc) == "login_required":  # refused just now: stop asking for a while
+            # Refused just now: stop asking for a while. A video whose captions the player does not list
+            # ("no_tracks") waits on its own, since one video's missing track says nothing about the rest.
+            if (fetch and str(exc) != "no_tracks") or str(exc) == "login_required":
                 self._captions_paused_until = self._clock() + CAPTION_PAUSE_SECONDS
                 logger.warning("YouTube refused captions (%s); captioned videos wait %d hours", exc,
                                CAPTION_PAUSE_SECONDS // 3600)
@@ -620,6 +642,7 @@ class YouTubeScanJob:
 
     def _pass(self, now, processed, cutoff, trading) -> int:
         added, listed, failed = 0, 0, []
+        self._known = {key: value for key, value in self._known.items() if key not in processed}
         for name, channel_id in (self._channels if self._channels is not None else channels()):
             try:
                 videos = self._feed(channel_id)
@@ -633,10 +656,11 @@ class YouTubeScanJob:
                     return added
                 if video["video_id"] in processed:
                     continue
+                video = dict(video)  # filled in below; the listing itself stays as read
                 if video.get("published") is None:
                     if not self._complete(video):
                         continue  # read on a later pass
-                    if video.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+                    if video.get("live_status") in _NOT_AIRED:
                         continue  # read once it has aired
                 if video["published"] < cutoff:
                     processed[video["video_id"]] = video["published"].date().isoformat()  # too old: never looked up again

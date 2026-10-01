@@ -62,6 +62,22 @@ def test_new_code_on_disk_asks_for_a_restart_and_a_stalled_worker_is_an_error(mo
     assert states["scheduler"][0] == "error" and "last run failed: timeout after 3600s" in states["scheduler"][1]
 
 
+def test_a_run_that_lost_stocks_is_flagged_even_though_it_sent_its_brief(monkeypatch):
+    monkeypatch.setattr(st, "code_version", lambda root=None: "abc12345")
+
+    def scheduler(analyzed):
+        return lambda: {"enabled": True, "last_run_at": "2026-09-30T12:00:00-04:00",
+                        "last_success_at": "2026-09-30T12:04:00-04:00", "last_error": None,
+                        "last_counts": {"analyzed": analyzed, "requested": 33}}
+    states = {item["key"]: item for item in st.build(_service(scheduler_status=scheduler(4)), NOW)["components"]}
+    assert states["scheduler"]["state"] == "error"  # most stocks missing: the watchdog posts it
+    assert "last run analyzed 4 of 33 stocks" in states["scheduler"]["detail"]
+    states = {item["key"]: item for item in st.build(_service(scheduler_status=scheduler(30)), NOW)["components"]}
+    assert states["scheduler"]["state"] == "warn"
+    states = {item["key"]: item for item in st.build(_service(scheduler_status=scheduler(33)), NOW)["components"]}
+    assert states["scheduler"]["state"] == "ok" and "analyzed" not in states["scheduler"]["detail"]
+
+
 def test_git_version_is_read_from_the_checkout(tmp_path):
     (tmp_path / ".git" / "refs" / "heads").mkdir(parents=True)
     (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")

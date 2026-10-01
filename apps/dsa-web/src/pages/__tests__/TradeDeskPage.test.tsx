@@ -467,4 +467,25 @@ describe('TradeDeskPage', () => {
     expect(await screen.findByTestId('reprice-bar')).toHaveTextContent('the explanation was written at the earlier prices');
     expect(api.createAdvice).not.toHaveBeenCalled();
   });
+
+  it('keeps the warning when refreshed prices show the setup is invalidated', async () => {
+    const staleJob = { ...queuedJob, id: 'advice-stale', status: 'stale' as const,
+      request: { ...baseRequest, dataMode: 'live' as const, message: 'Compare bullish spreads' }, candidates: [candidate] };
+    api.listAdvice.mockResolvedValue({ items: [staleJob] });
+    api.repriceAdvice.mockResolvedValue({ ...staleJob, repricedAt: '2026-09-30T15:02:00Z', repriceFailed: [],
+      invalidated: [candidate.id] });
+    renderPage('/trade-desk');
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh prices' }));
+    expect(await screen.findByText(/through a selected setup's invalidation level|越过所选方案的失效价位/)).toBeInTheDocument();
+    expect(screen.queryByTestId('reprice-bar')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Run again|重新运行/ })).toBeInTheDocument();
+  });
+
+  it('says the reasoning no longer holds when the answer was invalidated as it was calculated', async () => {
+    const staleJob = { ...queuedJob, id: 'advice-stale', status: 'stale' as const, invalidated: [candidate.id],
+      request: { ...baseRequest, dataMode: 'live' as const, message: 'Compare bullish spreads' }, candidates: [candidate] };
+    api.listAdvice.mockResolvedValue({ items: [staleJob] });
+    renderPage('/trade-desk');
+    expect(await screen.findByText(/through a selected setup's invalidation level|越过所选方案的失效价位/)).toBeInTheDocument();
+  });
 });

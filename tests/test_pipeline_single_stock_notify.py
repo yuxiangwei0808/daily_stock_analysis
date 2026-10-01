@@ -123,12 +123,15 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
 
         pipeline.process_single_stock = MagicMock(side_effect=_process)
 
-        results = pipeline.run(
-            stock_codes=["000001", "600519"],
-            dry_run=False,
-            send_notification=True,
-        )
+        with patch("src.services.runtime_scheduler.mark_run_pushed") as mark_pushed:
+            results = pipeline.run(
+                stock_codes=["000001", "600519"],
+                dry_run=False,
+                send_notification=True,
+            )
 
+        # Every stock was sent as it finished, so a restart must not re-run the scheduled brief.
+        mark_pushed.assert_called_once_with()
         self.assertEqual(len(results), 2)
         self.assertTrue(all(not single_stock_notify for _, single_stock_notify, _ in worker_calls))
         self.assertEqual(

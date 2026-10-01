@@ -339,6 +339,28 @@ def test_price_change_during_model_call_invalidates_proposal(repo, monkeypatch, 
     svc.stop()
 
 
+@pytest.mark.parametrize("level, expected", [(101.0, "stale"), (90.0, "completed")])
+def test_a_selection_already_through_its_invalidation_level_is_recorded(repo, monkeypatch, level, expected):
+    from src.services.trade_desk import analytics
+    snap = snapshot()
+    monkeypatch.setattr(analytics, 'build_candidates', lambda market, request: [candidate(market)])
+
+    class Advisor:
+        def explain(self, request, old, candidates, **kwargs):
+            item = candidates[0]
+            return Narrative(assessment='compare', explanation='Conditional comparison', selections=[
+                Selection(candidate_id=item.id, reason='test', trigger_direction='above', invalidation_price=level)]), \
+                {item.id: item}, {item.id: {'snapshot': old.model_copy(deep=True), 'request': request}}
+
+    svc = service(repo, snap, Advisor())
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST').model_dump(mode='json'))
+    svc._run_advice(job['id'], threading.Event())
+    result = repo.advice(job['id'])
+    assert result['status'] == expected  # spot 100 is below a long setup's 101 invalidation level
+    assert result['invalidated'] == ([result['candidates'][0]['id']] if expected == 'stale' else [])
+    svc.stop()
+
+
 def test_api_authentication_validation_and_mode_isolation(repo, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -1195,3 +1217,37 @@ def test_refresh_prices_reprices_the_contracts_without_the_model(repo):
         svc.reprice(replay['id'])
     with pytest.raises(KeyError):
         svc.reprice('missing')
+
+
+def test_refresh_prices_marks_the_answer_stale_once_the_setup_is_invalidated(repo):
+    snap = snapshot()
+    item = candidate(snap)
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', data_mode='live').model_dump(mode='json'))
+    level = snap.spot * 1.01  # a long-side setup is wrong below this level, and spot is already below it
+    repo.update_advice(job['id'], {'status': 'completed', 'candidates': [item.model_dump(mode='json')],
+                                   'snapshots': {snap.id: snap.model_dump(mode='json')},
+                                   'triggers': {item.id: {'trigger_direction': 'above', 'invalidation_price': level}}})
+    svc = service(repo)
+    svc._refresh_candidate = lambda cand, request, spot, require_unchanged=True: (cand, snap)
+    updated = svc.reprice(job['id'])
+    assert updated['status'] == 'stale' and updated['invalidated'] == [item.id]
+
+    repo.update_advice(job['id'], {'status': 'completed', 'triggers': {item.id: {
+        'trigger_direction': 'above', 'invalidation_price': snap.spot * 0.9,
+        'exit_at': '2099-01-01T00:00:00+00:00'}}})
+    updated = svc.reprice(job['id'])
+    assert updated['status'] == 'completed' and updated['invalidated'] == []
+    repo.update_advice(job['id'], {'triggers': {item.id: {'exit_at': '2020-01-01T00:00:00+00:00'}}})
+    assert svc.reprice(job['id'])['status'] == 'stale'  # its exit time has passed
+
+    # The invalidated selection's own contract cannot be priced, another candidate can: the
+    # underlying's fresh price still shows the setup is broken.
+    other = candidate(snap).model_copy(update={'id': 'other'})
+    repo.update_advice(job['id'], {'status': 'completed', 'candidates': [item.model_dump(mode='json'),
+                                                                        other.model_dump(mode='json')],
+                                   'triggers': {item.id: {'trigger_direction': 'above', 'invalidation_price': level}}})
+    svc._refresh_candidate = lambda cand, request, spot, require_unchanged=True: (
+        (cand, snap) if cand.id == 'other' else (None, snap))
+    updated = svc.reprice(job['id'])
+    assert updated['reprice_failed'] == [item.id] and updated['invalidated'] == [item.id]
+    assert updated['status'] == 'stale'

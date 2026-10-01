@@ -133,9 +133,18 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
             if info.get("next_run_at"):
                 parts.append(f"next {_utc(info['next_run_at']).astimezone(_NEW_YORK):%a %H:%M} NY")
             parts.append(f"last success {_ago(last_ok, now)}")
+            state = "error" if failing else "ok"
             if failing:
                 parts.append(f"last run failed: {str(last_error)[:120]}")
-            add("scheduler", "Scheduled reports", "off" if not info.get("enabled") else "error" if failing else "ok",
+            else:
+                # A run that sent its brief with stocks missing still "succeeded": say how many failed.
+                counts = info.get("last_counts") or {}
+                analyzed, requested = counts.get("analyzed", 0), counts.get("requested", 0)
+                if requested and analyzed < requested:
+                    parts.append(f"last run analyzed {analyzed} of {requested} stocks; the rest failed "
+                                 "(see the scheduled log)")
+                    state = "error" if analyzed * 2 < requested else "warn"
+            add("scheduler", "Scheduled reports", "off" if not info.get("enabled") else state,
                 "; ".join(parts) if info.get("enabled") else "scheduling is off")
         except Exception as exc:
             add("scheduler", "Scheduled reports", "error", type(exc).__name__)

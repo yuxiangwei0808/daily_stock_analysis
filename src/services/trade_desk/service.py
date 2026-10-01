@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .advisor import CodexTradeAdvisor, RoutineTradeAdvisor, build_panel, second_opinions
 from .ledger import position_from_fills, validate_fills
-from .models import PLAN_STRATEGY, TradeAdviceRequest, TradeFill, TradePlan, identity, utcnow
+from .models import PLAN_STRATEGY, TradeAdviceRequest, TradeFill, TradePlan, utcnow
 from .repository import TradeDeskRepository
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,19 @@ def _material_entry_change(original, current):
     if size <= 0:
         return True
     return after.entry_debit - before.entry_debit > MATERIAL_ENTRY_CHANGE * size
+
+
+def _setup_broken(trigger, spot, now=None):
+    """Whether a selection no longer holds: the underlying is through its invalidation level
+    (below it for a long-side trigger, above it for a short-side one) or its exit time has passed."""
+    level = trigger.get("invalidation_price")
+    if level is not None and (spot <= level if trigger.get("trigger_direction", "above") == "above"
+                              else spot >= level):
+        return True
+    exit_at = trigger.get("exit_at")
+    if isinstance(exit_at, str):
+        exit_at = datetime.fromisoformat(exit_at.replace("Z", "+00:00"))
+    return exit_at is not None and exit_at <= (now or utcnow())
 
 
 # Model-authored fields survive re-pricing; the numbers are recalculated.
@@ -336,7 +349,10 @@ class TradeDeskService:
         Each candidate keeps its reasoning; its legs, payoff, probability and scenarios are
         recalculated from fresh quotes. A candidate that cannot be priced keeps its old numbers
         and is listed in ``reprice_failed``. The explanation still refers to the prices it was
-        written at; ``repriced_at`` says when the numbers were refreshed.
+        written at; ``repriced_at`` says when the numbers were refreshed. A selected candidate whose
+        underlying is now through its invalidation level, or whose exit time has passed, is listed
+        in ``invalidated`` and makes the answer stale (checked at the underlying's fresh price even
+        when that candidate's own contracts could not be priced).
         """
         from .models import QuoteSnapshot, StrategyCandidate
         job = self.repo.advice(advice_id)
@@ -346,7 +362,8 @@ class TradeDeskService:
         if job["status"] not in {"completed", "stale"} or request.data_mode != "live" or not job.get("candidates"):
             raise ValueError("Only a finished live answer with candidates can be re-priced")
         snapshots = dict(job.get("snapshots") or {})
-        refreshed, failed = [], []
+        triggers = job.get("triggers") or {}
+        refreshed, failed, spots = [], [], {}
         for item in job["candidates"]:
             saved = QuoteSnapshot.model_validate(snapshots[item["snapshot_id"]])
             effective = TradeAdviceRequest.model_validate(
@@ -363,14 +380,19 @@ class TradeDeskService:
                 continue
             snapshots[current.id] = current.model_dump(mode="json")
             refreshed.append(match.model_dump(mode="json"))
+            spots[current.underlying] = current.spot
         if len(failed) == len(refreshed):
             raise ValueError("No candidate could be priced from current quotes")
+        broken = [item["id"] for item in refreshed if item["id"] in triggers and item["underlying"] in spots
+                  and _setup_broken(triggers[item["id"]], spots[item["underlying"]])]
         # Only the snapshots a candidate still points at are kept: each refresh adds new ones.
         used = {item["snapshot_id"] for item in refreshed} | {((job.get("snapshot") or {}).get("id"))}
         snapshots = {key: value for key, value in snapshots.items() if key in used}
-        return self.repo.update_advice(advice_id, {"candidates": refreshed, "snapshots": snapshots,
-                                                   "repriced_at": utcnow().isoformat(), "reprice_failed": failed},
-                                       only_statuses={"completed", "stale"})
+        changes = {"candidates": refreshed, "snapshots": snapshots, "repriced_at": utcnow().isoformat(),
+                   "reprice_failed": failed, "invalidated": broken}
+        if broken:
+            changes["status"] = "stale"
+        return self.repo.update_advice(advice_id, changes, only_statuses={"completed", "stale"})
 
     def _history(self, job):
         related = [item for item in reversed(self.repo.conversation_advice(job["conversation_id"], limit=5))
@@ -461,6 +483,7 @@ class TradeDeskService:
                 originals = {}
                 triggers = {}
                 stale = False
+                invalidated = []
                 for selection in narrative.selections:
                     candidate = pool[selection.candidate_id]
                     context = contexts[candidate.id]
@@ -475,11 +498,10 @@ class TradeDeskService:
                         except Exception as exc:  # the explanation stands; its prices are unconfirmed
                             logger.info("Trade Desk selection re-pricing unavailable: %s", type(exc).__name__)
                             match = None
-                        invalidated = selection.invalidation_price is not None and (
-                            current.spot <= selection.invalidation_price if selection.trigger_direction == "above"
-                            else current.spot >= selection.invalidation_price)
-                        if (match is None or invalidated
-                                or (selection.exit_at is not None and selection.exit_at <= utcnow())):
+                        broken = _setup_broken(selection.model_dump(), current.spot)
+                        if broken:
+                            invalidated.append(candidate.id)
+                        if match is None or broken:
                             stale = True
                         else:
                             candidate = match
@@ -507,7 +529,7 @@ class TradeDeskService:
                                                    for item in selected},
                                snapshot=next(iter(snapshots.values()), changes["snapshot"]),
                                snapshots={**originals, **snapshots} or changes["snapshots"], source_snapshots=originals,
-                               status="stale" if stale else "completed")
+                               invalidated=invalidated, status="stale" if stale else "completed")
             except Exception as exc:
                 if cancel.is_set():
                     return

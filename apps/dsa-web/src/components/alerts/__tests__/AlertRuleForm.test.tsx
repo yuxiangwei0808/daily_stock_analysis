@@ -213,7 +213,7 @@ describe('AlertRuleForm', () => {
     expect(enValues.some((value) => value.startsWith('portfolio_'))).toBe(false);
   });
 
-  it('shows JP/KR options for market region in Chinese UI mode', () => {
+  it('keeps JP/KR out of market light options in Chinese UI mode', () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 
     fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'market' } });
@@ -221,8 +221,8 @@ describe('AlertRuleForm', () => {
     expect(screen.getByRole('option', { name: 'A 股（cn）' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: '港股（hk）' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: '美股（us）' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '日股（jp）' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '韩股（kr）' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '日股（jp）' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '韩股（kr）' })).not.toBeInTheDocument();
   });
 
   it('submits a market light status rule payload', async () => {

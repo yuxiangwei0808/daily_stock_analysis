@@ -59,11 +59,16 @@ def test_the_worker_marks_its_own_run_finished(tmp_path, monkeypatch):
                           "started_at": datetime.now().isoformat(), "attempts": 1})
     monkeypatch.setattr(rs.os, "setsid", lambda: None, raising=False)
     monkeypatch.setattr(rs, "_setup_child_logging", lambda: None)
-    monkeypatch.setattr(rs.RuntimeSchedulerService, "__init__", lambda self, **kwargs: setattr(self, "_last_error", None))
-    monkeypatch.setattr(rs.RuntimeSchedulerService, "_run_analysis_locked", lambda self, codes: True)
+    monkeypatch.setattr(rs.RuntimeSchedulerService, "__init__", lambda self, **kwargs: None)
+
+    def run(self, codes):
+        self._last_error, self._last_counts = None, {"analyzed": 33, "requested": 33}
+        return True
+    monkeypatch.setattr(rs.RuntimeSchedulerService, "_run_analysis_locked", run)
     sent = []
     rs._run_scheduled_analysis_process(SimpleNamespace(put=sent.append), None, {})
-    assert rs._read_run_record()["status"] == "finished" and sent == [{"success": True, "error": None}]
+    assert rs._read_run_record()["status"] == "finished"
+    assert sent == [{"success": True, "error": None, "counts": {"analyzed": 33, "requested": 33}}]
 
 
 def _pin_clock(monkeypatch, now):
@@ -99,6 +104,17 @@ def test_a_late_catch_up_keeps_the_slot_it_was_approved_for():
     service = SimpleNamespace(_catch_up_label="16:10")
     assert rs.RuntimeSchedulerService._take_catch_up_label(service) == "16:10"
     assert rs.RuntimeSchedulerService._take_catch_up_label(service) is None  # used once
+
+
+def test_a_catch_up_that_could_not_start_leaves_no_slot_for_a_later_run():
+    import threading
+    service = SimpleNamespace(_catch_up_label=None, _run_lock=threading.Lock())
+    seen = []
+    rs.RuntimeSchedulerService._catch_up(service, "09:40", lambda: seen.append(service._catch_up_label) or False,
+                                         wait_seconds=0)
+    assert seen == ["09:40"] and service._catch_up_label is None  # busy: the 16:10 run must not run as 09:40
+    rs.RuntimeSchedulerService._catch_up(service, "09:40", lambda: True, wait_seconds=0)
+    assert service._catch_up_label == "09:40"  # started: its watchdog takes the label
 
 
 def test_runs_are_labelled_only_within_the_slot_window():

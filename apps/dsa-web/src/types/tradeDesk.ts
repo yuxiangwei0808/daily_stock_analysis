@@ -204,6 +204,8 @@ export interface TradeAdviceJob {
   repricedAt?: string | null;
   /** Candidates that could not be re-priced then (they keep their earlier numbers). */
   repriceFailed?: string[] | null;
+  /** Selected candidates past their invalidation level or exit time at the latest prices (the answer is stale). */
+  invalidated?: string[] | null;
   /** Your broker position in the ticker, attached to manual requests (read-only). */
   position?: TradeHeldPosition | null;
   positionInputs?: { existingShares: number; planFromPosition: boolean } | null;

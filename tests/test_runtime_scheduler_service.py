@@ -109,6 +109,10 @@ def _successful_spawn_runner(result_queue, stock_codes, schedule_args_overrides)
     result_queue.put({"success": True, "error": None})
 
 
+def _partial_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"success": True, "error": None, "counts": {"analyzed": 4, "requested": 33}})
+
+
 def _large_failure_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     result_queue.put({"success": False, "error": "x" * (1024 * 1024)})
 
@@ -257,6 +261,30 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         self.assertIsNone(status["last_success_at"])
         self.assertIn("reported failure", status["last_error"])
 
+    def test_default_runner_reports_how_many_stocks_it_analyzed(self) -> None:
+        import main as main_module
+        config = SimpleNamespace(schedule_enabled=True, schedule_time="18:00", schedule_times=["18:00"])
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+
+        def partial_run(*args, **kwargs):
+            main_module._LAST_ANALYSIS_COUNTS = {"analyzed": 4, "requested": 33}
+            return True
+        with patch("main.run_full_analysis", side_effect=partial_run), \
+                patch.object(main_module, "_LAST_ANALYSIS_COUNTS", None):
+            service._run_analysis_once()
+        self.assertEqual(service.status()["last_counts"], {"analyzed": 4, "requested": 33})
+
+    def test_worker_counts_reach_the_status(self) -> None:
+        config = SimpleNamespace(schedule_enabled=True, schedule_time="18:00", schedule_times=["18:00"])
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _partial_spawn_runner
+        self.assertTrue(service.run_now()["accepted"])
+        deadline = time.monotonic() + 20  # spawning a child is slow on a loaded machine
+        while service.status()["last_success_at"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(service.status()["last_counts"], {"analyzed": 4, "requested": 33})
+
     def test_run_now_rejects_when_analysis_is_already_running(self) -> None:
         config = SimpleNamespace(
             schedule_enabled=True,
@@ -343,7 +371,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             service._analysis_process_target = _successful_spawn_runner
             self.assertTrue(service.run_now()["accepted"])
 
-            deadline = time.monotonic() + 4
+            deadline = time.monotonic() + 20
             while service.status()["last_success_at"] is None and time.monotonic() < deadline:
                 time.sleep(0.05)
 
