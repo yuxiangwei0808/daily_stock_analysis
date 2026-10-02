@@ -236,8 +236,8 @@ every 15 seconds while the tab is visible.
 The **Status** page (sidebar; `GET /api/v1/trade-desk/status`) lists every component with a
 state — working, needs attention, failing, or off — and a one-line detail, refreshing every
 30 seconds: the running code version (and a warning when newer code is on disk, i.e. a
-restart is needed), moomoo OpenD quotes, scheduled reports (next run, last success, last
-error, and how many stocks the last run analyzed out of how many it was given: a run that sent
+restart is needed), moomoo OpenD quotes, scheduled reports (next run, last success or, after a
+restart, when the last scheduled brief went out, last error, and how many stocks the last run analyzed out of how many it was given: a run that sent
 its brief with some stocks missing needs attention, and with fewer than half analyzed it counts as
 failing so the watchdog posts it), the alert monitor, plan monitoring, broker holdings sync, market pulse, trade
 opportunities, breakout watch, idea tracker, YouTube picks (including a caption rate limit),

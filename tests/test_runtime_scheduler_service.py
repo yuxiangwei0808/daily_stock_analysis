@@ -113,6 +113,19 @@ def _partial_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     result_queue.put({"success": True, "error": None, "counts": {"analyzed": 4, "requested": 33}})
 
 
+def _slow_exit_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    import atexit
+    atexit.register(time.sleep, 30)  # a library exit hook that takes its time
+    result_queue.put({"success": True, "error": None})
+
+
+def _reporting_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    import atexit
+    from src.services.runtime_scheduler import _report_and_exit
+    atexit.register(time.sleep, 30)  # skipped: the worker leaves as soon as it has reported
+    _report_and_exit(result_queue, {"success": True, "error": None, "counts": {"analyzed": 2, "requested": 2}})
+
+
 def _large_failure_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     result_queue.put({"success": False, "error": "x" * (1024 * 1024)})
 
@@ -284,6 +297,33 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         while service.status()["last_success_at"] is None and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertEqual(service.status()["last_counts"], {"analyzed": 4, "requested": 33})
+
+    def test_a_worker_slow_to_exit_after_reporting_keeps_its_success(self) -> None:
+        config = SimpleNamespace(schedule_enabled=True, schedule_time="18:00", schedule_times=["18:00"])
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _slow_exit_spawn_runner
+        with patch("src.services.runtime_scheduler.WORKER_EXIT_GRACE_SECONDS", 1):
+            self.assertTrue(service.run_now()["accepted"])
+            deadline = time.monotonic() + 30
+            while (service.status()["running"] or service.status()["last_success_at"] is None) \
+                    and time.monotonic() < deadline:
+                time.sleep(0.1)
+        status = service.status()
+        self.assertIsNotNone(status["last_success_at"])  # the report went out: not "did not exit"
+        self.assertIsNone(status["last_error"])
+
+    def test_a_worker_leaves_as_soon_as_it_has_reported(self) -> None:
+        config = SimpleNamespace(schedule_enabled=True, schedule_time="18:00", schedule_times=["18:00"])
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _reporting_spawn_runner
+        warnings = []
+        with patch("src.services.runtime_scheduler.logger.warning", side_effect=lambda *args: warnings.append(args)):
+            self.assertTrue(service.run_now()["accepted"])
+            deadline = time.monotonic() + 30
+            while service.status()["running"] and time.monotonic() < deadline:
+                time.sleep(0.1)
+        self.assertEqual(service.status()["last_counts"], {"analyzed": 2, "requested": 2})
+        self.assertFalse(any("still running" in str(args[0]) for args in warnings))  # exited without being stopped
 
     def test_run_now_rejects_when_analysis_is_already_running(self) -> None:
         config = SimpleNamespace(

@@ -78,6 +78,15 @@ def test_a_run_that_lost_stocks_is_flagged_even_though_it_sent_its_brief(monkeyp
     assert states["scheduler"]["state"] == "ok" and "analyzed" not in states["scheduler"]["detail"]
 
 
+def test_after_a_restart_the_last_brief_sent_is_read_from_the_run_record(monkeypatch):
+    monkeypatch.setattr(st, "code_version", lambda root=None: "abc12345")
+    scheduler = lambda: {"enabled": True, "last_run_at": None, "last_success_at": None, "last_error": None,
+                         "last_pushed_at": (NOW - timedelta(minutes=25)).isoformat()}
+    states = {item["key"]: item for item in st.build(_service(scheduler_status=scheduler), NOW)["components"]}
+    assert states["scheduler"]["state"] == "ok" and "last brief sent 25 min ago" in states["scheduler"]["detail"]
+    assert "never" not in states["scheduler"]["detail"]
+
+
 def test_git_version_is_read_from_the_checkout(tmp_path):
     (tmp_path / ".git" / "refs" / "heads").mkdir(parents=True)
     (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")

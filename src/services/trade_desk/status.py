@@ -134,7 +134,11 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
                 parts.append("a run is in progress")
             if info.get("next_run_at"):
                 parts.append(f"next {_utc(info['next_run_at']).astimezone(_NEW_YORK):%a %H:%M} NY")
-            parts.append(f"last success {_ago(last_ok, now)}")
+            pushed = info.get("last_pushed_at")
+            if pushed and (not last_ok or (_utc(pushed) or now) > (_utc(last_ok) or now)):
+                parts.append(f"last brief sent {_ago(pushed, now)}")  # e.g. before a restart
+            else:
+                parts.append(f"last success {_ago(last_ok, now)}")
             state = "error" if failing else "ok"
             if failing:
                 parts.append(f"last run failed: {str(last_error)[:120]}")

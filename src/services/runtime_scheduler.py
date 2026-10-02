@@ -29,6 +29,7 @@ RUNTIME_SCHEDULER_SUPPRESS_START_ENV = "DSA_RUNTIME_SCHEDULER_SUPPRESS_START"
 RUNTIME_SCHEDULER_ARGS_ENV = "DSA_RUNTIME_SCHEDULER_ARGS"
 RUNTIME_SCHEDULER_TIMEOUT_ENV = "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS"
 DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS = 45 * 60
+WORKER_EXIT_GRACE_SECONDS = 15  # after the worker has reported its result
 # A scheduled run that a restart interrupted is started again when the server
 # comes back within this many minutes of the run's start (at most twice).
 SCHEDULE_CATCHUP_MINUTES = 60
@@ -180,7 +181,22 @@ def _run_scheduled_analysis_process(
     record = _read_run_record()
     if record.get("pid") == os.getpid() and record.get("status") == "started":
         _write_run_record({**record, "status": "finished", "finished_at": datetime.now().isoformat()})
-    result_queue.put({"success": success, "error": service._last_error, "counts": service._last_counts})
+    _report_and_exit(result_queue, {"success": success, "error": service._last_error, "counts": service._last_counts})
+
+
+def _report_and_exit(result_queue: Any, result: Dict[str, Any]) -> None:
+    """Hands the result to the server and, in a worker process, ends it at once: interpreter
+    teardown runs library exit hooks (e.g. closing async HTTP clients) that can take seconds after
+    the run is complete, and the watchdog would stop the worker meanwhile."""
+    result_queue.put(result)
+    if multiprocessing.parent_process() is None:
+        return  # called in-process (tests)
+    try:
+        result_queue.close()
+        result_queue.join_thread()  # the result is in the pipe before the process ends
+    finally:
+        logging.shutdown()
+        os._exit(0)
 
 
 def _posix_descendant_process_ids(root_pid: int) -> Set[int]:
@@ -668,14 +684,12 @@ class RuntimeSchedulerService:
                     )
                 return
 
-            process.join(2)
+            process.join(WORKER_EXIT_GRACE_SECONDS)
             if process.is_alive():
+                # It finished and reported; only its exit is slow. The run's outcome stands.
+                logger.warning("Runtime scheduled analysis worker still running %ss after its result; stopping it",
+                               WORKER_EXIT_GRACE_SECONDS)
                 _terminate_analysis_process_tree(process)
-                with self._analysis_process_lock:
-                    if generation != self._analysis_generation:
-                        return
-                    self._last_error = "runtime scheduled analysis worker did not exit"
-                return
 
             with self._analysis_process_lock:
                 if generation != self._analysis_generation:
@@ -986,6 +1000,8 @@ class RuntimeSchedulerService:
             # until _apply_timeout_partial_outcome finishes. See that method.
             "last_error": self._last_error,
             "last_counts": self._last_counts,
+            # From the run record on disk, so it survives a restart: when a scheduled brief last went out.
+            "last_pushed_at": _read_run_record().get("pushed_at"),
             "last_skipped_at": self._last_skipped_at,
             "last_skip_reason": self._last_skip_reason,
         }
