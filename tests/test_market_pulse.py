@@ -82,6 +82,24 @@ def test_news_alerts_only_new_material_headlines_after_warm_up():
     assert "Latest news" not in events[-1][1]["message"]
 
 
+def test_one_story_from_several_outlets_is_one_alert_and_the_stock_then_waits_an_hour():
+    provider, events = Provider(), []
+    feed = {"AAPL": [], "NVDA": []}
+    pulse = _pulse(provider, events, fetch_news=lambda ticker: feed[ticker],
+                   rate_news=lambda items: {item["id"]: {"score": 3, "why": "deliveries"} for item in items})
+    pulse._names.update({"AAPL": "Apple Inc.", "NVDA": "NVIDIA Corporation"})
+    pulse.news_sweep(NOW)
+    feed["AAPL"] = [_headline(f"Apple deliveries beat estimates ({outlet})") for outlet in ("CNBC", "Reuters", "WSJ")]
+    pulse.news_sweep(NOW)
+    assert len(events) == 1 and events[0][1]["message"].count("(+2 more headlines on AAPL)") == 1
+    feed["AAPL"].append(_headline("Apple deliveries: what it means (Barron's)", minutes_ago=1))
+    pulse.news_sweep(NOW + timedelta(minutes=30))
+    assert len(events) == 1  # the same story half an hour later waits
+    feed["AAPL"].append(_headline("Apple names a new chief executive", minutes_ago=1))
+    pulse.news_sweep(NOW + timedelta(minutes=61))
+    assert len(events) == 2 and "chief executive" in events[-1][1]["title"]
+
+
 def test_keyword_rule_covers_an_unavailable_model():
     provider, events = Provider(), []
     feed = {"AAPL": [], "NVDA": []}

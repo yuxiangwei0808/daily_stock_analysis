@@ -246,8 +246,8 @@ scan, breakout levels, holdings tasks) reports its last failure too. OpenD repor
 fields, so a connection logged in to the quote server reads as working (a denied right, a logged-out
 quote server or an exhausted quota reads as failing). The OpenD check runs on its own
 thread and reads as failing after 5 seconds (the moomoo SDK otherwise retries a lost connection
-forever). The worker's watchdog (`trade_desk/status.py`) posts `system_status` messages to the
-digest category: a summary two minutes after each start ("✅ Server started · <version> · all
+forever). The worker's watchdog (`trade_desk/status.py`, on its own thread so a monitor stuck on
+OpenD is still reported) posts `system_status` messages to the digest category: a summary two minutes after each start ("✅ Server started · <version> · all
 systems working", or the components that need attention), and a component still failing five
 minutes later, once per component per day for as long as it lasts.
 
@@ -308,7 +308,9 @@ session only) watches the US tickers in `STOCK_LIST`:
 - Every 10 minutes, in the background, Google News for the next 11 tickers
   (the whole watchlist every ~30 minutes). New headlines from the last two
   hours are rated 0–3 for materiality by the routine generation backend in one
-  call; only 3 ("major") emits `market_news`, at most 20 per day. If the model
+  call; only 3 ("major") emits `market_news`, at most 20 per day. Several outlets
+  carrying one story make one alert per stock per sweep (the first headline, with
+  "+N more headlines"), and that stock's next major headlines wait an hour. If the model
   is unavailable, a keyword rule (earnings, guidance, M&A, regulators, halts,
   offerings…) decides. The first look at each ticker after a restart only
   records existing headlines.

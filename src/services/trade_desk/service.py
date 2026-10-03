@@ -163,6 +163,10 @@ class TradeDeskService:
             self._latest[(snapshot.mode, snapshot.underlying)] = snapshot
             for expiry in {quote.expiry.date() for quote in snapshot.options}:
                 self._latest[(snapshot.mode, snapshot.underlying, expiry)] = snapshot
+            # Expired chains are never asked for again: drop them (each key holds a full snapshot).
+            today = utcnow().date()
+            self._latest = {key: value for key, value in self._latest.items()
+                            if len(key) < 3 or key[2] >= today}
         return snapshot
 
     def health(self):

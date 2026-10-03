@@ -1773,6 +1773,10 @@ class MoomooProvider:
                 contracts.append(contract)
         unique: dict[str, _Contract] = {item.contract_id: item for item in contracts}
         contracts = list(unique.values())
+        # Entries past their lifetime are only skipped on read; drop them here so chains for
+        # tickers and expiries looked at once do not stay in memory for the server's lifetime.
+        self._chain_cache = {key: value for key, value in self._chain_cache.items()
+                             if 0 <= (now - value[0]).total_seconds() <= self._chain_cache_seconds}
         self._chain_cache[cache_key] = (now, contracts)
         return contracts
 

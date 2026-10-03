@@ -32,23 +32,29 @@ Forked from [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_
 
 | New York time | What happens |
 |---|---|
-| 09:40 / 12:00 / 16:10 | Scheduled stock reports and market review; after the close they use the regular session's moves (after-hours listed apart) |
-| After each report run | 🎯 **Swing trade opportunities**: a rule-based trend scan of the watchlist + S&P 500, model-confirmed long/short ideas (entry, stop, targets, invalidation, earnings note, labelled ways to act; options at high conviction) |
-| Every minute in the session | 📈 big moves and major news, 🚀 volume breakouts of the 20-day high/low, 🛎️ holding alerts (expiry, assignment risk, profit/loss, your rules) |
+| 09:40 / 12:00 / 16:10 | Scheduled stock reports (the midday brief lists changed calls only); market review at 16:10; after the close they use the regular session's moves (after-hours listed apart) |
+| After each report run | 🎯 **Swing trade opportunities**: a rule-based trend scan of the watchlist + S&P 500, model-confirmed long/short ideas (entry, stop, targets, invalidation, earnings note; options at high conviction) |
+| Every minute in the session | 📈 big moves and major news (one alert when several outlets carry the same story), 🚀 volume breakouts of the 20-day high/low, 🛎️ holding alerts (expiry, assignment risk, profit/loss, your rules) |
 | 16:15 | 📊 **Daily portfolio summary**: day change, SPY exposure and hedges, largest positions, leveraged-ETF share, expiries and earnings |
+| 16:20 | 📣 **Social scan**: the most-discussed names on Reddit, Stocktwits and WSB (context, not signals) |
+| Every 3 hours | 🎥 **YouTube picks**: explicit bullish/bearish calls read from the full captions of new videos on the channels you follow (transcribed locally when there are none) |
+| Last trading day of the week | 📒 Track record and the "what's working" scoreboard |
 
 **Features**
 
-- **Trade Desk (US options research)**: live moomoo OpenD quotes, strategy comparisons (expiry payoff, model probabilities, scenarios), exact pricing of your own plan legs, paper and manual-live ledgers, plan monitoring. See [trade-desk.md](trade-desk.md).
+- **Trade Desk (US options research)**: live moomoo OpenD quotes, strategy comparisons (an expiry payoff chart with breakevens and the P&L at any price, close-early estimates, model probabilities, scenarios), exact pricing of your own legs; **Refresh prices** re-prices the same contracts from current quotes without asking the model again. See [trade-desk.md](trade-desk.md).
+- **Ask from Discord** (`DISCORD_BOT_TOKEN`, `TRADE_DESK_DISCORD_ASK_USERS`): `/ask` puts a question to Trade Desk; only the users you list can ask.
 - **Swing trade opportunities** (`TRADE_OPPORTUNITIES_ENABLED`): deterministic trend scoring (moving averages, 20-day breakout, momentum, volume) plus one model review; earnings within 14 days cap conviction at medium; leveraged/inverse ETFs are never suggested as shorts or options.
-- **Broker holdings and alerts** (`TRADE_DESK_BROKER_ACCOUNT`): a Holdings tab (spreads grouped, P&L and share of max profit); built-in short-term option alerts, plus your own rules by form or plain words, such as "stop loss if the underlying drops to 145" or "warn me 2 days before expiry"; ideas and breakouts mention what you hold.
+- **Broker holdings, risk and your trades** (`TRADE_DESK_BROKER_ACCOUNT`): a Holdings tab (spreads grouped, P&L and share of max profit) with portfolio risk (delta, daily time decay, beta to SPY/QQQ and scenarios); built-in short-term option alerts plus your own rules by form or plain words; **Your trades** reads a year of moomoo fills (read-only), matches them first in, first out into round trips, and splits results by type, holding time and whether they agreed with a system signal.
 - **Market pulse** (`MARKET_PULSE_ENABLED`): day-move alerts (from 3% for what you hold, 5% for other watchlist names) and low-cost model triage of major news; one shared quote snapshot a minute with breakouts and holdings.
-- **Model tiers and second opinions**: routine work and your own requests use different models, and your requests get independent opinions (`TARGETED_GENERATION_BACKEND`, `SECOND_OPINION_BACKENDS`; Codex and Claude Code CLIs with per-tier model and effort).
+- **Social media and YouTube** (`SOCIAL_SCAN_ENABLED`, `YOUTUBE_CHANNELS`): a free ApeWisdom / Stocktwits / Tradestie scan; YouTube calls come only from full captions or a local transcription (`YOUTUBE_TRANSCRIBE_AUDIO`, faster-whisper, audio deleted after use), never from titles or descriptions.
+- **Track record and scoreboard**: every source (trade ideas, candidates the model rejected, breakouts, report calls, social names, each YouTube channel) is followed forward against SPY; a source is called ahead or behind only with 30 closed records and month-by-month results that clear the significance bar.
+- **Model tiers and second opinions**: routine work and your own requests use different models, and your requests get independent opinions (`TARGETED_GENERATION_BACKEND`, `SECOND_OPINION_BACKENDS`); a routine reply that is invalid or times out can fall back to LiteLLM (`GENERATION_FALLBACK_BACKEND=litellm`).
 - **Free news sources**: Google News RSS, Yahoo Finance, Finnhub (`FREE_NEWS_SOURCES`).
-- **Home and notifications**: watchlist grouped by moomoo groups with live quotes; readable Discord messages split at paragraphs; anything about your holdings shows percentages only; optionally a market review only after the close (`MARKET_REVIEW_TIMES`) and a midday brief of changed calls only (`BRIEF_CHANGES_ONLY_TIMES`).
-- **NX tunnel (your moomoo indicator)**: US stock reports list the price's position against NX's fast (EMA of highs/lows, 26) and slow (89) tunnels, the tunnel edges and any change today; the model uses it as chart context and stop reference only, never to change the score (no standalone edge in the backtest).
-- **Backtest and track record**: backtests of the trade-plan rules and the NX/CD indicators against same-day random stocks (`scripts/backtest_trade_plans.py`, `scripts/backtest_indicators.py`, see [strategy-backtest.md](strategy-backtest.md)); every trade idea and breakout is tracked forward with a weekly summary, including candidates the model rejected, to measure whether its review adds value.
-- **Reliability**: a scheduled run interrupted by a restart resumes on its own; Discord deliveries are deduplicated and a failed send retries only the missing parts.
+- **Home and notifications**: watchlist grouped by moomoo groups with live quotes; Discord messages can go to separate channels for holdings / market / ideas / digest (`TRADE_DESK_DISCORD_WEBHOOKS`); anything about your holdings shows percentages only; optionally a market review only after the close (`MARKET_REVIEW_TIMES`) and a midday brief of changed calls only (`BRIEF_CHANGES_ONLY_TIMES`).
+- **NX tunnel (your moomoo indicator)**: US stock reports list the price's position against NX's fast (26) and slow (89) tunnels; the model uses it as chart context and stop reference only, never to change the score (no standalone edge in the backtest).
+- **Backtests**: the trade-plan rules and the NX/CD indicators against same-day random stocks (`scripts/backtest_trade_plans.py`, `scripts/backtest_indicators.py`, see [strategy-backtest.md](strategy-backtest.md)).
+- **Status and reliability**: a **Status** page lists every component (quotes, scheduled reports and how many stocks the last run analyzed, background jobs, delivery); Discord gets a summary after each start and an alert when a component keeps failing; a scheduled run interrupted by a restart resumes on its own; deliveries are deduplicated and a failed send retries only the missing parts; old logs are cleaned up after `LOG_RETENTION_DAYS`.
 
 **Minimal setup** (details in [.env.example](../.env.example), [trade-desk.md](trade-desk.md) and [LLM_CONFIG_GUIDE_EN.md](LLM_CONFIG_GUIDE_EN.md)):
 
@@ -58,6 +64,9 @@ TRADE_OPPORTUNITIES_ENABLED=true
 MARKET_PULSE_ENABLED=true
 TRADE_DESK_BROKER_ACCOUNT=1234           # read-only holdings: last digits of the account
 FREE_NEWS_SOURCES=google_news,yahoo_finance
+SOCIAL_SCAN_ENABLED=true
+YOUTUBE_CHANNELS=Meet Kevin=UCUvvj5lwue7PspotMDjk5UA   # channel ids, not handles
+GENERATION_FALLBACK_BACKEND=litellm      # fallback when the routine model fails
 ```
 
 ## 💖 Sponsors

@@ -411,7 +411,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             service._analysis_process_target = _successful_spawn_runner
             self.assertTrue(service.run_now()["accepted"])
 
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 60  # a spawned worker can take tens of seconds on a loaded host
             while service.status()["last_success_at"] is None and time.monotonic() < deadline:
                 time.sleep(0.05)
 

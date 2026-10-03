@@ -1251,3 +1251,25 @@ def test_refresh_prices_marks_the_answer_stale_once_the_setup_is_invalidated(rep
     updated = svc.reprice(job['id'])
     assert updated['reprice_failed'] == [item.id] and updated['invalidated'] == [item.id]
     assert updated['status'] == 'stale'
+
+
+def test_the_watchdog_keeps_running_while_the_monitor_is_stuck(repo, monkeypatch):
+    import time
+    from src.services.trade_desk import worker as worker_module
+    from src.services.trade_desk.worker import TradeDeskWorker
+    monkeypatch.setattr(worker_module, "STATUS_POLL_SECONDS", 0.05)
+    svc = service(repo, snapshot())
+    worker = TradeDeskWorker(svc)
+    stuck = threading.Event()
+    worker.run_once = lambda: (stuck.set(), worker._stop.wait(10))  # e.g. the OpenD SDK retrying forever
+    ticks = []
+    worker._status = SimpleNamespace(tick=lambda now: ticks.append(now))
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5
+        while len(ticks) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert stuck.is_set() and len(ticks) >= 2  # the stall can still be posted to Discord
+    finally:
+        worker.stop()
+        svc.stop()

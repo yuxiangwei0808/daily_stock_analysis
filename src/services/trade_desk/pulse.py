@@ -43,6 +43,7 @@ NEWS_SECONDS = 600
 NEWS_TICKERS_PER_SWEEP = 11
 NEWS_MAX_AGE = timedelta(hours=2)
 NEWS_DAILY_LIMIT = 20
+NEWS_TICKER_COOLDOWN = timedelta(hours=1)  # after a news alert, the same stock's next major headlines wait this long
 WATCH_MIN_LEVEL = 5.0  # names you do not hold alert only on larger moves
 _LEVERAGE = [(re.compile(r"\b3x\b|ultrapro", re.I), 3.0),
              (re.compile(r"\b2x\b|\bproshares ultra(short)?\b", re.I), 2.0)]
@@ -131,6 +132,7 @@ class MarketPulse:
         self._warmed: set = set()
         self._news_cursor = 0
         self._news_alerts: Dict[str, int] = {}
+        self._news_last: Dict[str, datetime] = {}  # stock -> its last news alert
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-pulse-news")
         self._news_future = None
@@ -210,6 +212,7 @@ class MarketPulse:
         self._pruned_day = day
         self._level_high = {k: v for k, v in self._level_high.items() if k[0] == day}
         self._news_alerts = {k: v for k, v in self._news_alerts.items() if k == day}
+        self._news_last = {k: v for k, v in self._news_last.items() if v.astimezone(_NEW_YORK).date().isoformat() == day}
         if len(self._seen) > 20000:
             self._seen = set(list(self._seen)[-10000:])
 
@@ -266,6 +269,9 @@ class MarketPulse:
             held = set(self._held()) if self._held is not None else None
         except Exception:  # unknown: the alert goes out on its own
             held = None
+        # Several outlets often carry the same story at once: one alert per stock per sweep (the first
+        # major headline, with a count of the others), then that stock's news waits NEWS_TICKER_COOLDOWN.
+        major: Dict[str, List[tuple]] = {}
         for item in fresh:
             if ratings is not None:
                 rating = ratings.get(item["id"]) or {}
@@ -276,12 +282,22 @@ class MarketPulse:
                 why = str(rating.get("why") or "")[:120]
             else:
                 score, why = (3, "keyword match") if _MATERIAL_WORDS.search(item["title"]) else (0, "")
-            if score < 3 or self._news_alerts.get(day, 0) >= NEWS_DAILY_LIMIT:
+            if score >= 3:
+                major.setdefault(item["ticker"], []).append((item, why))
+        last = self._news_last
+        for ticker, items in major.items():
+            if self._news_alerts.get(day, 0) >= NEWS_DAILY_LIMIT:
+                break
+            if ticker in last and now - last[ticker] < NEWS_TICKER_COOLDOWN:
                 continue
+            (item, why), more = items[0], len(items) - 1
+            last[ticker] = now
             self._news_alerts[day] = self._news_alerts.get(day, 0) + 1
             self._emit("market_news", {
                 "underlying": item["ticker"], "kind": "news", "title": item["title"], "url": item["url"],
                 "held": (item["ticker"] in held) if held is not None else None,
                 "message": f"{item['ticker']}: {item['title']} ({item['source']})"
-                           + (f" — {why}" if why else "") + (f"\n{item['url']}" if item["url"] else "")},
+                           + (f" — {why}" if why else "")
+                           + (f" (+{more} more headline{'s' if more != 1 else ''} on {ticker})" if more else "")
+                           + (f"\n{item['url']}" if item["url"] else "")},
                 f"pulse-news:{item['id']}")

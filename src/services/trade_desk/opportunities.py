@@ -424,6 +424,7 @@ def format_message(ideas: List[Dict[str, Any]], repeats: List[Dict[str, Any]], r
 # -- breakout levels (in levels.py; re-exported for existing callers) --------------
 
 
+
 class BreakoutWatch:
     """Minute quotes for the watchlist and near-breakout names; alerts on 20-day breakouts with volume."""
 
@@ -739,7 +740,7 @@ class OpportunityRunner:
         if self._pending is not None:
             self._finish_options()
             return
-        rows = self.service.repo.db.get_analysis_history(days=1, limit=200)
+        rows = self.service.repo.db.get_analysis_history_heads(days=1, limit=200)
         if self._last_id is None:
             state = self._state()
             if state.get("day") == _session_day(now).isoformat():

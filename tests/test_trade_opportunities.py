@@ -92,7 +92,7 @@ def _row(i, code, score, created):
 class FakeService:
     def __init__(self):
         self.rows, self.jobs, self.submitted, self.settings = [], {}, [], {}
-        self.repo = SimpleNamespace(db=SimpleNamespace(get_analysis_history=lambda days, limit: list(self.rows)),
+        self.repo = SimpleNamespace(db=SimpleNamespace(get_analysis_history_heads=lambda days, limit: list(self.rows)),
                                     advice=lambda job_id: self.jobs.get(job_id),
                                     setting=lambda key, default=None: self.settings.get(key, default),
                                     set_setting=lambda key, value: self.settings.__setitem__(key, value))
@@ -599,3 +599,23 @@ def test_ideas_whose_first_target_is_below_the_risk_are_dropped():
     runner.tick(True)
     _run_batch(runner, service, clock, 10)
     assert sent == []
+
+
+def test_report_heads_read_only_the_fields_the_scan_needs(tmp_path):
+    from datetime import datetime, timedelta
+
+    from src.storage import AnalysisHistory, DatabaseManager
+    db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'heads.db'}")
+    now = datetime.now()
+    with db.get_session() as session:
+        for index, (code, age) in enumerate((("NVDA", timedelta(hours=1)), ("MU", timedelta(minutes=5)),
+                                             ("OLD", timedelta(days=3)))):
+            session.add(AnalysisHistory(query_id=f"q{index}", code=code, name=code, report_type="brief",
+                                        sentiment_score=60 + index, operation_advice="Watch", trend_prediction="",
+                                        analysis_summary=f"{code} summary", raw_result="{}" * 1000,
+                                        created_at=now - age))
+        session.commit()
+    heads = db.get_analysis_history_heads(days=1, limit=200)
+    assert [row.code for row in heads] == ["MU", "NVDA"]  # newest first, the 3-day-old report left out
+    assert heads[0].analysis_summary == "MU summary" and heads[0].sentiment_score == 61
+    assert not hasattr(heads[0], "raw_result")

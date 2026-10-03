@@ -12,7 +12,9 @@
 
 import logging
 import os
+import re
 import sys
+import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -84,6 +86,30 @@ def _resolve_litellm_log_level(raw_level: Optional[str] = None) -> Tuple[int, Op
     return level, None
 
 
+_LOG_FILE = re.compile(r"\.log(\.\d+)?$")
+
+
+def prune_old_logs(log_path: Path, now: Optional[float] = None) -> int:
+    """Deletes log files (``*.log`` and rotated ``*.log.N``) older than LOG_RETENTION_DAYS (default 30,
+    0 keeps everything): logs are per day and rotate by size only, so they otherwise pile up."""
+    try:
+        days = int(os.getenv("LOG_RETENTION_DAYS", "30") or 30)
+    except ValueError:
+        days = 30
+    if days <= 0:
+        return 0
+    cutoff = (now if now is not None else time.time()) - days * 86400
+    removed = 0
+    for path in log_path.iterdir():
+        try:
+            if path.is_file() and _LOG_FILE.search(path.name) and path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:  # another process rotated or removed it meanwhile
+            continue
+    return removed
+
+
 def setup_logging(
     log_prefix: str = "app",
     log_dir: str = "./logs",
@@ -115,6 +141,7 @@ def setup_logging(
     # 创建日志目录
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
+    pruned = prune_old_logs(log_path)
 
     # 日志文件路径（按日期分文件）
     today_str = datetime.now().strftime('%Y%m%d')
@@ -190,6 +217,8 @@ def setup_logging(
         rel_debug_log_file = debug_log_file
 
     logging.info(f"日志系统初始化完成，日志目录: {rel_log_path}")
+    if pruned:
+        logging.info("已删除 %d 个超过 LOG_RETENTION_DAYS 的旧日志文件", pruned)
     logging.info(f"常规日志: {rel_log_file}")
     logging.info(f"调试日志: {rel_debug_log_file}")
     if invalid_litellm_level is not None:

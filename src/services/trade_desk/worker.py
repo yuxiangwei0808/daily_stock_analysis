@@ -19,6 +19,7 @@ _EVENT_LABELS = {"price_trigger": "Price trigger", "invalidation": "Invalidated"
 
 DISCORD_PART_LIMIT = 1900
 SHARED_QUOTE_SECONDS = 60
+STATUS_POLL_SECONDS = 30  # the watchdog's own loop (StatusWatch itself checks every 5 minutes)
 
 
 def discord_parts(content, limit=DISCORD_PART_LIMIT):
@@ -51,6 +52,7 @@ class TradeDeskWorker:
         self.owner = identity()
         self._stop = threading.Event()
         self._thread = None
+        self._status_thread = None
         self._delivery = None  # the Discord sender thread; a slow Discord never holds up monitoring
         self.part_status = {}  # name -> last clean tick or the error since when (the Status page reads it)
         self._last_tick = None
@@ -178,6 +180,10 @@ class TradeDeskWorker:
             self.repo.recover_jobs()
         self._thread = threading.Thread(target=self._loop, name="trade-desk-monitor", daemon=True)
         self._thread.start()
+        # The watchdog has its own thread: a monitor stuck on OpenD (the SDK retries a lost
+        # connection forever) is then still reported to Discord.
+        self._status_thread = threading.Thread(target=self._status_loop, name="trade-desk-status", daemon=True)
+        self._status_thread.start()
 
     def status(self):
         return {"running": bool(self._thread and self._thread.is_alive()), "leader": self._leader,
@@ -190,6 +196,8 @@ class TradeDeskWorker:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
+        if self._status_thread:
+            self._status_thread.join(timeout=5)
         for part in (self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker,
                      self._youtube, self._social):
             if part is not None:
@@ -205,6 +213,16 @@ class TradeDeskWorker:
                 self._error = type(exc).__name__
                 logger.exception("Trade Desk monitoring failed")
             self._stop.wait(5)
+
+    def _status_loop(self):
+        while not self._stop.is_set():
+            if self._leader:
+                try:
+                    self._status.tick(utcnow())
+                    self._part_ok("status")
+                except Exception as exc:
+                    self._part_failed("status", exc)
+            self._stop.wait(STATUS_POLL_SECONDS)
 
     def _emit(self, event_type, payload, key):
         return self.repo.event(event_type, payload, dedup_key=key)
@@ -238,8 +256,7 @@ class TradeDeskWorker:
                  ("youtube", self._youtube, lambda: self._youtube.tick(now)),
                  ("social", self._social, lambda: self._social.tick(now)),
                  ("breakouts", self._breakouts, lambda: self._breakouts.tick(now, session, quotes=quotes, shared=True)),
-                 ("opportunities", self._opportunities, lambda: self._opportunities.tick(regular_session)),
-                 ("status", self._status, lambda: self._status.tick(now))]
+                 ("opportunities", self._opportunities, lambda: self._opportunities.tick(regular_session))]
         for name, part, call in parts:
             if part is None:
                 continue

@@ -2971,6 +2971,19 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
             return list(results)
 
+    def get_analysis_history_heads(self, days: int = 1, limit: int = 200) -> List[Any]:
+        """Recent reports, newest first, with only id, code, name, time, advice, score and summary:
+        for callers polling often (full rows carry raw results and context, ~50 KB each)."""
+        from types import SimpleNamespace
+        cutoff_date = datetime.now() - timedelta(days=days)
+        columns = (AnalysisHistory.id, AnalysisHistory.code, AnalysisHistory.name, AnalysisHistory.created_at,
+                   AnalysisHistory.operation_advice, AnalysisHistory.sentiment_score, AnalysisHistory.analysis_summary)
+        with self.get_session() as session:
+            rows = session.execute(select(*columns).where(AnalysisHistory.created_at >= cutoff_date)
+                                   .order_by(desc(AnalysisHistory.created_at)).limit(limit)).all()
+        return [SimpleNamespace(id=row[0], code=row[1], name=row[2], created_at=row[3], operation_advice=row[4],
+                                sentiment_score=row[5], analysis_summary=row[6]) for row in rows]
+
     def get_latest_analysis_history_id(
         self,
         *,

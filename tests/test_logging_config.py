@@ -114,3 +114,24 @@ def test_yfinance_logger_is_not_debug_enabled_so_downloads_stay_threaded(tmp_pat
         assert not yf_logger.isEnabledFor(logging.DEBUG)
     finally:
         yf_logger.setLevel(original)
+
+
+def test_log_files_older_than_the_retention_are_removed(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from src.logging_config import prune_old_logs
+    now = time.time()
+    names = {"stock_analysis_20260801.log": 40, "stock_analysis_debug_20260801.log.2": 40,
+             "stock_analysis_20260930.log": 3, "notes.txt": 40}
+    for name, age_days in names.items():
+        path = tmp_path / name
+        path.write_text("x")
+        os.utime(path, (now - age_days * 86400, now - age_days * 86400))
+    monkeypatch.delenv("LOG_RETENTION_DAYS", raising=False)
+    assert prune_old_logs(tmp_path, now=now) == 2
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["notes.txt", "stock_analysis_20260930.log"]
+    monkeypatch.setenv("LOG_RETENTION_DAYS", "0")  # keeps everything
+    (tmp_path / "old.log").write_text("x")
+    os.utime(tmp_path / "old.log", (now - 400 * 86400, now - 400 * 86400))
+    assert prune_old_logs(tmp_path, now=now) == 0
