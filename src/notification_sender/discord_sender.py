@@ -63,12 +63,14 @@ class DiscordSender:
         webhook_ok = bool(self._discord_config['webhook_url'])
         return bot_ok or webhook_ok
     
-    def send_to_discord(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def send_to_discord(self, content: str, *, timeout_seconds: Optional[float] = None,
+                        embeds: Optional[list] = None) -> bool:
         """
         推送消息到 Discord（支持 Webhook 和 Bot API）
         
         Args:
             content: Markdown 格式的消息内容
+            embeds: 可选的 Discord embed 卡片；提供时 content 与卡片作为一条消息发送（不分片）
             
         Returns:
             是否发送成功
@@ -76,6 +78,16 @@ class DiscordSender:
         sanitized_content = _discord_markdown(strip_hidden_markdown_metadata(content)).strip()
         if not sanitized_content:
             logger.warning("Discord 消息内容为空，跳过推送")
+            return False
+
+        if embeds:
+            # One short line plus the cards: shown in the push notification, never split.
+            text = sanitized_content[:2000]
+            if self._discord_config['webhook_url']:
+                return self._send_discord_webhook(text, timeout_seconds=timeout_seconds, embeds=embeds)
+            if self._discord_config['bot_token'] and self._discord_config['channel_id']:
+                return self._send_discord_bot(text, timeout_seconds=timeout_seconds, embeds=embeds)
+            logger.warning("Discord 配置不完整，跳过推送")
             return False
 
         # 分割内容，避免单条消息超过 Discord 限制
@@ -152,7 +164,8 @@ class DiscordSender:
         return success_count == total_chunks
 
   
-    def _send_discord_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def _send_discord_webhook(self, content: str, *, timeout_seconds: Optional[float] = None,
+                              embeds: Optional[list] = None) -> bool:
         """
         使用 Webhook 发送消息到 Discord
         
@@ -169,6 +182,8 @@ class DiscordSender:
             'username': 'A股分析机器人',
             'avatar_url': 'https://picsum.photos/200'
         }
+        if embeds:
+            payload['embeds'] = embeds
 
         return self._post_discord_message(
             self._discord_config['webhook_url'],
@@ -179,7 +194,8 @@ class DiscordSender:
             channel_name="Webhook",
         )
     
-    def _send_discord_bot(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def _send_discord_bot(self, content: str, *, timeout_seconds: Optional[float] = None,
+                          embeds: Optional[list] = None) -> bool:
         """
         使用 Bot API 发送消息到 Discord
         
@@ -194,6 +210,8 @@ class DiscordSender:
             'Content-Type': 'application/json'
         }
         payload = {'content': content}
+        if embeds:
+            payload['embeds'] = embeds
         url = f'https://discord.com/api/v10/channels/{self._discord_config["channel_id"]}/messages'
 
         return self._post_discord_message(

@@ -67,7 +67,7 @@ class TradeDeskWorker:
                           if holdings.enabled() else None)
         watched = self._watched if self._holdings is not None else pulse.watch_tickers
         held_note = self._held_note if self._holdings is not None else None
-        self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit, tickers=watched,
+        self._pulse = (pulse.MarketPulse(lambda: service.provider("live"), self._emit_pulse, tickers=watched,
                                          held=self._held_tickers if self._holdings is not None else None)
                        if pulse.enabled() else None)
         self._breakouts = self._opportunities = self._tracker = None
@@ -153,6 +153,17 @@ class TradeDeskWorker:
         if not self.service.holdings.raw().get("synced_at"):
             raise LookupError("holdings not synced yet")
         return self.service.holdings.tickers()
+
+    def _emit_pulse(self, event_type, payload, dedup_key):
+        """Moves and news on something you hold carry its position card (levels, report, your alerts)."""
+        if payload.get("held") and self._holdings is not None:
+            try:
+                card = self._holdings.move_card(payload.get("underlying", ""), payload)
+                if card:
+                    payload = {**payload, "card": card}
+            except Exception as exc:  # the alert goes out as plain text
+                logger.info("Position card unavailable: %s", type(exc).__name__)
+        return self._emit(event_type, payload, dedup_key)
 
     def _held_side(self, ticker):
         """"long"/"short"/"mixed", "" when not held, None when holdings are unknown."""
@@ -494,6 +505,8 @@ class TradeDeskWorker:
                 link = f"{base}/trade-desk?{query}={target}"
             else:
                 link = f"{base}/trade-desk?view=positions"
+            holdings_link = f"{base}/trade-desk?view=holdings" if base else ""
+            embeds = None  # position alerts go out as a card
             # Messages can quote model output built from news text; never let it
             # ping @everyone/@here or users in the channel.
             message = str(payload.get("message", "")).replace("@", "@\u200b")
@@ -510,7 +523,7 @@ class TradeDeskWorker:
                                "assignment": ("⚠️", "Assignment risk"), "profit": ("💰", "Profit"),
                                "loss": ("🩸", "Loss"), "earnings": ("📅", "Earnings"),
                                "trend": ("📉", "Trend break")}.get(payload.get("kind"), ("🛎️", "Holding"))
-                content = f"{icon} **{ticker}** · {label}\n{message}"
+                content, embeds = routes.position_message(ticker, label, icon, payload, holdings_link)
             elif event["event_type"] == "breakout":
                 up = payload.get("kind") == "breakout"
                 content = f"{'🚀' if up else '🔻'} **{ticker}** · {'Breakout' if up else 'Breakdown'}\n{message}"
@@ -521,20 +534,22 @@ class TradeDeskWorker:
                     moved_up = (payload.get("change_pct") or 0) >= 0
                     icon, label = ("📈" if moved_up else "📉"), "Big move"
                 content = f"{icon} **{ticker}** · {label}\n{message}"
+                if payload.get("held") and payload.get("card"):  # something you hold: its position card
+                    content, embeds = routes.position_message(ticker, label, icon, payload, holdings_link)
             else:
                 label = _EVENT_LABELS.get(event["event_type"], event["event_type"].replace("_", " ").capitalize())
                 content = f"🧭 **Trade Desk · {label}** · {ticker}\n{message}\n{link}"
             if payload.get("data_mode") == "replay":
                 content = "SYNTHETIC REPLAY / PAPER ONLY\n" + content
-            # Each part is sent once: a retry only sends the parts that failed.
-            parts = discord_parts(content)
+            # Each part is sent once: a retry only sends the parts that failed. A card is one part.
+            parts = [content] if embeds else discord_parts(content)
             sent = set(delivered_parts.get(event["id"], set()))
             diagnostic = "delivered"
             for index, part in enumerate(parts):
                 if index in sent:
                     continue
                 try:
-                    if routes.send(name, part):
+                    if routes.send(name, part, embeds) if embeds else routes.send(name, part):
                         sent.add(index)
                     else:
                         diagnostic = "Discord delivery failed"

@@ -31,7 +31,7 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from . import earnings, trend
+from . import earnings, position_plan, trend
 from .models import identity, utcnow
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,16 @@ def _wide(quote: Optional[Dict[str, Any]]) -> bool:
 def _intrinsic(legs: List[Dict[str, Any]], spot: float) -> float:
     return sum(leg["qty"] * 100 * (max(0.0, spot - leg["strike"]) if leg["right"] == "call"
                                    else max(0.0, leg["strike"] - spot)) for leg in legs)
+
+
+def option_side(position: Dict[str, Any]) -> str:
+    """"long"/"short" by the position's payoff slope across its strikes, "mixed" when flat (a straddle)."""
+    strikes = [leg["strike"] for leg in position.get("legs") or []]
+    if not strikes:
+        return "mixed"
+    low, high = min(strikes) * 0.9, max(strikes) * 1.1
+    slope = _intrinsic(position["legs"], high) - _intrinsic(position["legs"], low)
+    return "long" if slope > 0 else "short" if slope < 0 else "mixed"
 
 
 def _label(legs: List[Dict[str, Any]]) -> str:
@@ -537,6 +547,69 @@ class Holdings:
         from .risk import portfolio_risk
         return portfolio_risk(self.view(now=now), download=download, now=now)
 
+    # questions about your positions ---------------------------------------------
+    def questions(self) -> List[Dict[str, Any]]:
+        """Your questions about your positions and their answers, newest first."""
+        from .position_questions import visible
+        return visible(self.repo.setting("position_questions", []) or [])
+
+    def _save_question(self, item: Dict[str, Any]) -> None:
+        from .position_questions import MAX_KEPT
+        with self._lock:
+            items = [row for row in self.repo.setting("position_questions", []) or [] if row.get("id") != item["id"]]
+            items = sorted([item, *items], key=lambda row: row.get("created_at", ""), reverse=True)[:MAX_KEPT]
+            self.repo.set_setting("position_questions", items)
+
+    def delete_question(self, question_id: str) -> None:
+        with self._lock:
+            items = self.repo.setting("position_questions", []) or []
+            kept = [row for row in items if row.get("id") != question_id]
+            if len(kept) == len(items):
+                raise KeyError(question_id)
+            self.repo.set_setting("position_questions", kept)
+
+    def ask_positions(self, question: str, position_key: Optional[str] = None, *, wait: bool = False,
+                      generate=None, bars=None, report=None, earnings_date=None) -> Dict[str, Any]:
+        """Starts the model's answer about one position or all of them; returns the question as saved."""
+        from .position_questions import positions_in
+        question = " ".join(str(question or "").split())
+        if not question:
+            raise ValueError("Ask a question about your positions")
+        if any(item.get("status") == "running" for item in self.questions()):
+            raise ValueError("A question is still being answered; wait for it first")
+        view = self.view()
+        rows = positions_in(view, position_key)
+        if not rows:
+            raise ValueError("No open positions to ask about; sync first")
+        item = {"id": hashlib.sha1(f"{utcnow().isoformat()}{question}".encode()).hexdigest()[:12],
+                "question": question[:600], "position_key": position_key, "status": "running",
+                "created_at": utcnow().isoformat()}
+        self._save_question(item)
+        run = lambda: self._answer_question(item, view, rows, generate=generate, bars=bars, report=report,
+                                            earnings_date=earnings_date)
+        if wait:
+            run()
+        else:
+            threading.Thread(target=run, name="position-question", daemon=True).start()
+        return item
+
+    def _answer_question(self, item, view, rows, *, generate=None, bars=None, report=None, earnings_date=None):
+        from . import position_questions
+        from .opportunities import geared_fund
+        names = {row["ticker"]: row.get("name", "") for row in view["stocks"]}
+        try:
+            context = position_questions.build_context(
+                rows, view, self.rules(), _local(utcnow()).date(), bars=bars or trend.download_bars,
+                geared=lambda ticker: geared_fund(names.get(ticker, "")),
+                report=report or position_plan.report_line, earnings_date=earnings_date or earnings.next_earnings)
+            result = position_questions.answer(item["question"], context, generate_fn=generate)
+            done = {**item, **result, "status": "done", "answered_at": utcnow().isoformat()}
+        except Exception as exc:  # the question stays, with why it has no answer
+            logger.warning("Position question failed: %s", type(exc).__name__)
+            done = {**item, "status": "failed", "answered_at": utcnow().isoformat(),
+                    "error": str(exc)[:300] if isinstance(exc, ValueError) else f"The model is unavailable ({type(exc).__name__})"}
+        self._save_question(done)
+
     def journal(self) -> Optional[Dict[str, Any]]:
         """The last trade journal built from your fills, or None."""
         from .journal import CALCULATION_VERSION
@@ -714,12 +787,15 @@ class HoldingsMonitor:
     def __init__(self, holdings: Holdings, emit: Callable[[str, Dict[str, Any], str], Any], *,
                  bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
                  earnings_date: Callable[[str, date], Optional[date]] = earnings.next_earnings,
-                 clock: Optional[Callable[[], float]] = None):
+                 clock: Optional[Callable[[], float]] = None,
+                 report: Optional[Callable[[str, date], str]] = None):
         import time
         self.holdings = holdings
         self._emit = emit
         self._bars = bars
         self._earnings_date = earnings_date
+        self._report = report or position_plan.report_line
+        self._reports: Dict[tuple, str] = {}  # (ticker, day): one lookup a day per ticker
         self._clock = clock or time.monotonic
         self._next_sync = 0.0
         self._next_quotes = 0.0
@@ -828,17 +904,67 @@ class HoldingsMonitor:
                    f"portfolio:{summary['date']}")
 
     # alerts ------------------------------------------------------------------
-    def _alert(self, kind: str, ticker: str, message: str, key: str) -> Any:
+    def _alert(self, kind: str, ticker: str, message: str, key: str, card: Optional[Dict[str, Any]] = None) -> Any:
         today = utcnow().date().isoformat()
         if self._stored.get(key):
             return None
-        event = self._emit("holding_alert", {"underlying": ticker, "kind": kind,
-                                             "message": message + "\nReview in moomoo — nothing is traded automatically."},
+        extra = position_plan.card_text({**card, "detail": []}) if card else []
+        event = self._emit("holding_alert", {"underlying": ticker, "kind": kind, "held": True,
+                                             "message": "\n".join([message, *extra,
+                                                                   "Review in moomoo — nothing is traded automatically."]),
+                                             **({"card": card} if card else {})},
                            key)
         if len(self._stored) > 5000:  # old days' keys never come back
             self._stored = {k: day for k, day in self._stored.items() if day == today}
         self._stored[key] = today  # stored now, or already stored (None): either way done; an error raises first
         return event
+
+    # what to do -------------------------------------------------------------
+    def _report_for(self, ticker: str, day: date) -> str:
+        """The latest daily report verdict line, looked up once a day per ticker."""
+        if (ticker, day) not in self._reports:
+            if len(self._reports) > 500:
+                self._reports = {}
+            try:
+                self._reports[(ticker, day)] = self._report(ticker, day) or ""
+            except Exception:
+                self._reports[(ticker, day)] = ""
+        return self._reports[(ticker, day)]
+
+    def _position_rules(self, key: Optional[str], ticker: str) -> List[Dict[str, Any]]:
+        return [rule for rule in self.holdings.rules()
+                if (key and rule.get("position_key") == key) or (not rule.get("position_key") and rule.get("ticker") == ticker)]
+
+    def _ref(self, ticker: str, side: str, price: Optional[float]) -> Optional[Dict[str, Any]]:
+        return position_plan.reference_levels(side, price, self._levels.get(ticker), geared=self._geared(ticker))
+
+    def _card(self, title: str, detail: List[str], plan: List[str], *, ticker: str, key: Optional[str],
+              day: date) -> Dict[str, Any]:
+        return position_plan.card(title, detail, plan, report=self._report_for(ticker, day),
+                                  alerts=position_plan.alerts_line(self._position_rules(key, ticker)))
+
+    def move_card(self, ticker: str, payload: Dict[str, Any], now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+        """A big move or major news on something you hold, as a position card; None when not held."""
+        view = self.holdings.view(live=False)
+        stock = next((row for row in view["stocks"] if row["ticker"] == ticker), None)
+        options = [row for row in view["options"] if row["underlying"] == ticker and not row.get("expired")]
+        if stock is None and not options:
+            return None
+        side = self.holdings.side(ticker, view)
+        price = payload.get("price") or (stock or {}).get("price") or next(
+            (row.get("underlying_price") for row in options if row.get("underlying_price")), None)
+        ref = self._ref(ticker, side, price)
+        change = payload.get("change_pct") if payload.get("kind") == "day_move" else None
+        plan = position_plan.stock_actions("move", ref, geared=self._geared(ticker), change_pct=change) \
+            if change is not None else ([position_plan.levels_line(ref)] if ref else [])
+        lines = str(payload.get("message", "")).split("\n")
+        detail = [*lines[1:], *([describe_stock(stock)] if stock else []), *(describe_option(row) for row in options)]
+        key = (stock or {}).get("key") if stock else (options[0]["key"] if len(options) == 1 else None)
+        item = self._card(lines[0], detail, plan, ticker=ticker, key=key, day=_local(now or utcnow()).date())
+        # The bar's colour: red for a move against what you hold, green for one with it, blue for news.
+        against = change is not None and side in {"long", "short"} and (change < 0) == (side == "long")
+        item["tone"] = "info" if change is None or side not in {"long", "short"} else "danger" if against else "success"
+        return item
 
     def check(self, now: datetime, quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         local = _local(now)
@@ -888,14 +1014,22 @@ class HoldingsMonitor:
             observed = rule_fires(rule, position, prices.get(rule["ticker"]))
             if observed is None:
                 continue
-            context = (describe_option(position) if position and "expiry" in position
-                       else describe_stock(position) if position else "")
-            message = (f"Your alert: {rule['ticker']} {RULE_KINDS[rule['kind']]} "
-                       f"{rule['value']:g}{'%' if rule['kind'].startswith('pnl') else ''} — now {observed}."
-                       + (f"\nPosition: {context}" if context else "")
-                       + (f"\nNote: {discord_safe(rule['note'])}" if rule.get("note") else ""))
+            option = bool(position and "expiry" in position)
+            context = describe_option(position) if option else describe_stock(position) if position else ""
+            headline = (f"{rule['ticker']} {RULE_KINDS[rule['kind']]} "
+                        f"{rule['value']:g}{'%' if rule['kind'].startswith('pnl') else ''} — now {observed}.")
+            note = f"Note: {discord_safe(rule['note'])}" if rule.get("note") else ""
+            message = (f"Your alert: {headline}" + (f"\nPosition: {context}" if context else "")
+                       + (f"\n{note}" if note else ""))
             key = f"rule:{rule['id']}:{rule.get('arm') or 0}:{day if rule['repeat'] == 'daily' else 'once'}"
-            self._alert("rule", rule["ticker"], message, key)
+            side = (option_side(position) if option else "long" if position["qty"] > 0 else "short") if position else ""
+            plan = [position_plan.rule_action(rule, side)] if position else []
+            ref = self._ref(rule["ticker"], side, prices.get(rule["ticker"])) if position else None
+            if ref:
+                plan.append(position_plan.levels_line(ref))
+            self._alert("rule", rule["ticker"], message, key,
+                        self._card(f"Your alert: {headline}", [context, note], plan, ticker=rule["ticker"],
+                                   key=rule.get("position_key"), day=_local(now).date()))
             self.holdings.mark_triggered(rule["id"], utcnow().isoformat(), rule["repeat"] == "once",
                                          int(rule.get("arm") or 0))
 
@@ -907,56 +1041,74 @@ class HoldingsMonitor:
         text = describe_option(position)
         brief = describe_option(position, with_days=False)
         where = moneyness(position)
+        ref = self._ref(ticker, option_side(position), position.get("underlying_price"))
+
+        def alert(kind, title, detail, plan_kind, dedup, level=None):
+            message = f"{title}: {detail[0]}" + "".join(f"\n{line}" for line in detail[1:] if line)
+            self._alert(kind, ticker, message, dedup,
+                        self._card(title, detail, position_plan.option_actions(plan_kind, position, ref, level=level),
+                                   ticker=ticker, key=position["key"], day=day))
+
         if morning and days in EXPIRY_WARN_DAYS:
-            self._alert("expiry", ticker, f"Expires in {days} trading day{'s' if days != 1 else ''}: {brief}"
-                        + (f"\n{where}" if where else ""), f"hold-expiry:{key}:{days}")
+            alert("expiry", f"Expires in {days} trading day{'s' if days != 1 else ''}", [brief, where], "expiry",
+                  f"hold-expiry:{key}:{days}")
         if days == 0 and morning:
-            self._alert("expiry", ticker, f"Expires today: {brief}" + (f"\n{where}" if where else ""),
-                        f"hold-expiry:{key}:0")
+            alert("expiry", "Expires today", [brief, where], "expiry_today", f"hold-expiry:{key}:0")
         if days == 0 and last_hour:
-            self._alert("expiry", ticker, f"One hour to the close on expiration day: {brief}"
-                        + (f"\n{where}" if where else ""), f"hold-expiry:{key}:last")
+            alert("expiry", "One hour to the close on expiration day", [brief, where], "expiry_today",
+                  f"hold-expiry:{key}:last")
         spot = position.get("underlying_price")
         if spot and days <= ASSIGNMENT_DAYS:
             for leg in position["legs"]:
                 itm = spot > leg["strike"] if leg["right"] == "call" else spot < leg["strike"]
                 if leg["qty"] < 0 and itm:
-                    self._alert("assignment", ticker,
-                                f"Assignment risk: short {leg['strike']:g}{'C' if leg['right'] == 'call' else 'P'} is in "
-                                f"the money ({ticker} {spot:.2f}). {text}",
-                                f"hold-assign:{key}:{leg['code']}:{day.isoformat()}")
+                    alert("assignment", "Assignment risk",
+                          [f"short {leg['strike']:g}{'C' if leg['right'] == 'call' else 'P'} is in "
+                           f"the money ({ticker} {spot:.2f}). {text}"], "assignment",
+                          f"hold-assign:{key}:{leg['code']}:{day.isoformat()}")
         if not position.get("quotes_wide"):  # P&L from a quote this wide is noise: checked once quotes settle
             if position.get("pct_of_max") is not None:
                 if position["pct_of_max"] >= PROFIT_OF_MAX:
-                    self._alert("profit", ticker, f"Profit target: {text}", f"hold-profit:{key}:{PROFIT_OF_MAX:g}")
+                    alert("profit", "Profit target", [text], "profit_max", f"hold-profit:{key}:{PROFIT_OF_MAX:g}")
             elif position.get("pnl_pct") is not None:
                 for level in PROFIT_ON_COST:
                     if position["pnl_pct"] >= level:
-                        self._alert("profit", ticker, f"Up {level:g}% on cost: {text}", f"hold-profit:{key}:{level:g}")
+                        alert("profit", f"Up {level:g}% on cost", [text], "profit", f"hold-profit:{key}:{level:g}",
+                              level=level)
             if position.get("pnl_pct") is not None and position["pnl_pct"] <= LOSS_ON_COST:
-                self._alert("loss", ticker, f"Down {abs(LOSS_ON_COST):g}% on cost: {text}",
-                            f"hold-loss:{key}:{LOSS_ON_COST:g}")
+                alert("loss", f"Down {abs(LOSS_ON_COST):g}% on cost", [text], "loss",
+                      f"hold-loss:{key}:{LOSS_ON_COST:g}", level=LOSS_ON_COST)
         when = self._earnings(ticker, day)
         if when and when <= date.fromisoformat(position["expiry"]):
-            self._alert("earnings", ticker, f"Earnings {when:%b} {when.day} fall before this expiry: {text}",
-                        f"hold-earnings:{key}:{when.isoformat()}")
+            alert("earnings", f"Earnings {when:%b} {when.day} fall before this expiry", [text], "earnings",
+                  f"hold-earnings:{key}:{when.isoformat()}")
 
     def _stock_defaults(self, position, day, morning):
         ticker, price = position["ticker"], position.get("price")
         levels = self._levels.get(ticker)
         text = describe_stock(position)
+        side = "long" if position["qty"] > 0 else "short"
+        ref = self._ref(ticker, side, price)
+        geared = self._geared(ticker)
+
+        def alert(kind, title, plan_kind, dedup, level=None, message=None):
+            self._alert(kind, ticker, message or f"{title}: {text}", dedup,
+                        self._card(title, [text], position_plan.stock_actions(plan_kind, ref, geared=geared, level=level),
+                                   ticker=ticker, key=position["key"], day=day))
+
         if levels and price and position["qty"] > 0:
             if price < levels["low20"]:
-                self._alert("trend", ticker, f"Broke below its 20-day low {levels['low20']:.2f} at {price:.2f}: {text}",
-                            f"hold-low20:{ticker}:{day.isoformat()}")
+                alert("trend", f"Broke below its 20-day low {levels['low20']:.2f} at {price:.2f}", "low20",
+                      f"hold-low20:{ticker}:{day.isoformat()}", level=levels["low20"])
             if levels["last_close"] >= levels["ma50"] > price:
-                self._alert("trend", ticker, f"Fell below its 50-day average {levels['ma50']:.2f} at {price:.2f}: {text}",
-                            f"hold-ma50:{ticker}:{day.isoformat()}")
+                alert("trend", f"Fell below its 50-day average {levels['ma50']:.2f} at {price:.2f}", "ma50",
+                      f"hold-ma50:{ticker}:{day.isoformat()}", level=levels["ma50"])
         if morning:
             when = self._earnings(ticker, day)
             if when and (when - day).days <= STOCK_EARNINGS_DAYS:
-                self._alert("earnings", ticker, f"{earnings.note(when, day)}. {text}",
-                            f"hold-earnings:{ticker}:{when.isoformat()}")
+                note = earnings.note(when, day)
+                alert("earnings", note, "earnings", f"hold-earnings:{ticker}:{when.isoformat()}",
+                      message=f"{note}. {text}")
 
     def _geared(self, ticker: str) -> bool:
         from .opportunities import geared_fund

@@ -32,6 +32,8 @@ const api = vi.hoisted(() => ({
   deleteAdvice: vi.fn(),
   deleteArchivedAdvice: vi.fn(),
   getHoldings: vi.fn(),
+  getPositionQuestions: vi.fn(),
+  askAboutPositions: vi.fn(),
 }));
 
 vi.mock('../../api/tradeDesk', () => ({ tradeDeskApi: api }));
@@ -104,6 +106,7 @@ function setDefaultResponses() {
   api.listAdvice.mockResolvedValue({ items: [] });
   api.getTrackRecord.mockResolvedValue({ windowDays: 90, groups: {}, recent: [] });
   api.getHoldings.mockResolvedValue({ enabled: false, view: null, rules: [] });
+  api.getPositionQuestions.mockResolvedValue([]);
   signals.getLatest.mockResolvedValue({ items: [] });
   api.getAdvice.mockResolvedValue(queuedJob);
   api.cancelAdvice.mockResolvedValue(cancelledJob);
@@ -312,6 +315,9 @@ describe('TradeDeskPage', () => {
     renderPage();
     fireEvent.click(await screen.findByRole('tab', { name: /Broker holdings|券商持仓|Holdings/ }));
     fireEvent.click((await screen.findAllByRole('button', { name: 'Ask about SOXS' }))[0]);
+    // A holding's Ask opens the position question box on it; option strategies are one click away.
+    expect(await screen.findByLabelText('Position')).toHaveValue('SOXS');
+    fireEvent.click(screen.getByRole('button', { name: /Compare option strategies for SOXS/ }));
     expect(screen.getByRole('tab', { name: /Ask about a stock|问问股票/ })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByLabelText(/Ticker|股票代码/)).toHaveValue('SOXS');
     expect(await screen.findByTestId('use-holdings')).toHaveTextContent('You hold 200 shares');

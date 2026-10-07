@@ -74,7 +74,7 @@ def test_a_crash_after_the_claim_does_not_resend_delivered_parts(repo, monkeypat
     monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid"))
     sent = []
     monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
-    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(c) or True)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c, **kw: sent.append(c) or True)
     desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
     message = "PART-A " + "a" * 1500 + "\n\n" + "PART-B " + "b" * 1500
     event = repo.event("trade_opportunities", {"underlying": "", "message": message}, "opportunities:2")
@@ -101,7 +101,7 @@ def test_mentions_in_messages_cannot_ping(repo, monkeypatch):
     monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid"))
     sent = []
     monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
-    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(c) or True)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c, **kw: sent.append(c) or True)
     desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
     repo.event("market_news", {"underlying": "AAA", "message": "@everyone look"}, "n1")
     desk._deliver()
@@ -190,7 +190,7 @@ def test_the_social_digest_goes_out_with_its_own_header(repo, monkeypatch):
     monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid"))
     sent = []
     monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
-    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(c) or True)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c, **kw: sent.append(c) or True)
     desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
     repo.event("social_digest", {"underlying": "", "message": "📣 **Social scan** · Sep 29"}, "social-digest:2026-09-29")
     desk._deliver()
@@ -220,7 +220,7 @@ def _delivery_desk(repo, monkeypatch, sent, **env):
     repo.set_preferences({"discord_enabled": True})
     monkeypatch.setattr("src.config.get_config", lambda: SimpleNamespace(discord_webhook_url="https://example.invalid/main"))
     monkeypatch.setattr("src.notification.NotificationService.__init__", lambda self: None)
-    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c: sent.append(("main", c)) or True)
+    monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c, **kw: sent.append(("main", c)) or True)
     monkeypatch.setattr("src.notification_sender.discord_sender.DiscordSender.send_to_discord",
                         lambda self, c, **kw: sent.append((self._discord_config["webhook_url"], c)) or True)
     return worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))

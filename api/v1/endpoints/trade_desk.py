@@ -318,6 +318,11 @@ class HoldingRuleText(Model):
     position_key: Optional[str] = Field(default=None, max_length=64)
 
 
+class PositionQuestionInput(Model):
+    question: str = Field(min_length=1, max_length=600)
+    position_key: Optional[str] = Field(default=None, max_length=64)
+
+
 def _holdings(request: Request):
     from src.services.trade_desk import holdings
     if not holdings.enabled():
@@ -361,6 +366,26 @@ async def trade_journal(request: Request):
 async def refresh_trade_journal(request: Request):
     """Reads a year of fills from moomoo (read-only) and rebuilds the journal."""
     return {"journal": await invoke(get_service(request).holdings.refresh_journal)}
+
+
+@router.get("/holdings/questions")
+async def position_questions(request: Request):
+    """Your questions about your positions and the answers (levels and actions), newest first."""
+    return {"items": await invoke(_holdings(request).questions)}
+
+
+@router.post("/holdings/questions", status_code=202)
+async def position_question_ask(body: PositionQuestionInput, request: Request):
+    """Asks the model about one position or all of them; poll GET /holdings/questions for the answer."""
+    return await invoke(_holdings(request).ask_positions, body.question, body.position_key)
+
+
+@router.delete("/holdings/questions/{question_id}", status_code=204)
+async def position_question_delete(question_id: str, request: Request):
+    try:
+        await invoke(_holdings(request).delete_question, question_id)
+    except KeyError as exc:
+        raise HTTPException(404, detail="Question not found") from exc
 
 
 @router.get("/holdings/risk")

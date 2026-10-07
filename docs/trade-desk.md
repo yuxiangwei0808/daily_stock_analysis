@@ -282,6 +282,15 @@ at once. A batch is one Discord message: what does not fit waits for the next on
 never repeats part of a message. A category with no webhook of its own and no main Discord setting
 is skipped. The scheduled stock reports are not Trade Desk messages and keep the main channel.
 
+Alerts about something you hold (holding alerts, your own alerts, and big moves or major news
+on a held ticker) are sent as a card so they stand apart from market and idea messages: one
+line for the notification ("💼 **NVDA** · Trend break · your position"), then a card with a
+coloured bar (red: a loss, trend break, assignment risk or a move against you; green: a
+profit or a move your way; amber: expiry and earnings; blue: your alerts and news), the
+"💼 YOUR POSITION" header, the event, your position, **What to do**, the latest daily report
+verdict and your alerts on it. A card is one Discord message; alerts stored before this change
+are shown as cards too.
+
 ## Asking from Discord (/ask)
 
 With your own Discord bot you can ask Trade Desk from your phone: `/ask ticker:NVDA
@@ -575,6 +584,37 @@ unlocked and nothing is ordered. The snapshot is stored locally
   e.g. "stop loss if the underlying drops to 145", "warn me 3 days before
   expiry", "alert if I lose 40%") are read by a pattern first and the routine model
   second; the draft is shown for confirmation and nothing is saved until you do.
+- **What to do** (`trade_desk/position_plan.py`): every holding alert adds the usual next step
+  and reference levels, also in the dashboard's event text (lines starting "→"). Stocks: a
+  stop 1.5 ATR(14) from the price and a target 3 ATR away on the side you hold (no target
+  for leveraged/inverse funds), with the 20-day low/high as structure; a break below the
+  20-day low reads "a close below it is the usual exit signal", a drop below the 50-day
+  average "tighten the stop or trim". Options: cut a long option at −50 %, take half off
+  at +50 % and profit at +100 %, close a spread at 75 % of its maximum, close or roll a short
+  leg in the money, sell an in-the-money long option rather than exercise it, and the
+  underlying's levels. A big move on a held ticker says "exit if it closes past your stop"
+  (against you) or "take some profit near … or trail the stop" (your way). Then the latest
+  daily report verdict on the ticker with its stop/target when it is at most 3 days old, and
+  your active alerts on the position ("none set" says where to set one). These are the same
+  rules of thumb as the ideas' levels, not tested signals (`docs/strategy-backtest.md`).
+- **Ask about your positions** (Holdings tab, `POST /holdings/questions`, `GET
+  /holdings/questions`, `DELETE /holdings/questions/{id}`; `trade_desk/position_questions.py`):
+  a question about one position or all of them ("Where should my stop-loss be?", "At what
+  price should I take profit?", "Hold, trim or close?", "Review all my positions") is
+  answered by the generation backend (its fallback included) in about a minute. The model
+  sees each position as prices and percentages — average cost and price, P&L on cost,
+  weight of the account, option legs by side and strike — never share or contract counts or
+  account amounts, plus the 20-day low/high, 50-day average, ATR, the ATR rule's levels, your
+  NX tunnel, the latest daily report, the next earnings date and your alerts. It returns a
+  short answer and, per position, an action (hold, add, trim, take profit, close, roll,
+  hedge), a stop and a target on the stock or underlying with the reason for each level,
+  P&L cut/take-profit levels for options, a reason and the main risk. A level on the wrong
+  side of the price (a long position's stop above it) is replaced by the ATR rule's level and
+  labelled so. **Set alert** under a level saves it as one of your alerts on that position
+  (price at or below / above, or P&L); nothing is traded. One question runs at a time; the
+  last 30 are kept (`trade_desk_settings` id `position_questions`) and never go to Discord.
+  A holding's **Ask** opens this box on that position; **Compare option strategies** from
+  there opens the Ask tab with the position attached, as before.
 - **Everywhere else:** held tickers join the market pulse and breakout watch;
   trade ideas and breakout alerts on something you hold add a "You hold: …" line,
   worded by the side you hold (shares by sign, options by payoff shape: a bull

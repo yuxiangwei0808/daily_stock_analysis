@@ -486,6 +486,43 @@ export interface HoldingRule {
   warning?: string;
 }
 
+export type PositionAction = 'hold' | 'add' | 'trim' | 'take_profit' | 'close' | 'roll' | 'hedge' | 'review';
+
+/** The model's take on one position: an action and levels (a stop/target the server checked against the price). */
+export interface PositionAnswerItem {
+  key: string;
+  ticker: string;
+  type: 'stock' | 'option';
+  exposure: 'long' | 'short' | 'mixed';
+  label: string;
+  price?: number | null;
+  pnlPct?: number | null;
+  action: PositionAction;
+  stop?: number | null;
+  stopBasis?: string;
+  stopSource?: 'model' | 'rule' | '';
+  target?: number | null;
+  targetBasis?: string;
+  targetSource?: 'model' | 'rule' | '';
+  pnlStopPct?: number | null;
+  pnlTargetPct?: number | null;
+  reason?: string;
+  risk?: string;
+}
+
+export interface PositionQuestion {
+  id: string;
+  question: string;
+  positionKey?: string | null;
+  status: 'running' | 'done' | 'failed';
+  createdAt: string;
+  answeredAt?: string;
+  model?: string;
+  summary?: string;
+  positions?: PositionAnswerItem[];
+  error?: string;
+}
+
 export interface PortfolioSummary {
   date: string;
   message: string;

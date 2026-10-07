@@ -28,6 +28,7 @@ import type {
   TradePreferencesUpdate,
   TradeReconciliationRequest,
   UpdateTradePlanRequest,
+  PositionQuestion,
 } from '../types/tradeDesk';
 
 const BASE_PATH = '/api/v1/trade-desk';
@@ -331,6 +332,21 @@ export const tradeDeskApi = {
     const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/rules/parse`,
       withoutUndefined({ text, position_key: positionKey ?? undefined }), { timeout: 180_000 });
     return toCamelCase<HoldingRuleDraft>(response.data);
+  },
+
+  async getPositionQuestions(): Promise<PositionQuestion[]> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/questions`);
+    return toCamelCase<{ items: PositionQuestion[] }>(response.data).items;
+  },
+
+  async askAboutPositions(question: string, positionKey?: string | null): Promise<PositionQuestion> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/questions`,
+      withoutUndefined({ question, position_key: positionKey ?? undefined }), { timeout: 60_000 });
+    return toCamelCase<PositionQuestion>(response.data);
+  },
+
+  async deletePositionQuestion(questionId: string): Promise<void> {
+    await apiClient.delete(`${BASE_PATH}/holdings/questions/${encodeURIComponent(questionId)}`);
   },
 
   async updateHoldingRule(ruleId: string, changes: { status?: 'active' | 'paused'; value?: number; note?: string }): Promise<HoldingRule> {

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, BellOff, Pause, Play, Plus, RefreshCw, Sparkles, Trash2, Wallet, X } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { PortfolioRisk } from './PortfolioRisk';
+import { PositionAsk } from './PositionAsk';
+import type { PositionAskHandle, PositionChoice } from './PositionAsk';
 import { Badge, Button, Card, EmptyState, InlineAlert, Loading } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey } from '../../i18n/uiText';
@@ -234,7 +236,7 @@ function RuleList({ rules, onChanged, withTarget = false }: { rules: HoldingRule
 function OptionCard({ position, rules, adding, onAdd, onChanged, onSaved, onCancel, onAsk }: {
   position: HoldingOption; rules: HoldingRule[]; adding: boolean; onAdd: () => void; onChanged: () => void;
   onSaved: (warning?: string) => void; onCancel: () => void;
-  onAsk?: (ticker: string) => void;
+  onAsk?: (positionKey: string) => void;
 }) {
   const { t } = useUiLanguage();
   const expiry = position.expiry.slice(5).replace('-', '/');
@@ -249,7 +251,7 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onSaved, onCanc
           </p>
         </div>
         <div className="flex items-center gap-1">
-          {onAsk && !position.expired ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${position.underlying}`} onClick={() => onAsk(position.underlying)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
+          {onAsk && !position.expired ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${position.underlying}`} onClick={() => onAsk(position.key)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
           <Badge variant={position.expired ? 'default' : urgent ? 'danger' : position.daysLeft <= 5 ? 'warning' : 'info'}>
             {position.expired ? t('tradeDesk.holdings.expired')
               : position.daysLeft === 0 ? t('tradeDesk.holdings.expiresToday') : `${position.daysLeft} ${t('tradeDesk.holdings.tradingDaysLeft')}`}
@@ -286,7 +288,7 @@ function OptionCard({ position, rules, adding, onAdd, onChanged, onSaved, onCanc
 function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onSaved, onCancel, onAsk }: {
   stocks: HoldingStock[]; rulesFor: (key: string) => HoldingRule[]; adding: string | null;
   onAdd: (key: string) => void; onChanged: () => void; onSaved: (warning?: string) => void; onCancel: () => void;
-  onAsk?: (ticker: string) => void;
+  onAsk?: (positionKey: string) => void;
 }) {
   const { t } = useUiLanguage();
   return (
@@ -313,7 +315,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onSaved, onCanc
             <RuleList rules={rules} onChanged={onChanged} />
             {adding === stock.key
               ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onSaved} onCancel={onCancel} />
-              : <div className="mt-2 flex gap-1"><Button size="sm" variant="ghost" onClick={() => onAdd(stock.key)}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>{onAsk ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.ticker)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}</div>}
+              : <div className="mt-2 flex gap-1"><Button size="sm" variant="ghost" onClick={() => onAdd(stock.key)}><Plus className="h-4 w-4" />{t('tradeDesk.holdings.addAlert')}</Button>{onAsk ? <Button size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.key)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}</div>}
           </li>
         );
       })}
@@ -340,7 +342,7 @@ function StockRows({ stocks, rulesFor, adding, onAdd, onChanged, onSaved, onCanc
                 <td className="py-2">
                   <span className="font-mono font-semibold text-foreground">{stock.ticker}</span>
                   <span className="ml-2 text-xs text-secondary-text">{stock.name}</span>
-                  {onAsk ? <Button className="ml-1" size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.ticker)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
+                  {onAsk ? <Button className="ml-1" size="xsm" variant="ghost" aria-label={`Ask about ${stock.ticker}`} onClick={() => onAsk(stock.key)}><Sparkles className="h-3.5 w-3.5" />Ask</Button> : null}
                   <RuleList rules={rules} onChanged={onChanged} />
                   {adding === stock.key
                     ? <RuleForm target={{ positionKey: stock.key, ticker: stock.ticker, isOption: false, label: `${stock.ticker} ${t('tradeDesk.holdings.shares')}` }} onSaved={onSaved} onCancel={onCancel} />
@@ -416,6 +418,14 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
   const view = data?.view;
   const heldKeys = new Set([...(view?.stocks ?? []).map((row) => row.key), ...(view?.options ?? []).map((row) => row.key)]);
   const rulesFor = (key: string) => rules.filter((rule) => rule.positionKey === key);
+  const askBox = useRef<PositionAskHandle>(null);
+  const choices: PositionChoice[] = useMemo(() => [
+    ...(view?.stocks ?? []).map((row) => ({ key: row.key, ticker: row.ticker, label: `${row.ticker} shares` })),
+    ...(view?.options ?? []).filter((row) => !row.expired).map((row) => ({
+      key: row.key, ticker: row.underlying, label: `${row.underlying} ${row.expiry.slice(5).replace('-', '/')} ${row.label}` })),
+  ], [view]);
+  // A holding's "Ask" opens the question box on that position.
+  const askPosition = (key: string) => askBox.current?.focusOn(key);
   const otherRules = rules.filter((rule) => !rule.positionKey || !heldKeys.has(rule.positionKey));
 
   if (!data && !problem) return <Loading />;
@@ -442,6 +452,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
         </div>
       </Card>
       {view?.syncedAt ? <>
+      <PositionAsk ref={askBox} choices={choices} rules={rules} onRulesChanged={changed} onCompare={onAsk} />
       <SummaryCard summary={data?.summary} onBuilt={(summary) => setData((current) => (current ? { ...current, summary } : current))} />
       <PortfolioRisk syncedAt={view.syncedAt} />
       <section>
@@ -450,7 +461,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
           <div className="grid gap-4 xl:grid-cols-2">
             {view.options.map((position) => (
               <OptionCard key={position.key} position={position} rules={rulesFor(position.key)} adding={adding === position.key}
-                onAdd={() => setAdding(position.key)} onChanged={changed} onSaved={saved} onCancel={() => setAdding(null)} onAsk={onAsk} />
+                onAdd={() => setAdding(position.key)} onChanged={changed} onSaved={saved} onCancel={() => setAdding(null)} onAsk={askPosition} />
             ))}
           </div>
         ) : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noOptions')}</p>}
@@ -458,7 +469,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
       <Card variant="bordered" padding="md">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-secondary-text">{t('tradeDesk.holdings.stocks')}</h2>
         {view?.stocks.length
-          ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onSaved={saved} onCancel={() => setAdding(null)} onAsk={onAsk} />
+          ? <StockRows stocks={view.stocks} rulesFor={rulesFor} adding={adding} onAdd={setAdding} onChanged={changed} onSaved={saved} onCancel={() => setAdding(null)} onAsk={askPosition} />
           : <p className="text-sm text-secondary-text">{t('tradeDesk.holdings.noStocks')}</p>}
       </Card>
       </> : null}

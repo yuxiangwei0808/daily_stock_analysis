@@ -140,7 +140,7 @@ def test_rules_are_validated_and_managed(store):
         store.delete_rule(rule["id"])
 
 
-def _monitor(store, clock=None):
+def _monitor(store, clock=None, report=None):
     events = []
     keys = set()
 
@@ -152,7 +152,7 @@ def _monitor(store, clock=None):
         return {"id": len(events)}
 
     monitor = h.HoldingsMonitor(store, emit, bars=lambda tickers: {}, earnings_date=lambda ticker, day: None,
-                                clock=clock or (lambda: 0.0))
+                                clock=clock or (lambda: 0.0), report=report or (lambda ticker, day: ""))
     check = monitor.check
 
     def check_at(now, quotes=None):
