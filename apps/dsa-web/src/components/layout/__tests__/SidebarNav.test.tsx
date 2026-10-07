@@ -5,6 +5,7 @@ import { SidebarNav } from '../SidebarNav';
 
 const mockLogout = vi.fn().mockResolvedValue(undefined);
 const mockGetScreeningStatus = vi.fn().mockResolvedValue({ enabled: false, available: false });
+const mockGetTradeDeskHealth = vi.fn().mockResolvedValue({ enabled: false });
 const mockThemeToggle = vi.fn(({ collapsed }: { collapsed?: boolean }) => (
   <button type="button">{collapsed ? '切换主题(折叠)' : '切换主题'}</button>
 ));
@@ -28,6 +29,12 @@ vi.mock('../../../api/screening', () => ({
   SYSTEM_CONFIG_CHANGED_EVENT: 'dsa-system-config-changed',
   screeningApi: {
     getStatus: () => mockGetScreeningStatus(),
+  },
+}));
+
+vi.mock('../../../api/tradeDesk', () => ({
+  tradeDeskApi: {
+    getHealth: () => mockGetTradeDeskHealth(),
   },
 }));
 
@@ -99,6 +106,26 @@ describe('SidebarNav', () => {
       </MemoryRouter>,
     );
 
+    expect(screen.queryByTestId('chat-completion-badge')).not.toBeInTheDocument();
+  });
+
+  it('points Ask at the Trade Desk ask form when the desk is on, without marking it current', async () => {
+    completionBadgeState.value = true;
+    mockGetTradeDeskHealth.mockResolvedValueOnce({ enabled: true });
+
+    render(
+      <MemoryRouter initialEntries={['/trade-desk?view=opportunities']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    const desk = await screen.findByRole('link', { name: '交易台' });
+    const ask = screen.getByRole('link', { name: '问股' });
+    expect(ask).toHaveAttribute('href', '/trade-desk?view=ask');
+    expect(desk).toHaveClass('font-medium');
+    expect(ask).not.toHaveClass('font-medium');
+    expect(ask).not.toHaveAttribute('aria-current', 'page');
+    // The chat's completion badge stays with the chat, which Ask no longer opens.
     expect(screen.queryByTestId('chat-completion-badge')).not.toBeInTheDocument();
   });
 

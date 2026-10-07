@@ -57,8 +57,9 @@ phone; localhost links on another device will not reach this server.
 ## Using it
 
 The **Ask about a stock** tab has three parts. The ask panel at the top folds away
-like a dropdown (it opens by itself when there is no history or when a link brings a
-ticker); its quick row is the ticker (suggestions: what you hold, then what you asked
+like a dropdown (it opens by itself when there is no history, when a link brings a
+ticker, or from the sidebar's **Ask**, which opens this tab while the desk is on; the
+original stock chat stays at `/chat` and still opens from a report's AI follow-up button); its quick row is the ticker (suggestions: what you hold, then what you asked
 recently), your question (Ctrl/Cmd+Enter sends) and **Ask**; under it, the ticker's latest active report
 verdict (action, score, stop/target, date and the reason; from the AI-signal store), with data mode, direction
 and horizon beside it and everything else under **More options**. Strategies default to

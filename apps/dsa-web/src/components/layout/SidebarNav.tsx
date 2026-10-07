@@ -26,7 +26,12 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
   exact?: boolean;
   badge?: 'completion';
+  // A shortcut into another item's page: never marked as the current page itself.
+  shortcut?: boolean;
 };
+
+// With the Trade Desk on, "Ask" opens its ask form instead of the stock chat (still at /chat).
+const ASK_TRADE_DESK = '/trade-desk?view=ask';
 
 const NAV_ITEMS: NavItem[] = [
   { key: 'home', labelKey: 'layout.nav.home', to: '/', icon: Home, exact: true },
@@ -90,7 +95,9 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
     return () => { active = false; };
   }, []);
 
-  const navItems = NAV_ITEMS.filter((item) => (item.key !== 'screening' || showScreeningNav) && (item.key !== 'trade-desk' || showTradeDeskNav));
+  const navItems = NAV_ITEMS
+    .filter((item) => (item.key !== 'screening' || showScreeningNav) && (item.key !== 'trade-desk' || showTradeDeskNav))
+    .map((item) => (item.key === 'chat' && showTradeDeskNav ? { ...item, to: ASK_TRADE_DESK, badge: undefined, shortcut: true } : item));
   const isRail = variant === 'rail';
   const itemBaseClass = cn(
     'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',
@@ -131,7 +138,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       </div>
 
       <nav className={cn('flex flex-col gap-1.5', isRail ? '' : 'flex-1')} aria-label={t('layout.mainNav')}>
-        {navItems.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
+        {navItems.map(({ key, labelKey, to, icon: Icon, exact, badge, shortcut }) => {
           const label = t(labelKey);
           return (
           <NavLink
@@ -140,16 +147,17 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
             end={exact}
             onClick={onNavigate}
             aria-label={label}
+            aria-current={shortcut ? false : 'page'}
             className={({ isActive }) =>
               cn(
                 itemInteractiveClass,
-                isActive ? itemActiveClass : ''
+                isActive && !shortcut ? itemActiveClass : ''
               )
             }
           >
             {({ isActive }) => (
               <>
-                <Icon className={cn(itemIconClass, isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
+                <Icon className={cn(itemIconClass, isActive && !shortcut ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
                 {!collapsed ? <span className={itemLabelClass}>{label}</span> : null}
                 {badge === 'completion' && completionBadge ? (
                   <StatusDot

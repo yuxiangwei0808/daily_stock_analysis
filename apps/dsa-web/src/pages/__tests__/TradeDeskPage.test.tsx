@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { Link, MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import TradeDeskPage from '../TradeDeskPage';
@@ -450,11 +450,28 @@ describe('TradeDeskPage', () => {
     expect(screen.getByRole('tab', { name: /^(Journal|日志)$/ })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('opens the merged ask tab for old ?view=ask links', async () => {
+  it('opens the ask tab with the form unfolded for ?view=ask links', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Older answer' }] });
     renderPage('/trade-desk?view=ask');
     const tab = await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ });
     expect(tab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getAllByRole('tab')).toHaveLength(3);  // plan monitoring (Positions) was removed
+    // Unfolded although there is history (the sidebar's "Ask" links here).
+    expect(await screen.findByLabelText(/Ticker|股票代码/)).toBeInTheDocument();
+  });
+
+  it('opens the ask form when the sidebar Ask is clicked while already on the desk', async () => {
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Older answer' }] });
+    render(
+      <MemoryRouter initialEntries={['/trade-desk?view=journal']}>
+        <Link to="/trade-desk?view=ask">Sidebar Ask</Link>
+        <TradeDeskPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole('tab', { name: /^(Journal|日志)$/ })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('link', { name: 'Sidebar Ask' }));
+    expect(await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByLabelText(/Ticker|股票代码/)).toBeInTheDocument();
   });
 
   it('loads linked advice even when it is outside the latest advice list', async () => {

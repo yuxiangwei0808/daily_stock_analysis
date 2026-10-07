@@ -210,6 +210,15 @@ const TradeDeskPage: React.FC = () => {
   const tickerOptions = useMemo(() => Array.from(new Set([...heldTickers, ...advice.map((job) => job.request.ticker)])).slice(0, 40), [heldTickers, advice]);
   const [askOpen, setAskOpen] = useState<boolean | null>(null);
   const askPanelOpen = askOpen ?? (Boolean(deepLinkTicker) || advice.length === 0);
+  // The sidebar's "Ask" links to ?view=ask: the ask tab with the form open, also when already here.
+  const askRequested = searchParams.get('view') === 'ask';
+  useEffect(() => {
+    if (!askRequested) return;
+    setView('opportunities');
+    setAskOpen(true);
+    setSearchParamsRef.current((current) => { const next = new URLSearchParams(current); next.set('view', 'opportunities'); return next; }, { replace: true });
+    if (typeof window !== 'undefined') window.scrollTo?.({ top: 0, behavior: 'smooth' });
+  }, [askRequested]);
   // From a held position: open the ask panel on that ticker with your position attached.
   const askAbout = (ticker: string) => {
     loadHoldings();
