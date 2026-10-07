@@ -1,4 +1,5 @@
 import type React from 'react';
+import { useState } from 'react';
 import { Check, ChevronDown, CircleDollarSign, FileText, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { Badge, Button, Card, InlineAlert } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -7,10 +8,17 @@ import type { DecisionSignalItem } from '../../types/decisionSignals';
 import { verdictSummary, liveIsBlocked } from './deskFormat';
 import type { AdviceFormState } from './deskFormat';
 
+// Strategy families, in the order the picker lists them.
+const FAMILIES: Array<[string, string]> = [
+  ['directional', 'Directional'], ['income', 'Credit spreads'], ['stock_income', 'Shares or cash'],
+  ['volatility', 'Volatility'], ['defined_risk', 'Range-bound'], ['naked', 'Uncovered'],
+];
+
 export function AdviceForm({
   form,
   setForm,
   catalog,
+  autoStrategies = {},
   health,
   selectedStrategies,
   setSelectedStrategies,
@@ -26,6 +34,8 @@ export function AdviceForm({
   form: AdviceFormState;
   setForm: React.Dispatch<React.SetStateAction<AdviceFormState>>;
   catalog: TradeDeskCatalogItem[];
+  /** What "Auto" compares for each market view. */
+  autoStrategies?: Record<string, string[]>;
   health: TradeDeskHealth | null;
   selectedStrategies: string[];
   setSelectedStrategies: React.Dispatch<React.SetStateAction<string[]>>;
@@ -46,6 +56,13 @@ export function AdviceForm({
   const toggleStrategy = (id: string) => {
     setSelectedStrategies((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
+  // Auto (no strategy picked) is the default; the full list appears only on "Pick my own".
+  const [picking, setPicking] = useState(selectedStrategies.length > 0);
+  const titleOf = (id: string) => catalog.find((item) => item.id === id)?.title || id.replace(/_/g, ' ');
+  const autoTitles = (autoStrategies[form.direction] || []).map(titleOf);
+  const families = FAMILIES.map(([key, label]) => [label, catalog.filter((item) => item.category === key)] as const)
+    .filter(([, items]) => items.length);
+  const others = catalog.filter((item) => !FAMILIES.some(([key]) => key === item.category));
   const liveUnavailable = form.dataMode === 'live' && liveIsBlocked(health);
   // Filled-in extras stay visible as a count on the closed "More options" summary.
   const extras = [form.expiry, form.allocation, form.existingShares !== '0' && form.existingShares, form.marginPerUnit, form.planLegs.trim(), selectedStrategies.length].filter(Boolean).length;
@@ -96,15 +113,32 @@ export function AdviceForm({
               <label><span className={caption}>{t('tradeDesk.existingShares')}</span><input aria-label={t('tradeDesk.existingShares')} type="number" min="0" step="1" value={form.existingShares} onChange={(event) => update('existingShares', event.target.value)} className={field} /></label>
               <label><span className={caption}>{t('tradeDesk.marginPerUnit')}</span><input aria-label={t('tradeDesk.marginPerUnit')} type="number" min="0" step="any" value={form.marginPerUnit} onChange={(event) => update('marginPerUnit', event.target.value)} placeholder="optional" className={field} /></label>
             </div>
-            <div>
-              <span className={caption}>{t('tradeDesk.strategy')}</span>
-              <div className="flex flex-wrap gap-2">
-                {catalog.length === 0 ? <span className="text-sm text-secondary-text">{t('tradeDesk.strategyAll')}</span> : catalog.map((item) => {
-                  const selected = selectedStrategies.includes(item.id);
-                  return <button key={item.id} type="button" onClick={() => toggleStrategy(item.id)} className={`rounded-full border px-3 py-1.5 text-xs transition ${selected ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border/60 text-secondary-text hover:text-foreground'}`} aria-pressed={selected}>{selected ? <Check className="mr-1 inline h-3 w-3" /> : null}{item.title || item.id}</button>;
-                })}
+            <fieldset data-testid="strategy-picker">
+              <legend className={caption}>Strategies</legend>
+              <div className="flex flex-wrap gap-2 text-xs" role="group" aria-label="Strategies">
+                <button type="button" aria-pressed={!picking} onClick={() => { setPicking(false); setSelectedStrategies([]); }} className={`rounded-full border px-3 py-1.5 transition ${!picking ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border/60 text-secondary-text hover:text-foreground'}`}>Auto (recommended)</button>
+                <button type="button" aria-pressed={picking} onClick={() => setPicking(true)} className={`rounded-full border px-3 py-1.5 transition ${picking ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border/60 text-secondary-text hover:text-foreground'}`}>Pick my own</button>
               </div>
-            </div>
+              {!picking ? (
+                <p className="mt-2 text-xs leading-5 text-secondary-text" data-testid="auto-strategies">
+                  {autoTitles.length ? <>Compares {autoTitles.join(', ')}.</> : <>Compares the strategies that fit your direction.</>}
+                  {' '}Set a direction above to change the set{heldNote && form.useHoldings ? '; your shares add covered calls or a protective put' : ''}.
+                </p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  <p className="text-xs text-secondary-text">{selectedStrategies.length ? `${selectedStrategies.length} picked (up to 4 are compared).` : 'Pick one or more; with none picked the desk uses Auto.'}</p>
+                  {[...families, ...(others.length ? [['Other', others] as const] : [])].map(([label, items]) => (
+                    <div key={label} className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="w-full text-[11px] uppercase tracking-wide text-muted-text sm:w-28">{label}</span>
+                      {items.map((item) => {
+                        const selected = selectedStrategies.includes(item.id);
+                        return <button key={item.id} type="button" onClick={() => toggleStrategy(item.id)} className={`rounded-full border px-2.5 py-1 text-xs transition ${selected ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border/60 text-secondary-text hover:text-foreground'}`} aria-pressed={selected}>{selected ? <Check className="mr-1 inline h-3 w-3" /> : null}{item.title || item.id}</button>;
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </fieldset>
             <label className="block"><span className={caption}>{t('tradeDesk.planLegs')}</span><textarea aria-label={t('tradeDesk.planLegs')} value={form.planLegs} onChange={(event) => update('planLegs', event.target.value)} placeholder={'buy 1 call 230 2026-10-16\nsell 1 call 240 2026-10-16'} rows={2} className="input-surface w-full rounded-xl border px-4 py-2.5 font-mono text-xs text-foreground" /><span className="mt-1 block text-xs text-secondary-text">{t('tradeDesk.planLegsHint')}</span></label>
             <div className="grid gap-3 sm:grid-cols-3">
               <label><span className={caption}>{t('tradeDesk.feePerContract')}</span><input aria-label={t('tradeDesk.feePerContract')} type="number" min="0" step="any" value={form.feePerContract} onChange={(event) => update('feePerContract', event.target.value)} className={field} /></label>

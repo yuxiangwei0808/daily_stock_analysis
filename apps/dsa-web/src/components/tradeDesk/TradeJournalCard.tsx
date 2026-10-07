@@ -68,9 +68,12 @@ export function TradeJournalCard() {
             <strong style={{ color: tone(journal.total.totalPnl) }}>{money(journal.total.totalPnl)}</strong> · win rate {pct(journal.total.winRate, false)}
             {journal.total.avgHoldDays != null ? ` · average hold ${journal.total.avgHoldDays} days` : ''}
           </p>
+          {journal.unresolved?.length ? (
+            <p role="status" className="text-xs text-secondary-text">Excluded pending reconciliation: {Array.from(new Set(journal.unresolved.map((item) => item.code))).join(', ')}. Expiration and unexplained inventory do not establish realized P&amp;L.</p>
+          ) : null}
           {journal.unmatchedCloses ? (
             <p className="text-xs text-secondary-text" data-testid="journal-unmatched">
-              {journal.unmatchedCloses} sale{journal.unmatchedCloses === 1 ? '' : 's'} of positions held without a matching fill
+              {journal.unmatchedCloses} closing fill{journal.unmatchedCloses === 1 ? '' : 's'} involving unexplained inventory
               (bought before this history, or delivered by an assignment) are not counted: their cost is unknown.
             </p>
           ) : null}

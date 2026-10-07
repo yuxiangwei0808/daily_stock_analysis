@@ -1,5 +1,7 @@
 """Common provider-independent freshness checks for executable observations."""
 from datetime import datetime
+from math import isfinite
+from zoneinfo import ZoneInfo
 
 from .models import utcnow
 
@@ -62,3 +64,32 @@ def candidate_quotes_fresh(snapshot, candidate, now=None):
                 or quote.bid <= 0 or quote.ask < quote.bid):
             return False
     return bool(legs)
+
+
+def watch_quote_fresh(quote, now, *, option=False):
+    """Validate a watchlist snapshot; OpenD's naive US timestamps are New York time.
+
+    Options need a usable bid/ask book, not merely an old last trade. Stock snapshots
+    outside regular hours expose a separate extended price without a verified timestamp;
+    those cannot drive regular-price triggers.
+    """
+    if not quote or now.tzinfo is None:
+        return False
+    try:
+        stamp = datetime.fromisoformat(str(quote.get("updated_at", "")).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=ZoneInfo("America/New_York"))
+        if not quote_age_ok(stamp, now):
+            return False
+        if quote.get("session") in ("premarket", "postmarket", "overnight", "closed"):
+            return False
+        price = float(quote.get("price") or 0)
+        if not option and (not isfinite(price) or price <= 0):
+            return False
+        bid, ask = quote.get("bid"), quote.get("ask")
+        if option or (bid is not None and ask is not None):
+            return (bid is not None and ask is not None and isfinite(float(bid))
+                    and isfinite(float(ask)) and 0 <= float(bid) <= float(ask) and float(ask) > 0)
+        return True
+    except (ValueError, TypeError, OverflowError):
+        return False

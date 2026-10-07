@@ -17,7 +17,7 @@ export function PortfolioRisk({ syncedAt }: { syncedAt?: string | null }) {
   const load = useCallback(async () => {
     setBusy(true);
     try { setRisk(await tradeDeskApi.getHoldingsRisk()); setError(''); }
-    catch (loadError) { setError(loadError instanceof Error ? loadError.message : 'Risk is unavailable'); }
+    catch (loadError) { setRisk(null); setError(loadError instanceof Error ? loadError.message : 'Risk is unavailable'); }
     finally { setBusy(false); }
   }, []);
   useEffect(() => { void load(); }, [load, syncedAt]);
@@ -31,6 +31,7 @@ export function PortfolioRisk({ syncedAt }: { syncedAt?: string | null }) {
       {error ? <p className="mt-2 text-xs text-secondary-text">{error}</p> : null}
       {risk ? (
         <div data-testid="portfolio-risk">
+          {risk.complete === false ? <p role="status" className="mt-2 text-xs text-secondary-text">Portfolio totals unavailable: fresh usable quotes are missing for {risk.unavailableTickers?.join(', ')}. Priced holdings remain visible below.</p> : null}
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {risk.scenarios.map((item) => (
               <span key={item.key} className="rounded-lg bg-elevated/60 px-2.5 py-1.5">
@@ -55,10 +56,10 @@ export function PortfolioRisk({ syncedAt }: { syncedAt?: string | null }) {
                 {risk.rows.map((row) => (
                   <tr key={row.ticker} className="border-t border-border/40">
                     <td className="px-3 py-1.5 font-mono text-foreground">{row.ticker}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{`${row.sharesEquiv < 0 ? '−' : ''}${Math.abs(row.sharesEquiv).toFixed(0)}`}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{row.sharesEquiv == null ? '—' : `${row.sharesEquiv < 0 ? '−' : ''}${Math.abs(row.sharesEquiv).toFixed(0)}`}</td>
                     <td className="px-3 py-1.5 text-right font-mono" style={{ color: tone(row.deltaDollars) }}>{money(row.deltaDollars)}</td>
                     <td className="px-3 py-1.5 text-right font-mono">{row.betaAssumed ? '1.00*' : row.betaSpy?.toFixed(2)}</td>
-                    <td className="hidden px-3 py-1.5 text-right font-mono sm:table-cell">{row.betaQqq == null ? '—' : row.betaQqq.toFixed(2)}</td>
+                    <td className="hidden px-3 py-1.5 text-right font-mono sm:table-cell">{row.betaQqq == null ? '1.00*' : row.betaQqq.toFixed(2)}</td>
                     <td className="px-3 py-1.5 text-right font-mono" style={{ color: tone(row.thetaPerDay) }}>{row.thetaPerDay ? `${money(row.thetaPerDay, 2)}${row.thetaPartial ? '*' : ''}` : '—'}</td>
                   </tr>
                 ))}
@@ -66,7 +67,7 @@ export function PortfolioRisk({ syncedAt }: { syncedAt?: string | null }) {
             </table>
           </div>
           <p className="mt-2 text-[11px] text-muted-text">Estimates: each option's volatility is read from its price and held fixed; an index move shifts each holding by its one-year beta.
-            {risk.rows.some((row) => row.betaAssumed || row.thetaPartial) ? ' * beta assumed 1.0 (too little history) or an option without a usable price.' : ''}</p>
+            {risk.rows.some((row) => row.betaAssumed || row.betaQqqAssumed || row.thetaPartial) ? ' * beta assumed 1.0 where index history is insufficient. Missing option prices leave exposure unavailable.' : ''}</p>
         </div>
       ) : null}
     </Card>

@@ -1,4 +1,44 @@
-# Trade Desk validation — September 22, 2026
+# Trade Desk validation
+
+## Review fixes — October 3, 2026
+
+Five reviewed defects were fixed in the existing modules: stale holdings prices driving
+alerts, missing quotes appearing as zero portfolio risk, inferred option expirations entering
+realized P&L, ambiguous opening inventory being matched against newer purchases, and stock/SPY
+returns using different entry windows. A second inspection also fixed unknown option costs,
+custom P&L alerts using wide spreads, current-day fill corrections/cancellations losing to older
+rows, failed current-day reads silently truncating history, and an omitted history boundary day.
+
+- Focused backend regression files: **178 tests passed** across holdings, risk, journal,
+  benchmark tracking, YouTube statistics, and providers (including the final 58-test holdings run).
+- `scripts/ci_gate.sh`: syntax, critical flake8, and deterministic checks passed. The offline
+  suite finished with **7,443 passed, 2 skipped, 4 deselected, 664 subtests passed**, and one
+  unchanged Tencent subprocess-startup test exceeding its 30-second limit. That exact test
+  passed on an isolated rerun; the original full gate therefore was not completely green.
+- Frontend: **1,177 passed, 2 skipped** with `npm test -- --maxWorkers=2`. The first full run
+  had one Reports-page timing failure; its isolated rerun and the bounded full rerun passed.
+  Lint passed with the two existing StockScreeningPage hook warnings; production build passed.
+- Browser smoke passed against the final production build with synthetic intercepted API
+  fixtures: unavailable risk, journal reconciliation, matching benchmark labels, and mobile
+  layout. Screenshots were visually inspected. This does not verify authenticated live quotes
+  or Discord delivery; neither external service was exercised.
+- `git diff --check` passed. No commits, pushes, broker orders, or real notifications were made.
+
+Local, ignored browser artifacts are in `local/trade-desk/validation/review-20261003/`:
+`holdings-unavailable.png`, `journal-reconciliation.png`, and `journal-mobile.png`.
+Command logs are `/tmp/vibetrade-fixes-*.log` in this workspace's execution environment.
+No translated counterpart exists for this validation record or the Trade Desk guide; the
+Chinese Unreleased changelog was updated alongside the English guide.
+
+Restart the backend to load the fixes, then use **Read fills from moomoo** to rebuild the
+journal. Older journal calculations are hidden; affected codes remain excluded until their
+history is reconciled. The next tracker run backfills matching SPY comparisons for available
+closed records from the last 90 days, preserving simulated trade returns. No schema migration
+or new configuration is required. Reverting these code changes and rebuilding/restarting
+restores the prior implementation while retaining the records; the existing Trade Desk
+feature switch remains available to pause its worker.
+
+## Original implementation validation — September 22, 2026
 
 This records local implementation validation, not a claim of trading profitability
 or verified broker integration. No broker orders were submitted, and no paid data

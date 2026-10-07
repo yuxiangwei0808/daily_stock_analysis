@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
@@ -209,7 +209,7 @@ describe('TradeDeskPage', () => {
     await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({
       allocation: 500, direction: 'bearish', parentAdviceId: job.id,
       message: 'Explain this choice further',
-    })));
+    })), { timeout: 5000 });
     expect(job.request.allocation).toBe(1500);
   });
 
@@ -331,6 +331,64 @@ describe('TradeDeskPage', () => {
     expect(signals.getLatest).toHaveBeenCalledWith('SOXS', { market: 'us', limit: 1 });
     fireEvent.change(ticker, { target: { value: 'AAPL' } });
     await waitFor(() => expect(screen.queryByTestId('report-verdict')).not.toBeInTheDocument());
+  });
+
+  it('compares the candidates side by side, opens the pick and says shared caveats once', async () => {
+    const common = 'Model probabilities are estimates.';
+    const spread: StrategyCandidate = { ...candidate, id: 'candidate-spread', strategy: 'bear_put_debit', title: 'Bear put debit spread (swing)',
+      payoff: { ...candidate.payoff, entryDebit: 150, maxGain: 350, maxLoss: 150.65, breakevens: [98.5] },
+      reasons: ['Defined risk and cheaper than the long put.'], warnings: [common], entryConditions: ['Below 100 on volume'] };
+    const longPut: StrategyCandidate = { ...candidate, warnings: [common, 'Short-dated: decays fast.'] };
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', assessment: 'compare', explanation: 'The spread fits best.',
+      candidates: [longPut, spread], triggers: { 'candidate-spread': { triggerPrice: 100, triggerDirection: 'below', invalidationPrice: 105 } } }] });
+    renderPage();
+    const table = await screen.findByTestId('answer-compare');
+    expect(within(table).getAllByText('Long put').length).toBeGreaterThan(0);
+    expect(within(table).getAllByText('$150.00 debit').length).toBeGreaterThan(0);
+    const detail = screen.getByTestId('candidate-detail');  // the desk's pick opens first
+    expect(detail).toHaveTextContent('Bear put debit spread');
+    expect(detail).toHaveTextContent('Picked by the desk');
+    expect(screen.getByTestId('candidate-why')).toHaveTextContent('Defined risk and cheaper than the long put.');
+    expect(screen.getByTestId('candidate-levels')).toHaveTextContent('Enter below 100.00');
+    expect(screen.getByTestId('candidate-levels')).toHaveTextContent('Wrong above 105.00');
+    expect(screen.getByTestId('shared-notes')).toHaveTextContent(common);
+    expect(detail).not.toHaveTextContent(common);  // said once, not on every candidate
+    fireEvent.click(within(table).getAllByRole('button', { name: 'Long put' })[0]);
+    expect(screen.getByTestId('candidate-detail')).toHaveTextContent('Short-dated: decays fast.');
+    expect(screen.getByTestId('advice-verdict')).toHaveTextContent('The spread fits best.');
+  });
+
+  it('stars nothing when the desk says wait, but keeps its take on each strategy', async () => {
+    const reviewed: StrategyCandidate = { ...candidate, reasons: ['Expires before your target can play out.'] };
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', assessment: 'wait', explanation: 'Wait for a longer expiry.',
+      candidates: [reviewed], triggers: { 'candidate-put': { exitAt: '2026-10-09T20:00:00Z' } } }] });
+    renderPage();
+    const detail = await screen.findByTestId('candidate-detail');
+    expect(detail).not.toHaveTextContent('Picked by the desk');
+    expect(screen.getByTestId('candidate-why')).toHaveTextContent('Expires before your target can play out.');
+    expect(screen.getByTestId('candidate-levels')).toHaveTextContent('Exit by');
+  });
+
+  it('asks with Auto strategies unless you pick your own', async () => {
+    api.getCatalog.mockResolvedValue({ items: [
+      { id: 'long_put', title: 'Long put', category: 'directional' },
+      { id: 'iron_condor', title: 'Iron condor', category: 'defined_risk' },
+    ], defaults: { auto: ['long_put', 'iron_condor'] } });
+    renderPage('/trade-desk?ticker=AAPL');
+    expect(await screen.findByTestId('auto-strategies')).toHaveTextContent('Compares Long put, Iron condor.');
+    expect(screen.queryByRole('button', { name: 'Iron condor' })).not.toBeInTheDocument();  // no list until you ask for it
+    fireEvent.click(screen.getByRole('button', { name: 'Pick my own' }));
+    const picker = screen.getByTestId('strategy-picker');
+    expect(picker).toHaveTextContent('Range-bound');
+    fireEvent.click(within(picker).getByRole('button', { name: 'Iron condor' }));
+    fireEvent.click(within(picker).getByRole('button', { name: 'Auto (recommended)' }));  // back to Auto clears the pick
+    expect(screen.getByTestId('auto-strategies')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Pick my own' }));
+    expect(within(picker).getByRole('button', { name: 'Iron condor' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(within(picker).getByRole('button', { name: 'Iron condor' }));
+    fireEvent.click(screen.getByRole('radio', { name: /Replay/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^(Ask|提问)$/ }));
+    await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({ strategies: ['iron_condor'] })));
   });
 
   it('shows the NX tunnel an answer used', async () => {

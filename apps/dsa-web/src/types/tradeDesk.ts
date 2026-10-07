@@ -452,7 +452,7 @@ export interface HoldingOption {
   expired?: boolean;
   label: string;
   legs: HoldingOptionLeg[];
-  cost: number;
+  cost: number | null;
   value?: number | null;
   maxValue?: number | null;
   pnlPct?: number | null;
@@ -535,20 +535,24 @@ export interface SystemStatus {
 export interface PortfolioRiskRow {
   ticker: string;
   price?: number | null;
-  sharesEquiv: number;
+  sharesEquiv: number | null;
   deltaDollars?: number | null;
-  thetaPerDay: number;
+  thetaPerDay: number | null;
   thetaPartial: boolean;
   betaSpy?: number | null;
   betaQqq?: number | null;
   betaAssumed: boolean;
+  betaQqqAssumed?: boolean;
+  complete?: boolean;
 }
 
 export interface PortfolioRisk {
   asOf: string;
+  complete?: boolean;
+  unavailableTickers?: string[];
   rows: PortfolioRiskRow[];
-  totals: { deltaDollars: number; spyBetaDollars: number; spyBetaPct?: number | null; thetaPerDay: number; thetaPct?: number | null };
-  scenarios: Array<{ key: string; label: string; pnl: number; pct?: number | null }>;
+  totals: { deltaDollars: number | null; spyBetaDollars: number | null; spyBetaPct?: number | null; thetaPerDay: number | null; thetaPct?: number | null };
+  scenarios: Array<{ key: string; label: string; pnl: number | null; pct?: number | null }>;
 }
 
 export interface TradeJournalStats {
@@ -584,6 +588,7 @@ export interface TradeJournal {
   best: TradeJournalTrip[];
   worst: TradeJournalTrip[];
   openLotsNote: string;
+  unresolved?: Array<{ code: string; reason: string; qty?: number; quantityDifference?: number; expiry?: string }>;
   /** Sales of positions held without a matching fill (bought before the history, or assigned): not counted. */
   unmatchedCloses?: number;
 }

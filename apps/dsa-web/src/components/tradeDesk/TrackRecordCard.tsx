@@ -50,7 +50,7 @@ export function TrackRecordCard() {
       {record?.scoreboard?.length ? (
         <div className="mt-3" data-testid="scoreboard">
           <h3 className="text-sm font-semibold text-foreground">What's working</h3>
-          <p className="mt-0.5 text-xs text-secondary-text">Each source's average result vs SPY in the direction of its call. A verdict needs {SCOREBOARD_MIN} closed records and a clear difference across months.</p>
+          <p className="mt-0.5 text-xs text-secondary-text">Each source's average result vs SPY in the direction of its call, using matching closing-price dates. These comparisons are separate from simulated trade returns; records without aligned prices are excluded. A verdict needs {SCOREBOARD_MIN} closed records and a clear difference across months.</p>
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-xs text-muted-text">

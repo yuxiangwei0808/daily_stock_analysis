@@ -25,17 +25,21 @@ def test_fills_match_first_in_first_out_into_round_trips():
     assert tsla["position"] == "short" and tsla["pnl"] == 100.0 and tsla["hold_days"] == 0 and tsla["view"] == "short"
 
 
-def test_options_use_the_multiplier_and_expired_ones_settle_at_intrinsic():
-    deals = [deal("SPY260918P550000", "SELL_SHORT", 2, 3.0, "2026-09-01 10:00:00"),  # short puts, expired worthless
-             deal("QQQ260918C500000", "BUY", 1, 4.0, "2026-09-02 10:00:00"),  # long call, expired in the money
-             deal("AMD261016C200000", "BUY", 1, 5.0, "2026-09-05 10:00:00")]  # still open: not counted
-    closes = {("SPY", date(2026, 9, 18)): 600.0, ("QQQ", date(2026, 9, 18)): 510.0}
-    trips = {t["ticker"]: t for t in j.round_trips(deals, TODAY, lambda ticker, day: closes.get((ticker, day)))}
-    assert set(trips) == {"SPY", "QQQ"}
-    assert trips["SPY"]["pnl"] == 600.0 and trips["SPY"]["view"] == "long" and trips["SPY"]["how"] == "expired"
-    assert trips["QQQ"]["pnl"] == pytest.approx((10.0 - 4.0) * 100) and trips["QQQ"]["return_pct"] == 150.0
-    unknown = j.round_trips(deals[1:2], TODAY, lambda ticker, day: None)
-    assert unknown[0]["pnl"] == -400.0 and unknown[0]["how"] == "expired, assumed worthless"
+@pytest.mark.parametrize("underlying_close", [None, 510.0])
+def test_expired_options_require_reconciliation_even_with_a_closing_price(underlying_close):
+    deals = [deal("QQQ260918C500000", "BUY", 1, 4.0, "2026-09-02 10:00:00")]
+    result = j.build(deals, [], TODAY, lambda ticker, day: underlying_close, current={})
+    assert result["total"]["trades"] == 0 and result["total"]["total_pnl"] == 0
+    assert result["total"]["win_rate"] is None
+    assert result["unresolved"][0]["reason"] == "expiry_reconciliation"
+
+
+def test_only_closed_option_quantities_count_as_realized():
+    deals = [deal("QQQ260918C500000", "BUY", 2, 4, "2026-09-01 10:00:00"),
+             deal("QQQ260918C500000", "SELL", 1, 5, "2026-09-10 10:00:00")]
+    result = j.build(deals, [], TODAY, current={})
+    assert result["total"]["trades"] == 1 and result["total"]["total_pnl"] == 100
+    assert result["unresolved"][0]["qty"] == 1
 
 
 def test_the_journal_groups_by_type_hold_and_whether_a_signal_agreed():
@@ -63,8 +67,8 @@ def test_sales_of_shares_held_before_the_history_close_them_instead_of_opening_s
     deals = [deal("AAPL", "SELL", 100, 200.0, "2026-01-10 10:00:00"), deal("AAPL", "BUY", 100, 180.0, "2026-03-02 10:00:00"),
              deal("AAPL", "SELL", 100, 190.0, "2026-05-01 10:00:00")]
     result = j.build(deals, [], TODAY, current={})  # nothing held today
-    assert result["total"]["trades"] == 1 and result["total"]["total_pnl"] == 1000.0
-    assert result["by_type"][0]["label"] == "Long stock" and result["unmatched_closes"] == 1
+    assert result["total"]["trades"] == 0
+    assert result["unresolved"][0]["reason"] == "inventory_difference"
     # Shares delivered by an assignment (no fill) and sold afterwards: no fake short either.
     assigned = [deal("MU", "SELL", 100, 97.0, "2026-06-01 10:00:00")]
     assert j.build(assigned, [], TODAY, current={})["total"]["trades"] == 0
@@ -78,8 +82,8 @@ def test_a_later_assignment_does_not_take_the_place_of_an_earlier_known_purchase
     deals = [deal("AAPL", "BUY", 100, 150.0, "2026-01-05 10:00:00"), deal("AAPL", "SELL", 100, 160.0, "2026-02-05 10:00:00"),
              deal("AAPL", "SELL", 100, 170.0, "2026-06-05 10:00:00")]
     result = j.build(deals, [], TODAY, current={})
-    assert result["total"]["trades"] == 1 and result["total"]["total_pnl"] == 1000.0  # the Jan/Feb trade
-    assert result["unmatched_closes"] == 1  # the assigned shares: their cost is unknown
+    assert result["total"]["trades"] == 0  # the net difference cannot date an assignment
+    assert result["unresolved"][0]["reason"] == "inventory_difference"
 
 
 def test_fills_before_a_split_are_restated_in_todays_shares():
@@ -100,3 +104,11 @@ def test_a_signal_counts_only_if_it_existed_before_the_trade():
     assert j.signal_match(trip, [morning]) == "agreed"
     assert j.signal_match(trip, [same_day_report]) == "none"
     assert j.signal_match(trip, [{**same_day_report, "signal_day": "2026-09-09"}]) == "agreed"
+
+
+def test_unknown_opening_inventory_cannot_be_matched_after_new_purchases():
+    deals = [deal("AAPL", "BUY", 100, 150, "2026-01-05 10:00:00"),
+             deal("AAPL", "SELL", 100, 160, "2026-02-05 10:00:00")]
+    result = j.build(deals, [], TODAY, current={"AAPL": 100})
+    assert result["total"]["trades"] == 0  # FIFO would sell the unknown opening shares first
+    assert result["unresolved"][0]["quantity_difference"] == 100

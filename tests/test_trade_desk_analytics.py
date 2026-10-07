@@ -442,3 +442,14 @@ def test_preexpiry_curves_price_closing_early_and_the_daily_time_decay():
     assert out["theta_per_day"] < 0  # a long option loses value each day
     assert a.preexpiry_curves([call], 34.0, expiry, expiry) == {}  # no time left
     assert a.preexpiry_curves([call.model_copy(update={"iv": None})], 34.0, now, expiry) == {}  # no IV
+
+
+def test_the_catalog_lists_what_auto_compares_for_each_market_view() -> None:
+    import asyncio
+
+    from api.v1.endpoints.trade_desk import catalog
+    body = asyncio.run(catalog())
+    ids = {item["id"] for item in body["items"]}
+    assert set(body["defaults"]) == {"auto", "bullish", "bearish", "neutral", "volatile"}
+    assert body["defaults"]["bullish"] == ["bull_call_debit", "bull_put_credit", "long_call", "covered_call"]
+    assert all(set(strategies) <= ids for strategies in body["defaults"].values())

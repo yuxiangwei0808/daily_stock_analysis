@@ -167,6 +167,16 @@ def sync_verdicts(repo: Any, reports: List[Any]) -> int:
     return added
 
 
+def _aligned_returns(bars, market, start_day, end_day):
+    """Raw stock/SPY returns over the exact same closing-price window."""
+    def change(rows):
+        closes = {str(bar["date"])[:10]: bar.get("close") for bar in rows}
+        start, end = closes.get(start_day), closes.get(end_day)
+        return round((end / start - 1) * 100, 3) if start and end and start > 0 and end > 0 else None
+    stock, spy = change(bars), change(market)
+    return (stock, spy) if stock is not None and spy is not None else (None, None)
+
+
 def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: List[Dict[str, Any]],
                    today: date, horizons: tuple = VERDICT_HORIZONS, halted: bool = False) -> Optional[Dict[str, Any]]:
     """Returns after each horizon (stock and SPY); "closed" once the last one is in.
@@ -186,7 +196,6 @@ def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: L
             return None  # no close on the signal day (a gap in the data): no fair entry
         entry = update["entry"] = round(float(signal_bar[0]["close"]), 4)
     entry = float(entry)
-    before = [bar for bar in market if bar["date"] <= record["signal_day"]]
     last = max(horizons)
     update.update({"days": min(len(path), last),
                    "mark_return_pct": round((path[min(len(path), last) - 1]["close"] / entry - 1) * 100, 3)})
@@ -195,12 +204,13 @@ def settle_verdict(record: Dict[str, Any], bars: List[Dict[str, Any]], market: L
             continue
         end = path[min(horizon, len(path)) - 1]
         update[f"return_{horizon}d_pct"] = round((end["close"] / entry - 1) * 100, 3)
-        spy = [bar for bar in market if record["signal_day"] < bar["date"] <= end["date"]]
-        if spy and before:
-            update[f"spy_{horizon}d_pct"] = round((spy[-1]["close"] / before[-1]["close"] - 1) * 100, 3)
+        stock_ret, spy_ret = _aligned_returns(bars, market, record["signal_day"], end["date"])
+        update[f"benchmark_return_{horizon}d_pct"] = stock_ret
+        update[f"spy_{horizon}d_pct"] = spy_ret
     if len(path) >= last or halted:
         update.update(status="closed", return_pct=update[f"return_{last}d_pct"], reason="time" if not halted else "halted",
-                      exit_day=path[min(last, len(path)) - 1]["date"], spy_return_pct=update.get(f"spy_{last}d_pct"))
+                      exit_day=path[min(last, len(path)) - 1]["date"], spy_return_pct=update.get(f"spy_{last}d_pct"),
+                      benchmark_return_pct=update.get(f"benchmark_return_{last}d_pct"))
     return update
 
 
@@ -230,12 +240,10 @@ def settle(record: Dict[str, Any], bars: List[Dict[str, Any]], market: List[Dict
     mark = exit_price if reason else last["close"]
     ret = sign * (mark / entry - 1) * 100 - (2 * COST_BPS / 100 if reason else COST_BPS / 100)
     risk = abs(entry - stop) / entry * 100
-    spy = [bar for bar in market if record["signal_day"] < bar["date"] <= (exit_day or last["date"])]
-    before = [bar for bar in market if bar["date"] <= record["signal_day"]]
-    spy_ret = (spy[-1]["close"] / before[-1]["close"] - 1) * 100 if spy and before else None
+    stock_ret, spy_ret = _aligned_returns(bars, market, record["signal_day"], exit_day or last["date"])
     update = {"days": min(len(path), MAX_DAYS), "return_pct": round(ret, 3),
               "r": round(ret / risk, 3) if risk else None, "spy_return_pct": round(spy_ret, 3) if spy_ret is not None else None,
-              "mark": round(mark, 4)}
+              "mark": round(mark, 4), "benchmark_return_pct": stock_ret}
     if reason:
         update.update(status="closed", exit=round(exit_price, 4), exit_day=exit_day, reason=reason)
     return update
@@ -263,14 +271,29 @@ def settle_open(repo: Any, today: date,
                 nx_bars: Optional[Callable[[List[str]], Dict[str, List[Dict[str, Any]]]]] = None) -> int:
     """Settle every open record from daily bars (and fill its NX state once); returns how many closed."""
     open_records = repo.tracked_ideas(status="open")
-    if not open_records:
+    legacy = [r for r in repo.tracked_ideas(status="closed", since=(today - timedelta(days=90)).isoformat())
+              if "benchmark_return_pct" not in r and r.get("exit_day") and r.get("return_pct") is not None]
+    if not open_records and not legacy:
         return 0
-    history = bars(list(dict.fromkeys(["SPY", *(record["ticker"] for record in open_records)])))
+    history = bars(list(dict.fromkeys(["SPY", *(record["ticker"] for record in [*open_records, *legacy])])))
 
     def bars_for(source, ticker):  # download_bars keys use dots (BRK.B) whatever the request used
         return source.get(ticker) or source.get(str(ticker).replace("-", "."))
 
     market, closed = history.get("SPY") or [], 0
+    for record in legacy:
+        stock_bars = bars_for(history, record["ticker"]) or []
+        if record.get("kind") in HORIZONS:
+            calculated = settle_verdict(record, stock_bars, market, today, HORIZONS[record["kind"]],
+                                        halted=record.get("reason") == "halted") or {}
+            update = {key: value for key, value in calculated.items() if key.startswith(("benchmark_", "spy_"))}
+        else:
+            stock_ret, spy_ret = _aligned_returns(stock_bars, market, record["signal_day"], record["exit_day"])
+            update = {"benchmark_return_pct": stock_ret, "spy_return_pct": spy_ret}
+        if update.get("benchmark_return_pct") is not None:
+            payload = {key: value for key, value in record.items() if key not in {"id", "status", "created_at"}}
+            repo.update_tracked_idea(record["id"], {**payload, **update}, "closed")
+
     if not market:  # a record closed now would have no vs-SPY figures for good; NX states are still filled
         logger.info("Idea tracker: no SPY bars today; settling waits for the next run")
     missing_nx = list(dict.fromkeys(record["ticker"] for record in open_records if "nx" not in record))
@@ -365,15 +388,13 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
         rows = [r for r in records if r.get("verdict") == key]
         closed = [r for r in rows if r["status"] == "closed" and r.get("return_pct") is not None]
         returns = [r["return_pct"] for r in closed]
-        spy = [r["spy_return_pct"] for r in closed if r.get("spy_return_pct") is not None]
+        excess = [value for r in closed if (value := _excess(r, "return_pct", "spy_return_pct")) is not None]
         groups[key] = {
             "label": label, "open": sum(1 for r in rows if r["status"] == "open"), "closed": len(closed),
             "win_rate": sum(1 for x in returns if x > 0) / len(returns) * 100 if returns else None,
             "avg_return_pct": sum(returns) / len(returns) if returns else None,
             "avg_r": (sum(r["r"] for r in closed if r.get("r") is not None) / len(closed)) if closed else None,
-            # SPY is long-only; shorts are compared with the market's move in their favour.
-            "avg_vs_spy_pct": (sum(r["return_pct"] - (1 if r["direction"] == "long" else -1) * r["spy_return_pct"]
-                                   for r in closed if r.get("spy_return_pct") is not None) / len(spy)) if spy else None,
+            "avg_vs_spy_pct": sum(excess) / len(excess) if excess else None,
             "long": sum(1 for r in rows if r["direction"] == "long"), "short": sum(1 for r in rows if r["direction"] == "short"),
         }
     by_nx = {}
@@ -413,11 +434,9 @@ def t_needed(months: int) -> Optional[float]:
 
 def _excess(record: Dict[str, Any], stock_key: str, spy_key: str) -> Optional[float]:
     """Return vs SPY in the call's direction: a short or bearish call gains when it lags SPY."""
-    stock, spy = record.get(stock_key), record.get(spy_key)
+    stock, spy = record.get("benchmark_" + stock_key), record.get(spy_key)
     if stock is None or spy is None:
         return None
-    if record.get("kind") in (None, "idea", "breakout"):  # return_pct already carries the trade's direction
-        return stock - (1 if record.get("direction") == "long" else -1) * spy
     return (stock - spy) * (-1 if record.get("direction") == "short" else 1)
 
 
@@ -458,13 +477,13 @@ def scoreboard(everything: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for verdict, label in (("high", "Trade ideas · high conviction"), ("medium", "Trade ideas · medium conviction"),
                            ("rejected", "Candidates the review rejected")):
         add(f"idea:{verdict}", label, [r for r in ideas if r.get("verdict") == verdict],
-            "return_pct", "spy_return_pct", "to stop/target, ≤15 sessions")
+            "return_pct", "spy_return_pct", "close to close through exit day, ≤15 sessions")
     add("breakout", "Breakout alerts", [r for r in everything if r.get("kind") == "breakout"],
-        "return_pct", "spy_return_pct", "to stop/target, ≤15 sessions")
+        "return_pct", "spy_return_pct", "close to close through exit day, ≤15 sessions")
     trades = [r for r in everything if r.get("kind") in (None, "idea", "breakout")]
     for alignment, label in (("agree", "Ideas & breakouts · NX agrees"), ("against", "Ideas & breakouts · NX against")):
         add(f"nx:{alignment}", label, [r for r in trades if (r.get("nx") or {}).get("alignment") == alignment],
-            "return_pct", "spy_return_pct", "to stop/target, ≤15 sessions")
+            "return_pct", "spy_return_pct", "close to close through exit day, ≤15 sessions")
     verdicts = [r for r in everything if r.get("kind") == "verdict"]
     for group, label in (("bullish", "Report calls · bullish"), ("bearish", "Report calls · bearish")):
         add(f"verdict:{group}", label, [r for r in verdicts if r.get("group") == group],
@@ -486,9 +505,9 @@ def social_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {"names": len(rows), "closed": sum(1 for r in rows if r["status"] == "closed"
                                                               and r.get("return_20d_pct") is not None)}
     for horizon in (5, 10, 20):
-        done = [r for r in rows if r.get(f"return_{horizon}d_pct") is not None and r.get(f"spy_{horizon}d_pct") is not None]
+        done = [r for r in rows if r.get(f"benchmark_return_{horizon}d_pct") is not None and r.get(f"spy_{horizon}d_pct") is not None]
         out[f"{horizon}d"] = {"count": len(done), "avg_pct": average([r[f"return_{horizon}d_pct"] for r in done]),
-                              "vs_spy_pct": average([r[f"return_{horizon}d_pct"] - r[f"spy_{horizon}d_pct"] for r in done])}
+                              "vs_spy_pct": average([r[f"benchmark_return_{horizon}d_pct"] - r[f"spy_{horizon}d_pct"] for r in done])}
     return out
 
 
@@ -508,8 +527,8 @@ def verdict_stats(verdicts: List[Dict[str, Any]]) -> Dict[str, Any]:
             cells[state] = {"closed": len(closed), "open": len(still_open),
                             "avg_5d_pct": average([r.get("return_5d_pct") for r in chosen]),
                             "avg_10d_pct": average([r.get("return_10d_pct") for r in closed]),
-                            "avg_10d_vs_spy_pct": average([r["return_10d_pct"] - r["spy_10d_pct"] for r in closed
-                                                           if r.get("return_10d_pct") is not None
+                            "avg_10d_vs_spy_pct": average([r["benchmark_return_10d_pct"] - r["spy_10d_pct"] for r in closed
+                                                           if r.get("benchmark_return_10d_pct") is not None
                                                            and r.get("spy_10d_pct") is not None])}
         out[group] = {"label": label, "by_nx": cells}
     return out
@@ -581,6 +600,7 @@ def format_track_record(stats: Dict[str, Any]) -> str:
                          + f" · {row['closed']} closed")
         if sum(row["closed"] for _name, row in counted) < 30:
             lines.append("Few closed picks so far; read this as a first look.")
+    lines.append("Vs SPY uses matching closing-price windows; simulated trade returns use alert entry/exit prices.")
     return "\n".join(lines)
 
 

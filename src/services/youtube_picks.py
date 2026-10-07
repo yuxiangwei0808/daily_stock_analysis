@@ -777,7 +777,7 @@ def channel_stats(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         stats[row["group"]] = stats.get(row["group"], 0) + 1
         sign = 1 if row.get("direction") == "long" else -1
         for horizon in (5, 10, 20):
-            stock, spy = row.get(f"return_{horizon}d_pct"), row.get(f"spy_{horizon}d_pct")
+            stock, spy = row.get(f"benchmark_return_{horizon}d_pct"), row.get(f"spy_{horizon}d_pct")
             if stock is not None and spy is not None:
                 stats["edges"].setdefault(horizon, []).append(sign * (stock - spy))
     for stats in out.values():

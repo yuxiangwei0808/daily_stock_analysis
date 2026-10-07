@@ -3,8 +3,8 @@
 Fills come from ``history_deal_list_query`` (the last year, see ``providers.broker_deals``).
 Per contract they are matched first-in, first-out into round trips: a buy against an open
 short closes it, a sell against an open long closes it, the rest opens a new lot. An option
-still open after its expiry is settled at intrinsic value from the underlying's close on the
-expiry day (worthless when that close is unknown, flagged). Spreads appear as their legs.
+still open after expiry requires reconciliation, not an inferred cash exit. Histories with
+unexplained inventory are excluded until their cost basis can be established. Spreads appear as their legs.
 Amounts are gross of commissions (the fill history does not carry them).
 
 Each round trip is grouped three ways: by type (long/short stock, calls, puts), by holding
@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional
 
+CALCULATION_VERSION = 2
 SIGNAL_DAYS = 5
 _NEW_YORK = ZoneInfo("America/New_York")  # moomoo reports US fills in New York time
 HOLD_BUCKETS = (("same_day", "Same day", 0, 0), ("days_1_5", "1–5 days", 1, 5), ("days_6_20", "6–20 days", 6, 20),
@@ -50,7 +51,7 @@ def starting_positions(deals: List[Dict[str, Any]], current: Dict[str, float], t
 
     Shares bought before the window, or delivered by an assignment or exercise (neither is a fill),
     would otherwise make their later sale look like a new short. Expired options are no longer
-    held, so they start flat and their last lots settle at expiry.
+    held; their residual lots require separate expiry reconciliation.
     """
     from .holdings import parse_code
     net: Dict[str, float] = {}
@@ -79,17 +80,21 @@ def _signed(deal: Dict[str, Any]) -> float:
 
 def round_trips(deals: List[Dict[str, Any]], today: date,
                 expiry_close: Optional[Callable[[str, date], Optional[float]]] = None,
-                starting: Optional[Dict[str, float]] = None, unmatched: Optional[List[int]] = None) -> List[Dict[str, Any]]:
-    """Closed round trips from fills, oldest first; expired options settle at intrinsic value.
+                starting: Optional[Dict[str, float]] = None, unmatched: Optional[List[int]] = None,
+                unresolved: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Closed FIFO trades with known fills only.
 
-    ``starting`` is held without a matching fill at an unknown cost: bought before the history, or
-    delivered by an assignment or exercise at some point in it. It is drawn on only when a fill has
-    no lot of the history left to close, so a later assignment never takes the place of an earlier,
-    known purchase; closing it makes no round trip (``unmatched`` counts those closes).
+    ``starting`` is an unexplained inventory difference, not a dated opening lot.
+    All matching for affected codes is excluded: fills cannot date an assignment
+    or establish which sale consumed shares held before the history window.
+    ``expiry_close`` is retained for callers but never establishes realized P&L.
     """
     from .holdings import parse_code
     lots: Dict[str, List[Dict[str, Any]]] = {}
-    reserve = dict(starting or {})
+    ambiguous = {code for code, qty in (starting or {}).items() if abs(qty) > 1e-9}
+    if unresolved is not None:
+        unresolved.extend({"code": code, "reason": "inventory_difference", "quantity_difference": starting[code]}
+                          for code in sorted(ambiguous))
     trips: List[Dict[str, Any]] = []
 
     def close(code: str, info: Dict[str, Any], lot: Dict[str, Any], qty: float, price: float, when: datetime,
@@ -107,8 +112,12 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
                       "closed": when.isoformat(), "hold_days": (when.date() - lot["time"].date()).days,
                       "pnl": round(pnl, 2), "return_pct": round(pnl / cost * 100, 2) if cost else None, "how": how})
 
-    for deal in deals:
+    for deal in sorted(deals, key=lambda row: (row["time"], row.get("deal_id", ""))):
         code = _bare(deal["code"])
+        if code in ambiguous:
+            if unmatched is not None and _signed(deal) * starting[code] < 0:
+                unmatched.append(1)
+            continue
         info = parse_code(code)
         signed = _signed(deal)
         when = _when(deal["time"])
@@ -121,25 +130,16 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
             signed += -matched if signed > 0 else matched
             if abs(lot["qty"]) < 1e-9:
                 book.pop(0)
-        held = reserve.get(code, 0.0)
-        if abs(signed) > 1e-9 and abs(held) > 1e-9 and (held > 0) != (signed > 0):
-            drawn = min(abs(signed), abs(held))  # closes what was held at an unknown cost: no round trip
-            reserve[code] = held - drawn if held > 0 else held + drawn
-            signed += -drawn if signed > 0 else drawn
-            if unmatched is not None:
-                unmatched.append(1)
         if abs(signed) > 1e-9:
             book.append({"qty": signed, "price": deal["price"], "time": when})
     for code, book in lots.items():
         info = parse_code(code)
         if info["kind"] != "option" or info["expiry"] >= today:
             continue
-        underlying = expiry_close(info["underlying"], info["expiry"]) if expiry_close else None
-        value = (max(0.0, underlying - info["strike"]) if info["right"] == "call" else max(0.0, info["strike"] - underlying)) \
-            if underlying is not None else 0.0
-        for lot in book:
-            close(code, info, lot, abs(lot["qty"]), value, datetime.combine(info["expiry"], datetime.min.time()),
-                  "expired" if underlying is not None else "expired, assumed worthless")
+        if unresolved is not None:
+            unresolved.extend({"code": code, "reason": "expiry_reconciliation", "qty": lot["qty"],
+                               "opened": lot["time"].isoformat(), "expiry": info["expiry"].isoformat()}
+                              for lot in book)
     return sorted(trips, key=lambda trip: trip["closed"])
 
 
@@ -181,11 +181,13 @@ def signal_match(trip: Dict[str, Any], signals: List[Dict[str, Any]]) -> str:
 def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: date,
           expiry_close: Optional[Callable[[str, date], Optional[float]]] = None,
           current: Optional[Dict[str, float]] = None, splits: Optional[Dict[str, List[tuple]]] = None) -> Dict[str, Any]:
-    """``current`` is today's quantity per code (from the broker holdings), to seed what was held earlier;
+    """``current`` is today's quantity per code, used to detect unexplained inventory;
     ``splits`` the (date, ratio) splits per stock ticker, to restate older fills in today's shares."""
     deals = split_adjusted(deals, splits or {})
     unmatched: List[int] = []
-    trips = round_trips(deals, today, expiry_close, starting_positions(deals, current or {}, today), unmatched)
+    unresolved: List[Dict[str, Any]] = []
+    differences = starting_positions(deals, current, today) if current is not None else {}
+    trips = round_trips(deals, today, expiry_close, differences, unmatched, unresolved)
     for trip in trips:
         trip["signal"] = signal_match(trip, signals)
     types = {}
@@ -196,6 +198,7 @@ def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: dat
     for trip in trips:
         by_underlying.setdefault(trip["ticker"], []).append(trip)
     return {
+        "calculation_version": CALCULATION_VERSION, "unresolved": unresolved,
         "total": _stats(trips),
         "first_fill": deals[0]["time"][:10] if deals else None,
         "by_type": [{"label": label, **_stats(rows)} for label, rows in sorted(types.items(), key=lambda item: -len(item[1]))],
@@ -208,6 +211,6 @@ def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: dat
                                 key=lambda item: -abs(item["total_pnl"]))[:10],
         "best": sorted(trips, key=lambda trip: -trip["pnl"])[:5],
         "worst": sorted(trips, key=lambda trip: trip["pnl"])[:5],
-        "open_lots_note": "Open positions are not counted until they are closed or expire.",
+        "open_lots_note": "Only matched fills count as realized results. Expired lots and unexplained inventory require reconciliation.",
         "unmatched_closes": len(unmatched),  # sales of positions bought before the history (unknown cost)
     }

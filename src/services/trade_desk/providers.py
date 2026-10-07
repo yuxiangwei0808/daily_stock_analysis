@@ -1581,7 +1581,7 @@ class MoomooProvider:
         with self._trade_account(account, security_firm) as (ctx, acc_id, real, ok, _match):
             end = today
             start_limit = today - timedelta(days=days)
-            while end > start_limit:
+            while end >= start_limit:
                 start = max(start_limit, end - timedelta(days=89))
                 ret, data = ctx.history_deal_list_query(start=start.isoformat(), end=end.isoformat(),
                                                         trd_env=real, acc_id=acc_id)
@@ -1590,15 +1590,19 @@ class MoomooProvider:
                 rows += data.to_dict("records") if hasattr(data, "to_dict") else []
                 end = start - timedelta(days=1)
             ret, data = ctx.deal_list_query(trd_env=real, acc_id=acc_id)
-            if ret == ok and hasattr(data, "to_dict"):
+            if ret != ok:
+                raise ProviderError("broker_deals_unavailable", f"deal_list_query: {_text(data)[:160]}")
+            if hasattr(data, "to_dict"):
                 rows += data.to_dict("records")
-        deals, seen = [], set()
-        for row in rows:
+        # Current-day rows are appended last and supersede overlapping historical rows,
+        # including cancellations. Filter statuses only after resolving duplicate IDs.
+        latest = {_text(row.get("deal_id")): row for row in rows}
+        deals = []
+        for row in latest.values():
             code, deal_id = _text(row.get("code")), _text(row.get("deal_id"))
             # CHANGED is a corrected fill (its row carries the corrected size and price); CANCELLED is dropped.
-            if not code.startswith("US.") or deal_id in seen or _text(row.get("status")) not in ("OK", "CHANGED", "N/A", ""):
+            if not code.startswith("US.") or not deal_id or _text(row.get("status")) not in ("OK", "CHANGED", "N/A", ""):
                 continue
-            seen.add(deal_id)
             deals.append({"deal_id": deal_id, "code": code, "name": _text(row.get("stock_name")),
                           "side": _text(row.get("trd_side")), "qty": _safe_float(row.get("qty")) or 0.0,
                           "price": _safe_float(row.get("price")) or 0.0, "time": _text(row.get("create_time"))})

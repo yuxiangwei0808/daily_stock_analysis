@@ -46,7 +46,7 @@ def test_settle_target_stop_gap_time_and_shorts():
     target = it.settle(_record(), _bars("2026-09-01", [(100, 102, 99, 101), (101, 107, 100, 106)]), market, date(2026, 9, 30))
     assert (target["status"], target["reason"], target["exit"]) == ("closed", "target", 106.0)
     assert target["return_pct"] == pytest.approx(5.9) and target["r"] == pytest.approx(5.9 / 3, abs=0.001)
-    assert target["spy_return_pct"] == pytest.approx(1.0)
+    assert target["spy_return_pct"] is None  # no stock close on the signal day: no aligned benchmark
     gap = it.settle(_record(), _bars("2026-09-01", [(95, 96, 94, 95)]), market, date(2026, 9, 30))
     assert (gap["reason"], gap["exit"]) == ("stop", 95)
     still = it.settle(_record(), _bars("2026-09-01", [(100, 101, 99, 100.5)] * 3), market, date(2026, 9, 30))
@@ -212,7 +212,8 @@ def test_verdicts_settle_on_fixed_horizons_and_split_by_nx(repo):
     later = _bars(signal_day, [(price, price * 1.01, price * 0.99, price * (1 + 0.01 * (i + 1))) for i in range(12)])
     spy = _bars(signal_day, [(100, 101, 99, 100 + 0.5 * (i + 1)) for i in range(12)])
     spy = [{"date": signal_day, "open": 100, "high": 100, "low": 100, "close": 100.0, "volume": 1}] + spy
-    daily = {"SPY": spy, "AAA": later, "BBB": later}
+    with_signal = [{"date": signal_day, "open": price, "high": price, "low": price, "close": price}] + later
+    daily = {"SPY": spy, "AAA": with_signal, "BBB": with_signal}
     part = it.settle_verdict({"signal_day": signal_day, "entry": price}, later[:6], spy, date.fromisoformat(later[5]["date"]))
     assert "status" not in part and part["return_5d_pct"] == pytest.approx(5.0) and "return_10d_pct" not in part
     it.settle_open(repo, date.fromisoformat(later[-1]["date"]), bars=lambda tickers: daily,
@@ -318,11 +319,11 @@ def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict()
             month = 7 + i % 3
             row = {"kind": kind, "status": "closed", "signal_day": f"2026-{month:02d}-{10 + i % 15:02d}", **extra}
             if kind in ("idea", "breakout"):
-                row.update(return_pct=excess + 1.0 + (i % 5) * 0.1, spy_return_pct=1.0 if extra.get("direction") == "long" else -1.0)
+                row.update(benchmark_return_pct=(excess + 1.0 + (i % 5) * 0.1) * (1 if extra.get("direction") == "long" else -1), spy_return_pct=1.0 if extra.get("direction") == "long" else -1.0)
             elif kind == "verdict":
-                row.update(return_10d_pct=excess + 0.5 + (i % 5) * 0.1, spy_10d_pct=0.5)
+                row.update(benchmark_return_10d_pct=excess + 0.5 + (i % 5) * 0.1, spy_10d_pct=0.5)
             else:
-                row.update(return_20d_pct=excess + 2.0 + (i % 5) * 0.1, spy_20d_pct=2.0)
+                row.update(benchmark_return_20d_pct=excess + 2.0 + (i % 5) * 0.1, spy_20d_pct=2.0)
             rows.append(row)
         return rows
     everything = (closed("idea", 36, 1.2, verdict="high", direction="long")
@@ -344,7 +345,7 @@ def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict()
 def test_a_few_months_need_a_larger_t_before_a_source_is_called_ahead():
     def month_rows(month, excess, n=12):
         return [{"kind": "idea", "verdict": "high", "direction": "long", "status": "closed",
-                 "signal_day": f"2026-{month:02d}-{10 + i:02d}", "return_pct": 1.0 + excess, "spy_return_pct": 1.0}
+                 "signal_day": f"2026-{month:02d}-{10 + i:02d}", "benchmark_return_pct": 1.0 + excess, "spy_return_pct": 1.0}
                 for i in range(n)]
     # Monthly means 1.0, 0.2 and 0.6: t = 2.6, past 2 but short of the 4.30 three months need.
     board = {item["key"]: item for item in it.scoreboard(month_rows(7, 1.0) + month_rows(8, 0.2) + month_rows(9, 0.6))}
@@ -403,3 +404,36 @@ def test_a_split_after_the_signal_does_not_skew_returns(repo):
     assert rows["influencer"]["mark_return_pct"] == pytest.approx(0.0) and rows["influencer"]["entry"] == pytest.approx(1000.0)
     assert rows["breakout"]["status"] == "open" and rows["breakout"]["return_pct"] == pytest.approx(-0.05)  # not +900%
     assert rows["breakout"]["entry"] == 100.0  # the printed price is kept
+
+
+@pytest.mark.parametrize("kind", ["verdict", "idea", "breakout"])
+def test_benchmark_excludes_the_intraday_move_before_the_signal_day_close(kind):
+    record = _record(kind=kind, status="closed")
+    stock = _bars("2026-08-31", [(100, 110, 100, 110), (110, 111, 109, 110)])
+    spy = _bars("2026-08-31", [(500, 550, 500, 550), (550, 551, 549, 550)])
+    update = (it.settle_verdict(record, stock, spy, date(2026, 9, 2), horizons=(1,)) if kind == "verdict"
+              else it.settle(record, stock, spy, date(2026, 9, 2)))
+    stock_key, spy_key = ("return_1d_pct", "spy_1d_pct") if kind == "verdict" else ("return_pct", "spy_return_pct")
+    assert update[stock_key] > 0  # keep the alert-entry simulation separate
+    assert it._excess({**record, **update}, stock_key, spy_key) == 0
+    assert it._excess({**record, **update, "direction": "short"}, stock_key, spy_key) == 0
+
+
+def test_benchmark_never_substitutes_a_different_spy_session():
+    stock = [{"date": "2026-09-01", "close": 100}, {"date": "2026-09-02", "close": 110}]
+    spy = [{"date": "2026-08-31", "close": 500}, {"date": "2026-09-02", "close": 550}]
+    assert it._aligned_returns(stock, spy, "2026-09-01", "2026-09-02") == (None, None)
+    assert it._excess({"kind": "idea", "direction": "long", "return_pct": 10, "spy_return_pct": 0},
+                      "return_pct", "spy_return_pct") is None  # old unequal windows are not used
+
+
+def test_closed_legacy_benchmarks_are_rebuilt_without_changing_trade_results(repo):
+    record = _record(return_pct=9.9, r=3.3, exit_day="2026-09-02", exit=110, reason="target", spy_return_pct=0)
+    repo.track_idea("legacy", record)
+    repo.update_tracked_idea("legacy", record, "closed")
+    bars = {"AAA": _bars("2026-08-31", [(100, 110, 100, 110), (110, 111, 109, 110)]),
+            "SPY": _bars("2026-08-31", [(500, 550, 500, 550), (550, 551, 549, 550)])}
+    assert it.settle_open(repo, date(2026, 9, 3), bars=lambda tickers: bars) == 0
+    [saved] = repo.tracked_ideas()
+    assert saved["return_pct"] == 9.9 and saved["r"] == 3.3 and saved["exit"] == 110
+    assert saved["benchmark_return_pct"] == 0 and it._excess(saved, "return_pct", "spy_return_pct") == 0

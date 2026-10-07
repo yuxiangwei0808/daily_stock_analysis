@@ -5,7 +5,7 @@ Read-only estimates for the Holdings page and the daily summary:
 - Each option leg's implied volatility is backed out of its mark (Black-Scholes, European;
   American early exercise is ignored), then delta (share-equivalents) and the value change over
   one day at today's price (theta) follow from it. A leg whose IV cannot be solved (no mark, a
-  mark below intrinsic) counts at its intrinsic delta with no theta.
+  mark below intrinsic) is unavailable; incomplete exposure is never reported as zero.
 - Beta to SPY and QQQ comes from a year of daily returns (at least 60 shared days; otherwise 1.0,
   flagged). Leveraged and inverse funds get their real, large or negative, betas this way.
 - A scenario moves each underlying by beta × the index move and re-prices the options at the
@@ -64,9 +64,7 @@ def leg_risk(leg: Dict[str, Any], spot: float, now: datetime) -> Dict[str, Any]:
     years = _years_to(leg["expiry"], now)
     iv = implied_vol(leg.get("mark") or 0, spot, float(leg["strike"]), years, leg["right"]) if spot else None
     if iv is None:
-        itm = spot > leg["strike"] if leg["right"] == "call" else spot < leg["strike"]
-        delta = (1.0 if leg["right"] == "call" else -1.0) if itm else 0.0
-        return {"iv": None, "delta": size * delta, "theta": None}
+        return {"iv": None, "delta": None, "theta": None}
     bump = spot * 0.001
     delta = (_bs(spot + bump, leg["strike"], years, iv, leg["right"]) - _bs(spot - bump, leg["strike"], years, iv, leg["right"])) / (2 * bump)
     day = 1 / 365.0
@@ -107,7 +105,7 @@ def _cached_betas(tickers: List[str], download: Callable[..., Dict[str, List[Dic
         bars = download(list(dict.fromkeys([*missing, "SPY", "QQQ"])), period="1y")
         measured = betas(bars, missing) if bars.get("SPY") and bars.get("QQQ") else {t: {} for t in missing}
         with _lock:
-            kept = {ticker: value for ticker, value in measured.items() if value.get("SPY") is not None}
+            kept = {ticker: value for ticker, value in measured.items() if all(value.get(name) is not None for name in ("SPY", "QQQ"))}
             _beta_cache.clear()
             _beta_cache[day] = (set(), {**known, **kept})
         known = {**known, **measured}
@@ -126,18 +124,23 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
         return rows.setdefault(ticker, {"ticker": ticker, "price": price, "shares_equiv": 0.0, "theta_per_day": 0.0,
                                         "stock_qty": 0.0, "legs": [], "theta_known": True})
     for stock in view.get("stocks") or []:
-        entry = row(stock["ticker"], stock.get("price"))
+        entry = row(stock["ticker"], stock.get("price") if stock.get("price_fresh", True) else None)
         entry["shares_equiv"] += float(stock["qty"])
         entry["stock_qty"] += float(stock["qty"])
     for position in view.get("options") or []:
         if position.get("expired"):
             continue
-        spot = position.get("underlying_price")
+        spot = position.get("underlying_price") if position.get("underlying_fresh", True) else None
         entry = row(position["underlying"], spot)
         entry["price"] = entry["price"] or spot
         for leg in position["legs"]:
-            measured = leg_risk({**leg, "expiry": position["expiry"]}, spot or 0.0, now) if spot else {"iv": None, "delta": 0.0, "theta": None}
-            entry["shares_equiv"] += measured["delta"]
+            measured = (leg_risk({**leg, "expiry": position["expiry"]}, spot, now)
+                        if spot and leg.get("mark_fresh", True) and not leg.get("wide")
+                        else {"iv": None, "delta": None, "theta": None})
+            if measured["delta"] is None:
+                entry["shares_equiv"] = None
+            elif entry["shares_equiv"] is not None:
+                entry["shares_equiv"] += measured["delta"]
             if measured["theta"] is None:
                 entry["theta_known"] = False
             else:
@@ -156,45 +159,55 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
         entry = rows[ticker]
         price = entry["price"] or 0.0
         betas_here = beta.get(ticker) or {}
+        complete = price > 0 and entry["shares_equiv"] is not None and entry["theta_known"]
         for name, move in SCENARIOS:
+            key = f"{name}{move:+g}"
+            if not complete or scenarios[key] is None:
+                scenarios[key] = None
+                continue
             b = betas_here.get(name)
-            moved = price * (1 + (1.0 if b is None else b) * move / 100)
+            moved = max(0.0, price * (1 + (1.0 if b is None else b) * move / 100))
             pnl = entry["stock_qty"] * (moved - price)
             for leg in entry["legs"]:
                 years = _years_to(leg["expiry"], now)
                 if leg["iv"] is not None and price > 0:
                     pnl += float(leg["qty"]) * 100 * (_bs(moved, leg["strike"], years, leg["iv"], leg["right"])
                                                       - _bs(price, leg["strike"], years, leg["iv"], leg["right"]))
-                else:  # intrinsic change only
-                    intrinsic = (lambda s: max(0.0, s - leg["strike"]) if leg["right"] == "call" else max(0.0, leg["strike"] - s))
-                    pnl += float(leg["qty"]) * 100 * (intrinsic(moved) - intrinsic(price))
             scenarios[f"{name}{move:+g}"] += pnl
-        out_rows.append({"ticker": ticker, "price": price or None, "shares_equiv": round(entry["shares_equiv"], 2),
-                         "delta_dollars": round(entry["shares_equiv"] * price, 2) if price else None,
-                         "theta_per_day": round(entry["theta_per_day"], 2) if entry["legs"] else 0.0,
+        out_rows.append({"ticker": ticker, "price": price or None, "shares_equiv": round(entry["shares_equiv"], 2) if entry["shares_equiv"] is not None else None,
+                         "delta_dollars": round(entry["shares_equiv"] * price, 2) if complete else None,
+                         "theta_per_day": round(entry["theta_per_day"], 2) if entry["theta_known"] else None,
                          "theta_partial": not entry["theta_known"],
                          "beta_spy": None if betas_here.get("SPY") is None else round(betas_here["SPY"], 2),
                          "beta_qqq": None if betas_here.get("QQQ") is None else round(betas_here["QQQ"], 2),
-                         "beta_assumed": betas_here.get("SPY") is None})
+                         "beta_assumed": betas_here.get("SPY") is None,
+                         "beta_qqq_assumed": betas_here.get("QQQ") is None, "complete": complete})
     out_rows.sort(key=lambda item: -abs(item["delta_dollars"] or 0))
-    theta = sum(item["theta_per_day"] for item in out_rows)
-    beta_dollars = sum((item["delta_dollars"] or 0) * (item["beta_spy"] if item["beta_spy"] is not None else 1.0)
-                       for item in out_rows)
+    complete = all(item["complete"] for item in out_rows)
+    theta = sum(item["theta_per_day"] for item in out_rows) if all(item["theta_per_day"] is not None for item in out_rows) else None
+    delta = sum(item["delta_dollars"] for item in out_rows) if complete else None
+    beta_dollars = (sum(item["delta_dollars"] * (item["beta_spy"] if item["beta_spy"] is not None else 1.0)
+                        for item in out_rows) if complete else None)
 
-    def pct(value: float) -> Optional[float]:
-        return round(value / total_assets * 100, 2) if total_assets else None
+    def rounded(value):
+        return round(value, 2) if value is not None else None
+
+    def pct(value):
+        return round(value / total_assets * 100, 2) if value is not None and total_assets else None
     return {
-        "as_of": now.isoformat(), "rows": out_rows,
-        "totals": {"delta_dollars": round(sum(item["delta_dollars"] or 0 for item in out_rows), 2),
-                   "spy_beta_dollars": round(beta_dollars, 2), "spy_beta_pct": pct(beta_dollars),
-                   "theta_per_day": round(theta, 2), "theta_pct": pct(theta)},
-        "scenarios": [{"key": f"{name}{move:+g}", "label": f"{name} {move:+g}%", "pnl": round(scenarios[f"{name}{move:+g}"], 2),
+        "as_of": now.isoformat(), "rows": out_rows, "complete": complete,
+        "unavailable_tickers": [item["ticker"] for item in out_rows if not item["complete"]],
+        "totals": {"delta_dollars": rounded(delta), "spy_beta_dollars": rounded(beta_dollars),
+                   "spy_beta_pct": pct(beta_dollars), "theta_per_day": rounded(theta), "theta_pct": pct(theta)},
+        "scenarios": [{"key": f"{name}{move:+g}", "label": f"{name} {move:+g}%", "pnl": rounded(scenarios[f"{name}{move:+g}"]),
                        "pct": pct(scenarios[f"{name}{move:+g}"])} for name, move in SCENARIOS],
     }
 
 
 def summary_line(risk: Dict[str, Any]) -> str:
     """Percent-only risk line for Discord: index moves and time decay as a share of the account."""
+    if risk.get("complete") is False:
+        return "Risk estimate unavailable: fresh usable quotes are missing for " + ", ".join(risk["unavailable_tickers"]) + "."
     parts = [f"{item['label']} ≈ {item['pct']:+.1f}%" for item in risk["scenarios"] if item["pct"] is not None
              and item["key"] in ("SPY-3", "QQQ-5")]
     theta = risk["totals"].get("theta_pct")

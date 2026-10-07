@@ -61,10 +61,19 @@ like a dropdown (it opens by itself when there is no history or when a link brin
 ticker); its quick row is the ticker (suggestions: what you hold, then what you asked
 recently), your question (Ctrl/Cmd+Enter sends) and **Ask**; under it, the ticker's latest active report
 verdict (action, score, stop/target, date and the reason; from the AI-signal store), with data mode, direction
-and horizon beside it and everything else under **More options**. Sending folds the
+and horizon beside it and everything else under **More options**. Strategies default to
+**Auto**: the desk compares the four that fit the chosen direction (the panel names them;
+`GET /catalog` returns them as `defaults`), plus covered calls or a protective put on shares
+you hold; **Pick my own** lists every strategy grouped by family. Sending folds the
 panel so the answer is in view. **Your questions** lists your requests grouped by
 stock (newest group first, a filter once there are more than three); the answer to the
-selected one sits beside it, with the follow-up box at its end. In **Broker
+selected one sits beside it: your position if attached, the desk's verdict and any second
+opinions, then the compared strategies side by side (cost, max gain and loss, breakeven,
+chance of profit, expiry; a star marks the desk's pick). The pick, or the first strategy,
+opens below with the desk's reasoning and levels, the key numbers, the legs, the payoff
+chart and its plan, the model's technical details folded away; caveats that apply to every
+strategy are listed once. The NX tunnel and social/YouTube background fold away under the
+answer, with the follow-up box at its end. In **Broker
 holdings**, **Ask** on a position opens the panel on that ticker with your position
 attached. The list shows current requests; **Archive** lists requests
 whose options have expired, that were marked stale, that found nothing (after
@@ -404,7 +413,7 @@ target) and the candidates that were not (`rejected` — by the review, by R:R <
 or by the message limit — with the rule's ATR levels), plus every breakout alert.
 Entry is the alert price; from the next session daily bars settle each record like
 the backtest (stop first when a day touches both, gaps fill at the open, otherwise
-the close after 15 sessions; 5 bps per side), with SPY over the same days as the
+the close after 15 sessions; 5 bps per side), with SPY over matching closing-price windows for the
 benchmark (shorts are compared with the market's move in their favour).
 
 After 16:30 New York time each trading day the worker settles open records; on the
@@ -592,6 +601,12 @@ unlocked and nothing is ordered. The snapshot is stored locally
   weight of the account and P&L on cost — never share counts, cost or dollar
   amounts. The dashboard shows full detail.
 
+Relative results versus SPY use the stock and SPY closes on the exact signal and horizon/exit
+dates, with no substitution of a nearby session. Alert-price trade simulations remain separate.
+Records without aligned prices are excluded from relative statistics. The next tracker run
+recalculates available comparisons for closed records in the last 90 days, without changing
+their original advice, simulated exits, or absolute returns.
+
 ## Portfolio risk
 
 The Holdings tab's **Portfolio risk** card (`GET /holdings/risk`, `trade_desk/risk.py`) adds up
@@ -599,8 +614,9 @@ what you hold, as read-only estimates:
 
 - Delta per underlying in share-equivalents and dollars, and the SPY-beta-weighted total (the
   SPY dollars that would move like the account). Each option's implied volatility is backed out
-  of its mark (Black-Scholes; early exercise ignored); a leg without a usable mark counts at its
-  intrinsic delta.
+  of its mark (Black-Scholes; early exercise ignored). A missing/stale underlying, missing or
+  crossed/wide option book, or unsolvable IV leaves that exposure unavailable. Portfolio delta
+  and scenario totals are unavailable if any included holding is unpriced; priced rows remain visible.
 - Time decay: the value change over one day at today's price, per underlying and in total.
 - Beta to SPY and QQQ from a year of daily returns (at least 60 shared days, else 1.0, marked
   with *); leveraged and inverse funds get their real betas this way.
@@ -610,26 +626,36 @@ what you hold, as read-only estimates:
 The daily portfolio summary on Discord adds one line in percentages only, e.g. "Risk
 (estimate): if SPY -3% ≈ -0.7% · QQQ -5% ≈ -1.0% · time decay ≈ -0.02%/day".
 
+Holdings price/P&L alerts require timestamps within 30 seconds (at most 2 seconds of future
+clock skew); naive OpenD US timestamps are interpreted in New York time. Cached broker prices
+remain available for display, but cannot consume alerts or populate live risk totals. Date-only
+expiry/earnings reminders continue. Extended-session snapshot fields lack an independently
+verified timestamp and do not drive regular-price triggers. Missing cost basis leaves option
+P&L unavailable. Wide option books pause custom P&L rules as well as default profit/loss
+alerts. Discord reports incomplete risk as unavailable, not zero.
+
 ## Your trades (journal from moomoo fills)
 
 The Journal tab's **Your trades** card reads a year of your filled trades from moomoo
 (`POST /holdings/journal/refresh`; read-only: `history_deal_list_query` in 90-day windows plus
 today's `deal_list_query`, trading is never unlocked) and builds round trips per contract, first in,
 first out (`trade_desk/journal.py`). Stock fills before a split are restated in today's shares
-(10× the shares at a tenth of the price for a 10:1 split). What is held without a matching fill
-(today's quantity less the net fills: shares bought over a year ago, or delivered by an assignment
-or exercise) has an unknown cost; a sale draws on it only when no lot from the history is left to
-close, so it makes no round trip ("unmatched closes", shown on the card) instead of looking like a
-new short, and a later assignment never takes the place of an earlier, known purchase. Corrected fills (status CHANGED) count; cancelled ones do
-not. Options still open after expiry settle at intrinsic value from the underlying's actual close
-on the expiry day (no dividend adjustment, later splits undone; worthless when that close is
-unknown, flagged); open positions are not counted; spreads count as their legs; amounts are gross of commissions. The card
+(10× the shares at a tenth of the price for a 10:1 split). A refresh also reads current broker
+holdings. Today's quantity less net fills detects unexplained inventory, but cannot distinguish
+shares held before the history from a later assignment. All round trips for an affected code
+are excluded and listed for reconciliation rather than assigning an invented FIFO cost basis.
+Current-day corrected fills supersede older versions of the same deal; cancellations remove
+those deals. A failed current-day fill query fails the refresh instead of silently truncating it.
+Options left open after expiry also require reconciliation: neither a missing expiry price nor
+a historical intrinsic value establishes a realized cash exit. Only quantities closed by matched
+fills enter realized statistics. Spreads count as their legs; amounts are gross of commissions. The card
 shows realized P&L, win rate and average hold, grouped by type (long/short stock, calls, puts), by
 holding time, and by whether the trade agreed with one of the system's tracked signals (idea,
 breakout, report call, social pick, YouTube call) on the ticker in the five days before it opened
 — only signals stored before the trade count (report calls from the day after their report),
 plus the best and worst trades. The result is kept (`GET /holdings/journal`); it is web-only and never
-sent to Discord.
+sent to Discord. Saved journals from the previous calculation version require **Read fills
+from moomoo** to rebuild; their inferred expiry results are not displayed.
 
 ## Your own trade plan and fresh news
 

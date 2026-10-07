@@ -21,6 +21,19 @@ describe('PortfolioRisk', () => {
     expect(card).toHaveTextContent('If SPY -3% −$347 (−0.7%)');
     expect(card).toHaveTextContent('SPY-beta-weighted $1,411 (+3% of the account)');
     const rows = within(card).getAllByRole('row').slice(1).map((row) => row.textContent);
-    expect(rows).toEqual(['NVDA30$5,4602.091.74—', 'ZZZ−200−$10,0001.00*—−$3.25*']);
+    expect(rows).toEqual(['NVDA30$5,4602.091.74—', 'ZZZ−200−$10,0001.00*1.00*−$3.25*']);
   });
+});
+
+
+it('shows unavailable exposure instead of zero totals when quotes are missing', async () => {
+  api.getHoldingsRisk.mockResolvedValue({ asOf: '2026-09-30T15:00:00Z', complete: false, unavailableTickers: ['AAA'],
+    rows: [{ ticker: 'AAA', sharesEquiv: null, deltaDollars: null, thetaPerDay: null, thetaPartial: true, betaAssumed: true }],
+    totals: { deltaDollars: null, spyBetaDollars: null, thetaPerDay: null },
+    scenarios: [{ key: 'SPY-3', label: 'SPY -3%', pnl: null, pct: null }] });
+  render(<PortfolioRisk />);
+  const card = await screen.findByTestId('portfolio-risk');
+  expect(card).toHaveTextContent('Portfolio totals unavailable: fresh usable quotes are missing for AAA');
+  expect(card).toHaveTextContent('If SPY -3% —');
+  expect(card).not.toHaveTextContent('$0');
 });

@@ -171,9 +171,10 @@ export const tradeDeskApi = {
     return toCamelCase<TradeDeskHealth>(response.data);
   },
 
-  async getCatalog(): Promise<{ items: TradeDeskCatalogItem[] }> {
+  /** Every strategy, and ``defaults``: what is compared automatically for each market view. */
+  async getCatalog(): Promise<{ items: TradeDeskCatalogItem[]; defaults?: Record<string, string[]> }> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/catalog`);
-    return toCamelCase<{ items: TradeDeskCatalogItem[] }>(response.data);
+    return toCamelCase<{ items: TradeDeskCatalogItem[]; defaults?: Record<string, string[]> }>(response.data);
   },
 
   async createAdvice(request: TradeAdviceRequest): Promise<TradeAdviceJob> {

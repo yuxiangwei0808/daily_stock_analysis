@@ -1137,3 +1137,51 @@ def test_books_read_late_in_a_slow_snapshot_are_not_future_quotes(monkeypatch):
         assert {o.contract_id for o in snapshot.options} == {"US.SPY260918C00500000", "US.SPY260918P00500000"}
     finally:
         provider.close()
+
+
+def _deals_provider(monkeypatch, historical, current, current_status=0):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    import pandas as pd
+    calls = []
+
+    def history(**kwargs):
+        calls.append(kwargs)
+        return 0, pd.DataFrame(historical)
+
+    @contextmanager
+    def account(*args):
+        yield (SimpleNamespace(history_deal_list_query=history,
+                               deal_list_query=lambda **kw: (current_status, pd.DataFrame(current))),
+               123, "REAL", 0, {})
+
+    provider = providers.MoomooProvider(sdk=object())
+    monkeypatch.setattr(provider, "_trade_account", account)
+    return provider, calls
+
+
+def test_broker_history_current_corrections_and_cancellations_supersede_old_rows(monkeypatch):
+    from datetime import date
+    base = {"code": "US.AAPL", "status": "OK", "trd_side": "BUY", "qty": 10, "price": 100,
+            "create_time": "2026-10-02 10:00:00"}
+    provider, _ = _deals_provider(monkeypatch, [{**base, "deal_id": "1"}, {**base, "deal_id": "2"}],
+                                 [{**base, "deal_id": "1", "status": "CHANGED", "qty": 5, "price": 105},
+                                  {**base, "deal_id": "2", "status": "CANCELLED"}])
+    [fill] = provider.broker_deals("123", days=1, today=date(2026, 10, 2))
+    assert fill["deal_id"] == "1" and fill["qty"] == 5 and fill["price"] == 105
+
+
+def test_broker_history_does_not_silently_omit_current_day_failures(monkeypatch):
+    provider, _ = _deals_provider(monkeypatch, [], [], current_status=-1)
+    with pytest.raises(providers.ProviderError) as error:
+        provider.broker_deals("123", days=1)
+    assert error.value.code == "broker_deals_unavailable"
+
+
+def test_broker_history_includes_the_start_day_on_a_ninety_day_boundary(monkeypatch):
+    from datetime import date, timedelta
+    provider, calls = _deals_provider(monkeypatch, [], [])
+    today = date(2026, 10, 2)
+    provider.broker_deals("123", days=90, today=today)
+    assert calls[-1]["start"] == (today - timedelta(days=90)).isoformat()
+    assert calls[-1]["end"] == calls[-1]["start"]

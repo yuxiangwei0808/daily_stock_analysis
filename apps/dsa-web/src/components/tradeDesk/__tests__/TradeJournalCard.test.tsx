@@ -18,16 +18,18 @@ describe('TradeJournalCard', () => {
       byUnderlying: [],
       best: [{ code: 'MU', ticker: 'MU', kind: 'call', position: 'long', opened: '2026-09-05T10:00:00', closed: '2026-09-25T10:00:00', pnl: 900, returnPct: 150, how: 'closed' }],
       worst: [],
-      openLotsNote: 'Open positions are not counted until they are closed or expire.', unmatchedCloses: 2,
+      openLotsNote: 'Only matched fills count as realized results.', unmatchedCloses: 2,
+      unresolved: [{ code: 'QQQ260918C500000', reason: 'expiry_reconciliation' }, { code: 'AAPL', reason: 'inventory_difference' }],
     } });
     render(<TradeJournalCard />);
     fireEvent.click(await screen.findByRole('button', { name: /Read fills from moomoo/ }));
     const card = await screen.findByTestId('trade-journal');
     expect(card).toHaveTextContent('12 round trips since 2025-10-02 · realized +$1,840 · win rate 50%');
     expect(card).toHaveTextContent('Long calls');
+    expect(card).toHaveTextContent('Excluded pending reconciliation: QQQ260918C500000, AAPL');
     expect(card).not.toHaveTextContent('Over 20 days');  // empty buckets are left out
     expect(card).toHaveTextContent('MU long calls · 09-05→09-25');
-    expect(screen.getByTestId('journal-unmatched')).toHaveTextContent('2 sales of positions held without a matching fill');
+    expect(screen.getByTestId('journal-unmatched')).toHaveTextContent('2 closing fills involving unexplained inventory');
   });
 
   it('says when the saved journal could not be loaded', async () => {

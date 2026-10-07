@@ -57,6 +57,7 @@ def repo():
 class FakeProvider:
     def __init__(self, raw=RAW, quotes=QUOTES):
         self.raw, self.quotes, self.synced = raw, dict(quotes), 0
+        self.now = MIDDAY
 
     def broker_positions(self, account, security_firm="FUTUINC"):
         self.synced += 1
@@ -64,7 +65,7 @@ class FakeProvider:
         return {**self.raw, "positions": [dict(row) for row in self.raw["positions"]]}
 
     def watchlist_quotes(self, codes):
-        return {code: self.quotes[code] for code in codes if code in self.quotes}
+        return {code: {"updated_at": self.now.isoformat(), **self.quotes[code]} for code in codes if code in self.quotes}
 
 
 @pytest.fixture
@@ -152,6 +153,13 @@ def _monitor(store, clock=None):
 
     monitor = h.HoldingsMonitor(store, emit, bars=lambda tickers: {}, earnings_date=lambda ticker, day: None,
                                 clock=clock or (lambda: 0.0))
+    check = monitor.check
+
+    def check_at(now, quotes=None):
+        store.service.provider("live").now = now
+        check(now, quotes=quotes)
+
+    monitor.check = check_at
     return monitor, events
 
 
@@ -638,6 +646,60 @@ def test_the_trade_journal_is_built_from_fills_and_kept(store):
     built = store.refresh_journal(date(2026, 9, 30), bars=lambda tickers, period="1y", adjusted=True: bars,
                                   split_ratios=lambda ticker: [])
     assert calls == [("1234", "FUTUINC", 365)] and built["fills"] == 4
-    assert built["total"]["trades"] == 2 and built["total"]["total_pnl"] == 250.0  # 200 premium kept + 50 on AMD
+    assert built["total"]["trades"] == 1 and built["total"]["total_pnl"] == 50.0  # only the matched AMD fills
+    assert any(row["reason"] == "expiry_reconciliation" for row in built["unresolved"])
     assert built["unmatched_closes"] == 1
     assert store.journal()["built_at"] == built["built_at"]
+
+
+@pytest.mark.parametrize("quotes", [{}, {"NVDA": {"price": 200}},
+    {"NVDA": {"price": 200, "updated_at": (MIDDAY - timedelta(minutes=5)).isoformat()}},
+    {"NVDA": {"price": 200, "updated_at": (MIDDAY + timedelta(minutes=5)).isoformat()}},
+    {"NVDA": {"price": 200, "bid": 201, "ask": 199, "updated_at": MIDDAY.isoformat()}}])
+def test_missing_or_invalid_quotes_do_not_consume_price_or_pnl_rules(store, quotes):
+    for kind, value in (("price_above", 190), ("pnl_above", 50)):
+        store.add_rule({"position_key": "NVDA", "kind": kind, "value": value})
+    monitor, events = _monitor(store)
+    monitor._levels["NVDA"] = {"low20": 210, "last_close": 220, "ma50": 210}
+    monitor.check(MIDDAY, quotes=quotes)
+    assert all(rule["status"] == "active" for rule in store.rules())
+    assert not any(e[1]["kind"] in ("rule", "trend") for e in events)
+    monitor.check(MIDDAY, quotes={"NVDA": {"price": 200, "updated_at": "2026-09-25 12:30:00"}})
+    assert all(rule["status"] == "triggered" for rule in store.rules())
+
+
+def test_stale_and_crossed_option_books_pause_pnl_but_keep_expiry_alerts(store):
+    raw = {"positions": [{"code": "US.AAA260925C100000", "qty": 1, "average_cost": 1, "price": 4}]}
+    store.repo.set_setting("broker_holdings", raw)
+    store.add_rule({"position_key": "AAA 2026-09-25", "kind": "pnl_above", "value": 50})
+    monitor, events = _monitor(store)
+    for quote in ({"bid": 3, "ask": 4, "updated_at": (MIDDAY - timedelta(minutes=1)).isoformat()},
+                  {"bid": 5, "ask": 4, "updated_at": MIDDAY.isoformat()}):
+        monitor.check(MIDDAY, quotes={"AAA260925C100000": {"price": 4, **quote}})
+    assert store.rules()[0]["status"] == "active"
+    assert any(e[1]["kind"] == "expiry" for e in events)
+    assert not any(e[1]["kind"] in ("rule", "profit", "loss") for e in events)
+
+
+def test_unknown_leg_cost_does_not_become_free_profit():
+    raw = {"positions": [{"code": "US.AAA261016C100000", "qty": 1, "average_cost": None, "price": 4},
+                         {"code": "US.AAA261016C110000", "qty": -1, "average_cost": 1, "price": 1}]}
+    [position] = h.build_view(raw, {}, TODAY)["options"]
+    assert position["cost"] is None and position["pnl_pct"] is None and position["pct_of_max"] is None
+
+
+def test_previous_journal_calculations_require_a_refresh(store):
+    store.repo.set_setting("trade_journal", {"total": {"total_pnl": 1000}})
+    assert store.journal() is None
+
+
+def test_custom_pnl_rules_wait_for_a_narrow_option_book(store):
+    store.repo.set_setting("broker_holdings", {"positions": [
+        {"code": "US.AAA261016C100000", "qty": 1, "average_cost": 1, "price": 4}]})
+    store.add_rule({"position_key": "AAA 2026-10-16", "kind": "pnl_above", "value": 50})
+    monitor, events = _monitor(store)
+    monitor.check(MIDDAY, quotes={"AAA261016C100000": {"price": 4, "bid": 1, "ask": 7, "updated_at": MIDDAY.isoformat()}})
+    assert store.rules()[0]["status"] == "active"
+    assert not any(event[1]["kind"] in ("rule", "profit", "loss") for event in events)
+    monitor.check(MIDDAY, quotes={"AAA261016C100000": {"price": 4, "bid": 3.9, "ask": 4.1, "updated_at": MIDDAY.isoformat()}})
+    assert store.rules()[0]["status"] == "triggered"

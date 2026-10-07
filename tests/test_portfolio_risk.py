@@ -51,16 +51,17 @@ def test_greeks_scenarios_and_the_discord_line(monkeypatch):
     assert line.startswith("Risk (estimate): if SPY -3% ≈ -0.") and "$" not in line  # percentages only
 
 
-def test_missing_history_assumes_beta_one_and_no_mark_uses_intrinsic_delta():
+def test_missing_mark_leaves_exposure_and_portfolio_totals_unavailable():
     r._beta_cache.clear()
     view = {"total_assets": 0, "stocks": [], "options": [{"underlying": "ZZZ", "expiry": EXPIRY, "expired": False,
                                                          "underlying_price": 50.0,
                                                          "legs": [{"right": "put", "strike": 60, "qty": 2, "mark": None}]}]}
     out = r.portfolio_risk(view, download=lambda tickers, period="1y": {}, now=NOW)
     [row] = out["rows"]
-    assert row["beta_assumed"] and row["shares_equiv"] == -200 and row["theta_partial"]
+    assert row["beta_assumed"] and row["shares_equiv"] is None and row["theta_partial"]
+    assert out["totals"]["delta_dollars"] is None and out["totals"]["theta_per_day"] is None
     moves = {item["key"]: item["pnl"] for item in out["scenarios"]}
-    assert moves["SPY-3"] == pytest.approx(2 * 100 * 50.0 * 0.03)  # intrinsic gain of the long puts
+    assert moves["SPY-3"] is None and not out["complete"]
     assert all(item["pct"] is None for item in out["scenarios"])  # no account total, no percentages
 
 
@@ -78,3 +79,24 @@ def test_a_failed_beta_download_is_retried_not_kept_for_the_day():
     assert not second["rows"][0]["beta_assumed"] and len(calls) == 2
     r.portfolio_risk(view, download=download, now=NOW)
     assert len(calls) == 2  # measured betas are kept for the day
+
+
+@pytest.mark.parametrize("spot,mark,spot_fresh,mark_fresh", [
+    (None, 5, True, True), (100, 5, False, True), (100, 5, True, False), (100, None, True, True)])
+def test_partial_risk_never_reports_missing_options_as_zero(spot, mark, spot_fresh, mark_fresh):
+    view = {"total_assets": 100000, "stocks": [{"ticker": "GOOD", "qty": 10, "price": 100}],
+            "options": [{"underlying": "AAA", "expiry": EXPIRY, "underlying_price": spot,
+                         "underlying_fresh": spot_fresh,
+                         "legs": [{"right": "call", "strike": 100, "qty": 10, "mark": mark, "mark_fresh": mark_fresh}]}]}
+    out = r.portfolio_risk(view, download=lambda *a, **kw: {}, now=NOW)
+    assert out["unavailable_tickers"] == ["AAA"]
+    assert out["totals"]["delta_dollars"] is None
+    assert all(item["pnl"] is None and item["pct"] is None for item in out["scenarios"])
+    assert "unavailable" in r.summary_line(out) and "+0.0%" not in r.summary_line(out)
+    assert next(row for row in out["rows"] if row["ticker"] == "GOOD")["delta_dollars"] == 1000
+
+
+def test_stale_stock_mark_is_not_used_for_portfolio_totals():
+    out = r.portfolio_risk({"stocks": [{"ticker": "AAA", "qty": 100, "price": 10, "price_fresh": False}]},
+                           download=lambda *a, **kw: {}, now=NOW)
+    assert out["totals"]["delta_dollars"] is None and out["scenarios"][0]["pnl"] is None

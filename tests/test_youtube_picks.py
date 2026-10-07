@@ -229,9 +229,9 @@ def test_recent_picks_and_channel_results(repo):
     assert yp.summary_line(picks, "en") == "Meet Kevin bullish (09-30)"
     assert yp.flag(repo, "MU").startswith("📺 YouTube: Meet Kevin bullish")
     assert "不得据此调整评分或买卖结论" in yp.prompt_section(picks)
-    rows = [{"channel": "A", "group": "bullish", "direction": "long", "return_5d_pct": 3.0, "spy_5d_pct": 1.0,
-             "return_20d_pct": 5.0, "spy_20d_pct": 1.0},
-            {"channel": "A", "group": "bearish", "direction": "short", "return_5d_pct": 3.0, "spy_5d_pct": 1.0}]
+    rows = [{"channel": "A", "group": "bullish", "direction": "long", "benchmark_return_5d_pct": 3.0, "spy_5d_pct": 1.0,
+             "benchmark_return_20d_pct": 5.0, "spy_20d_pct": 1.0},
+            {"channel": "A", "group": "bearish", "direction": "short", "benchmark_return_5d_pct": 3.0, "spy_5d_pct": 1.0}]
     stats = yp.channel_stats(rows)["A"]
     assert stats["picks"] == 2 and stats["vs_spy"][5] == pytest.approx(0.0) and stats["vs_spy"][20] == pytest.approx(4.0)
     assert stats["closed"] == 1

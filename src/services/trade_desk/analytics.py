@@ -1674,7 +1674,11 @@ def _strategy_warnings(strategy: str, legs: Sequence[OptionLeg], snapshot: Quote
     return list(dict.fromkeys(warnings))
 
 
-def _default_strategies(direction: str) -> list[str]:
+AUTO_DIRECTIONS = ("auto", "bullish", "bearish", "neutral", "volatile")
+
+
+def default_strategies(direction: str) -> list[str]:
+    """The strategies compared when the request names none (\"auto\"), by market view."""
     return {
         "bullish": ["bull_call_debit", "bull_put_credit", "long_call", "covered_call"],
         "bearish": ["bear_put_debit", "bear_call_credit", "long_put", "uncovered_call"],
@@ -1686,7 +1690,7 @@ def _default_strategies(direction: str) -> list[str]:
 
 
 def _normalise_requested_strategies(request: TradeAdviceRequest) -> list[str]:
-    requested = request.strategies or _default_strategies(request.direction)
+    requested = request.strategies or default_strategies(request.direction)
     result: list[str] = []
     for value in requested:
         key = str(value).strip().lower().replace("-", "_").replace(" ", "_")

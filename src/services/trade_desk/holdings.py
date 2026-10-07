@@ -148,8 +148,14 @@ def _label(legs: List[Dict[str, Any]]) -> str:
     return f"{strikes} {letter or 'options'} ({len(legs)} legs)".strip()
 
 
-def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: date) -> Dict[str, Any]:
+def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: date, *,
+               now: Optional[datetime] = None, require_fresh: bool = False) -> Dict[str, Any]:
     """Stocks and option positions (legs grouped per underlying and expiry) with marks and P&L."""
+    from .quality import watch_quote_fresh
+    now = now or utcnow()
+    if require_fresh:
+        quotes = {code: quote for code, quote in quotes.items()
+                  if watch_quote_fresh(quote, now, option=parse_code(code)["kind"] == "option")}
     total = raw.get("total_assets") or 0
     stocks, groups = [], {}
     for row in raw.get("positions") or []:
@@ -157,25 +163,28 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
         qty = float(row["qty"]) * (-1 if row.get("side") == "SHORT" and row["qty"] > 0 else 1)
         if info["kind"] == "stock":
             quote = quotes.get(info["ticker"]) or {}
-            price = quote.get("price") or row.get("price")
+            price = quote.get("price") or (None if require_fresh else row.get("price"))
             prev_close = quote.get("prev_close")
-            value = qty * price if price else row.get("market_value")
+            value = qty * price if price else (None if require_fresh else row.get("market_value"))
             cost = row.get("average_cost")
             stocks.append({"key": info["ticker"], "ticker": info["ticker"], "name": row.get("name", ""), "qty": qty,
                            "average_cost": cost, "price": price, "value": value,
+                           "price_fresh": watch_quote_fresh(quote, now),
                            "day_pct": (price / prev_close - 1) * 100 if price and prev_close else None,
                            "weight_pct": abs(value) / total * 100 if total and value else None,
                            "pnl_pct": ((price / cost - 1) * 100 * (1 if qty > 0 else -1)) if price and cost and cost > 0
-                           else row.get("pl_pct")})
+                           else (None if require_fresh else row.get("pl_pct"))})
             continue
-        mark = _mark(quotes.get(info["ticker"]), row.get("price"))
+        mark = _mark(quotes.get(info["ticker"]), None if require_fresh else row.get("price"))
         groups.setdefault((info["underlying"], info["expiry"]), []).append(
             {**info, "code": info["ticker"], "name": row.get("name", ""), "qty": qty,
-             "average_cost": row.get("average_cost"), "mark": mark, "wide": _wide(quotes.get(info["ticker"])),
+             "average_cost": row.get("average_cost"), "mark": mark,
+             "mark_fresh": watch_quote_fresh(quotes.get(info["ticker"]), now, option=True), "wide": _wide(quotes.get(info["ticker"])),
              "prev_close": (quotes.get(info["ticker"]) or {}).get("prev_close")})
     options = []
     for (underlying, expiry), legs in sorted(groups.items()):
-        cost = sum(leg["qty"] * (leg["average_cost"] or 0) * 100 for leg in legs)
+        cost = (sum(leg["qty"] * leg["average_cost"] * 100 for leg in legs)
+                if all(leg["average_cost"] is not None for leg in legs) else None)
         marks_known = all(leg["mark"] is not None for leg in legs)
         value = sum(leg["qty"] * leg["mark"] * 100 for leg in legs) if marks_known else None
         net_calls = sum(leg["qty"] for leg in legs if leg["right"] == "call")
@@ -189,7 +198,7 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
                     if all(leg.get("prev_close") for leg in legs) else None)
         day_pct = (value - previous) / abs(previous) * 100 if value is not None and previous else None
         pct_of_max = ((value - cost) / (max_value - cost) * 100
-                      if value is not None and max_value is not None and max_value > cost else None)
+                      if value is not None and cost is not None and max_value is not None and max_value > cost else None)
         spot = (quotes.get(underlying) or {}).get("price")
         # The contracts, not the size: adding to or trimming a position keeps its alerts.
         signature = hashlib.sha1("|".join(sorted(leg["code"] for leg in legs)).encode()).hexdigest()[:10]
@@ -198,6 +207,7 @@ def build_view(raw: Dict[str, Any], quotes: Dict[str, Dict[str, Any]], today: da
                         "expiry": expiry.isoformat(), "days_left": trading_days_until(expiry, today),
                         "label": _label(legs), "legs": legs, "cost": cost, "value": value, "max_value": max_value,
                         "pnl_pct": pnl_pct, "pct_of_max": pct_of_max, "underlying_price": spot, "day_pct": day_pct,
+                        "underlying_fresh": watch_quote_fresh(quotes.get(underlying), now),
                         "quotes_wide": any(leg["wide"] for leg in legs),
                         "weight_pct": abs(value) / total * 100 if total and value is not None else None})
     return {"account": raw.get("account"), "account_type": raw.get("account_type"),
@@ -400,10 +410,11 @@ class Holdings:
         return [code for code in self.codes() if parse_code(code)["kind"] == "stock"]
 
     def view(self, *, live: bool = True, now: Optional[datetime] = None,
-             quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+             quotes: Optional[Dict[str, Dict[str, Any]]] = None, require_fresh: bool = False) -> Dict[str, Any]:
+        now = now or utcnow()
         raw = self.raw()
         if quotes is not None:  # the worker's shared snapshot
-            return build_view(raw, quotes, _local(now or utcnow()).date())
+            return build_view(raw, quotes, _local(now).date(), now=now, require_fresh=require_fresh)
         quotes = {}
         if live and raw.get("positions"):
             codes = self.codes(raw)
@@ -424,7 +435,7 @@ class Holdings:
                             quotes.update(provider.watchlist_quotes(part) if part else {})
                         except Exception:
                             pass  # broker prices from the last sync remain
-        return build_view(raw, quotes, _local(now or utcnow()).date())
+        return build_view(raw, quotes, _local(now).date(), now=now, require_fresh=require_fresh)
 
     def note(self, ticker: str, view: Optional[Dict[str, Any]] = None) -> str:
         """One Discord-safe line about what you hold in this ticker, or ''."""
@@ -528,7 +539,9 @@ class Holdings:
 
     def journal(self) -> Optional[Dict[str, Any]]:
         """The last trade journal built from your fills, or None."""
-        return self.repo.setting("trade_journal", None)
+        from .journal import CALCULATION_VERSION
+        saved = self.repo.setting("trade_journal", None)
+        return saved if saved and saved.get("calculation_version") == CALCULATION_VERSION else None
 
     def refresh_journal(self, today: Optional[date] = None, *,
                         bars: Callable[..., Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
@@ -540,29 +553,8 @@ class Holdings:
         today = today or _local(utcnow()).date()
         deals = self.service.provider("live").broker_deals(
             account(), os.getenv("TRADE_DESK_BROKER_SECURITY_FIRM", "FUTUINC") or "FUTUINC", days=365, today=today)
-        expired = sorted({info["underlying"] for info in (parse_code(deal["code"]) for deal in deals)
-                          if info["kind"] == "option" and info["expiry"] < today})
-        history: Dict[str, List[Dict[str, Any]]] = {}
-        splits: Dict[str, List[tuple]] = {}
-        if expired:
-            try:
-                # The actual close on expiry day: no dividend adjustment, and splits undone below.
-                history = bars(expired, period="1y", adjusted=False)
-                splits = {ticker: split_ratios(ticker) for ticker in expired}
-            except Exception as exc:  # expired options then count as worthless, flagged
-                logger.info("Journal expiry closes unavailable: %s", type(exc).__name__)
-
-        def expiry_close(ticker: str, day: date) -> Optional[float]:
-            rows = history.get(ticker) or history.get(ticker.replace("-", ".")) or []
-            close = next((float(row["close"]) for row in rows if str(row["date"])[:10] == day.isoformat()), None)
-            if close is None:
-                return None
-            for when, ratio in splits.get(ticker) or []:
-                if when > day.isoformat():  # Yahoo scaled the older price down for a later split
-                    close *= ratio
-            return close
         current = {}
-        for row in self.raw().get("positions") or []:
+        for row in self.sync().get("positions") or []:
             code = parse_code(row["code"])["ticker"]
             current[code] = float(row["qty"]) * (-1 if row.get("side") == "SHORT" and row["qty"] > 0 else 1)
         stocks = sorted({info["ticker"] for info in (parse_code(deal["code"]) for deal in deals) if info["kind"] == "stock"})
@@ -573,7 +565,7 @@ class Holdings:
                                         if when > (today - timedelta(days=366)).isoformat()]
             except Exception as exc:
                 logger.info("Journal split history unavailable for %s: %s", ticker, type(exc).__name__)
-        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close, current,
+        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, current=current,
                                splits=stock_splits)
         result.update(built_at=utcnow().isoformat(), fills=len(deals))
         self.repo.set_setting("trade_journal", result)
@@ -691,7 +683,7 @@ def rule_fires(rule: Dict[str, Any], position: Optional[Dict[str, Any]], price: 
     if kind == "days_to_expiry":
         return f"{position['days_left']} trading days left" if position.get("days_left", 99) <= value else None
     pnl = position.get("pnl_pct")
-    if pnl is None:
+    if pnl is None or position.get("quotes_wide"):
         return None
     hit = pnl <= value if kind == "pnl_below" else pnl >= value
     return f"{pnl:+.1f}% on cost" if hit else None
@@ -830,17 +822,19 @@ class HoldingsMonitor:
     def check(self, now: datetime, quotes: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         local = _local(now)
         day = local.date()
-        view = self.holdings.view(now=now, quotes=quotes)
+        from .quality import watch_quote_fresh
+        view = self.holdings.view(now=now, quotes=quotes, require_fresh=True)
         prices = _prices(view)
         if quotes is not None:
             prices.update({ticker: quote.get("price") for ticker, quote in quotes.items()
-                           if ticker not in prices and quote.get("price")})
+                           if ticker not in prices and watch_quote_fresh(quote, now)})
         extra = sorted({rule["ticker"] for rule in self.holdings.rules()
                         if rule["status"] == "active" and rule["ticker"] not in prices})
         if extra and quotes is None:  # alerts on tickers you do not hold
             try:
                 quotes = self.holdings.service.provider("live").watchlist_quotes(extra)
-                prices.update({ticker: quote.get("price") for ticker, quote in quotes.items()})
+                prices.update({ticker: quote.get("price") for ticker, quote in quotes.items()
+                               if watch_quote_fresh(quote, now)})
             except Exception as exc:
                 logger.info("Alert quotes unavailable: %s", type(exc).__name__)
         self._rules(view, prices, now)

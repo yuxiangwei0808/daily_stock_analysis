@@ -6,7 +6,7 @@ import { decisionSignalsApi } from '../api/decisionSignals';
 import { tradeDeskApi } from '../api/tradeDesk';
 import { AppPage, Badge, Button, Card, ConfirmDialog, EmptyState, InlineAlert, Loading, PageHeader } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import type { HoldingsView, StrategyCandidate, TradeAdviceJob, TradeAdviceRequest, TradeDeskCatalogItem, TradeDeskDataMode, TradeDeskHealth, TradeJournalEvent, TradePreferences } from '../types/tradeDesk';
+import type { HoldingsView, TradeAdviceJob, TradeAdviceRequest, TradeDeskCatalogItem, TradeDeskDataMode, TradeDeskHealth, TradeJournalEvent, TradePreferences } from '../types/tradeDesk';
 import type { DecisionSignalItem } from '../types/decisionSignals';
 import { HoldingsPanel } from '../components/tradeDesk/HoldingsPanel';
 import { TrackRecordCard } from '../components/tradeDesk/TrackRecordCard';
@@ -15,6 +15,8 @@ import { AdviceForm } from '../components/tradeDesk/AdviceForm';
 import { NxUsed, ReferencesUsed, PositionUsed, ModeBadge, AdviceVerdict, ModelPanel } from '../components/tradeDesk/AnswerParts';
 import { DiscordPreferences } from '../components/tradeDesk/DiscordPreferences';
 import { CandidateCard } from '../components/tradeDesk/CandidateCard';
+import { AnswerCompare, SharedNotesBox } from '../components/tradeDesk/AnswerCompare';
+import { defaultCandidateId, sharedNotes } from '../components/tradeDesk/answerFormat';
 import { QuestionList } from '../components/tradeDesk/QuestionList';
 import { ARCHIVE_REASONS, DEFAULT_FORM, parseNumber, parseInteger, formatDate, heldSummary, liveIsBlocked, errorMessage, statusVariant, statusLabel, textValue } from '../components/tradeDesk/deskFormat';
 import type { AdviceFormState } from '../components/tradeDesk/deskFormat';
@@ -39,6 +41,8 @@ const TradeDeskPage: React.FC = () => {
   });
   const [health, setHealth] = useState<TradeDeskHealth | null>(null);
   const [catalog, setCatalog] = useState<TradeDeskCatalogItem[]>([]);
+  // What "Auto" compares for each market view (from the server, so it matches the calculation).
+  const [autoStrategies, setAutoStrategies] = useState<Record<string, string[]>>({});
   const [advice, setAdvice] = useState<TradeAdviceJob[]>([]);
   const [selectedAdviceId, setSelectedAdviceId] = useState<string | null>(linkedAdviceId);
   // Expired, stale, empty or week-old jobs: kept on the server, loaded only when the archive is opened.
@@ -104,7 +108,7 @@ const TradeDeskPage: React.FC = () => {
     const results = await Promise.allSettled([tradeDeskApi.getHealth(), tradeDeskApi.getCatalog(), tradeDeskApi.listAdvice(),
       withArchive ? tradeDeskApi.listAdvice('archive') : Promise.resolve(null)]);
     if (results[0].status === 'fulfilled') setHealth(results[0].value);
-    if (results[1].status === 'fulfilled') setCatalog(results[1].value.items || []);
+    if (results[1].status === 'fulfilled') { setCatalog(results[1].value.items || []); setAutoStrategies(results[1].value.defaults || {}); }
     if (results[2].status === 'fulfilled' && sequence === adviceListSequence.current) {
       const items = results[2].value.items || [];
       const archived = results[3].status === 'fulfilled' && results[3].value ? results[3].value.items || [] : null;
@@ -232,8 +236,8 @@ const TradeDeskPage: React.FC = () => {
       if (result.counts) setAdviceCounts(result.counts);
     } catch (archiveError) { setError(errorMessage(archiveError)); }
   };
-  const intradayCandidates = selectedAdvice?.candidates.filter((candidate) => candidate.horizon === 'intraday') || [];
-  const swingCandidates = selectedAdvice?.candidates.filter((candidate) => candidate.horizon === 'swing') || [];
+  // The candidate open below the comparison, per answer (default: the desk's first pick).
+  const [openCandidate, setOpenCandidate] = useState<Record<string, string>>({});
 
   const adviceRequest = (): TradeAdviceRequest => ({
     ticker: form.ticker.trim().toUpperCase(),
@@ -356,7 +360,6 @@ const TradeDeskPage: React.FC = () => {
       ? <QuestionList key={adviceScope} jobs={listedAdvice} selectedId={selectedAdviceId} heldTickers={heldTickers} busyId={busyAdviceId} onSelect={selectQuestion} onCancel={(job) => void cancelAdvice(job)} onDelete={(job) => setPendingDelete({ job })} />
       : <p className="px-1 py-6 text-center text-xs text-secondary-text">{adviceScope === 'archive' ? 'Nothing archived.' : 'No questions yet. Ask about a stock above.'}</p>}
   </Card>;
-  const candidateList = (items: StrategyCandidate[], job: TradeAdviceJob) => <div className="space-y-4">{items.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} advice={job} />)}</div>;
   const renderAnswer = () => {
     if (!selectedAdvice) return <Card variant="bordered" padding="md"><EmptyState icon={<FileQuestion className="h-8 w-8" />} title={t('tradeDesk.yourQuestions')} description={t('tradeDesk.pickQuestion')} /></Card>;
     const job = selectedAdvice;
@@ -375,10 +378,8 @@ const TradeDeskPage: React.FC = () => {
       {job.request.dataMode === 'replay' ? <InlineAlert className="mt-4" variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}
       {job.planError ? <InlineAlert className="mt-3" variant="warning" title={t('tradeDesk.planNotPriced')} message={job.planError} /> : null}
       <PositionUsed job={job} />
-      <NxUsed job={job} />
-      <ReferencesUsed job={job} />
-      {job.panel?.opinions?.length ? <ModelPanel panel={job.panel} /> : null}
       {job.explanation ? <AdviceVerdict job={job} /> : null}
+      {job.panel?.opinions?.length ? <ModelPanel panel={job.panel} /> : null}
       {job.status === 'stale' && (!job.repricedAt || job.invalidated?.length) ? <InlineAlert className="mt-3" variant="warning" message={t(job.invalidated?.length ? 'tradeDesk.invalidatedAdvice' : 'tradeDesk.staleAdvice')} action={<div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" isLoading={repricingId === job.id} onClick={() => void reprice(job)}>Refresh prices</Button><Button size="sm" variant="outline" isLoading={isSubmitting} onClick={() => void followUp(job, job.request.message || t('tradeDesk.runAgain'))}>{t('tradeDesk.runAgain')}</Button></div>} /> : null}
       {job.request.dataMode === 'live' && job.candidates.length && ['completed', 'stale'].includes(job.status) && (job.status !== 'stale' || (job.repricedAt && !job.invalidated?.length)) ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-secondary-text" data-testid="reprice-bar">
@@ -386,18 +387,31 @@ const TradeDeskPage: React.FC = () => {
           <Button size="xsm" variant="ghost" isLoading={repricingId === job.id} onClick={() => void reprice(job)}><RefreshCw className="h-3.5 w-3.5" />Refresh prices</Button>
         </div>
       ) : null}
-      <div className="mt-5 space-y-5">
-        {intradayCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.intraday')}</h3>{candidateList(intradayCandidates, job)}</section> : null}
-        {swingCandidates.length ? <section><h3 className="mb-3 text-sm font-semibold text-foreground">{t('tradeDesk.swing')}</h3>{candidateList(swingCandidates, job)}</section> : null}
-        {job.status === 'completed' && job.candidates.length === 0 && !job.explanation ? <EmptyState title={t('tradeDesk.noCandidates')} description={t('tradeDesk.description')} /> : null}
-      </div>
+      {job.candidates.length ? (() => {
+        const shared = sharedNotes(job.candidates);
+        const openId = job.candidates.some((item) => item.id === openCandidate[job.id]) ? openCandidate[job.id] : defaultCandidateId(job);
+        const open = job.candidates.find((item) => item.id === openId);
+        return <>
+          <AnswerCompare job={job} selectedId={openId} onSelect={(candidate) => setOpenCandidate((current) => ({ ...current, [job.id]: candidate.id }))} />
+          <SharedNotesBox notes={shared} />
+          {open ? <CandidateCard key={open.id} candidate={open} advice={job} shared={shared} /> : null}
+        </>;
+      })() : null}
+      {job.status === 'completed' && job.candidates.length === 0 && !job.explanation ? <div className="mt-5"><EmptyState title={t('tradeDesk.noCandidates')} description={t('tradeDesk.description')} /></div> : null}
+      {job.nxTunnel || job.references?.length ? (
+        <details className="mt-4 rounded-xl border border-border/40 bg-card/20 px-3 py-2" data-testid="answer-context">
+          <summary className="cursor-pointer select-none text-sm text-secondary-text">Background the desk used: {[job.nxTunnel ? 'your NX tunnel' : '', ...(job.references || []).map((item) => item.title)].filter(Boolean).join(' · ')}</summary>
+          <NxUsed job={job} />
+          <ReferencesUsed job={job} />
+        </details>
+      ) : null}
       {!running ? <div className="mt-5 border-t border-border/50 pt-4">
         <textarea aria-label={t('tradeDesk.followUp')} value={followUpForm} onChange={(event) => setFollowUpForm(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && followUpForm.trim() && !isSubmitting) void followUp(job); }} rows={2} placeholder={t('tradeDesk.followUpPlaceholder')} className="input-surface w-full rounded-xl border px-3 py-2 text-sm text-foreground" />
         <div className="mt-2 flex justify-end"><Button size="sm" variant="outline" disabled={!followUpForm.trim()} isLoading={isSubmitting} onClick={() => void followUp(job)}><Sparkles className="h-4 w-4" />{t('tradeDesk.followUp')}</Button></div>
       </div> : null}
     </div></Card>;
   };
-  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
+  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} autoStrategies={autoStrategies} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
   // Replay events must never read as live: resolve each event's data mode from
   // its payload or advice so the journal can label it.
   const journalMode = (event: TradeJournalEvent): string | undefined => {
