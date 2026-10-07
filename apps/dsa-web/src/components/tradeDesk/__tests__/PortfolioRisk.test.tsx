@@ -33,7 +33,7 @@ it('shows unavailable exposure instead of zero totals when quotes are missing', 
     scenarios: [{ key: 'SPY-3', label: 'SPY -3%', pnl: null, pct: null }] });
   render(<PortfolioRisk />);
   const card = await screen.findByTestId('portfolio-risk');
-  expect(card).toHaveTextContent('Portfolio totals unavailable: fresh usable quotes are missing for AAA');
+  expect(card).toHaveTextContent('Totals leave out AAA: no usable option price');
   expect(card).toHaveTextContent('If SPY -3% —');
   expect(card).not.toHaveTextContent('$0');
 });

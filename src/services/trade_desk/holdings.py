@@ -553,6 +553,27 @@ class Holdings:
         today = today or _local(utcnow()).date()
         deals = self.service.provider("live").broker_deals(
             account(), os.getenv("TRADE_DESK_BROKER_SECURITY_FIRM", "FUTUINC") or "FUTUINC", days=365, today=today)
+        expired = sorted({info["underlying"] for info in (parse_code(deal["code"]) for deal in deals)
+                          if info["kind"] == "option" and info["expiry"] < today})
+        history: Dict[str, List[Dict[str, Any]]] = {}
+        expired_splits: Dict[str, List[tuple]] = {}
+        if expired:
+            try:
+                # The actual close on expiry day: no dividend adjustment, and splits undone below.
+                history = bars(expired, period="1y", adjusted=False)
+                expired_splits = {ticker: split_ratios(ticker) for ticker in expired}
+            except Exception as exc:  # those expiries then wait for reconciliation
+                logger.info("Journal expiry closes unavailable: %s", type(exc).__name__)
+
+        def expiry_close(ticker: str, day: date) -> Optional[float]:
+            rows = history.get(ticker) or history.get(ticker.replace("-", ".")) or []
+            close = next((float(row["close"]) for row in rows if str(row["date"])[:10] == day.isoformat()), None)
+            if close is None:
+                return None
+            for when, ratio in expired_splits.get(ticker) or []:
+                if when > day.isoformat():  # Yahoo scaled the older price down for a later split
+                    close *= ratio
+            return close
         current = {}
         for row in self.sync().get("positions") or []:
             code = parse_code(row["code"])["ticker"]
@@ -565,7 +586,7 @@ class Holdings:
                                         if when > (today - timedelta(days=366)).isoformat()]
             except Exception as exc:
                 logger.info("Journal split history unavailable for %s: %s", ticker, type(exc).__name__)
-        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, current=current,
+        result = journal.build(deals, self.repo.tracked_ideas(limit=1_000_000), today, expiry_close, current,
                                splits=stock_splits)
         result.update(built_at=utcnow().isoformat(), fills=len(deals))
         self.repo.set_setting("trade_journal", result)

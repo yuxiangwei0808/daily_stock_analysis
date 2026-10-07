@@ -81,22 +81,25 @@ def test_a_failed_beta_download_is_retried_not_kept_for_the_day():
     assert len(calls) == 2  # measured betas are kept for the day
 
 
-@pytest.mark.parametrize("spot,mark,spot_fresh,mark_fresh", [
-    (None, 5, True, True), (100, 5, False, True), (100, 5, True, False), (100, None, True, True)])
-def test_partial_risk_never_reports_missing_options_as_zero(spot, mark, spot_fresh, mark_fresh):
+@pytest.mark.parametrize("spot,mark,wide", [(None, 5, False), (100, None, False), (100, 5, True)])
+def test_an_unpriceable_option_is_left_out_of_the_totals_and_named(spot, mark, wide):
+    r._beta_cache.clear()
     view = {"total_assets": 100000, "stocks": [{"ticker": "GOOD", "qty": 10, "price": 100}],
             "options": [{"underlying": "AAA", "expiry": EXPIRY, "underlying_price": spot,
-                         "underlying_fresh": spot_fresh,
-                         "legs": [{"right": "call", "strike": 100, "qty": 10, "mark": mark, "mark_fresh": mark_fresh}]}]}
+                         "legs": [{"right": "call", "strike": 100, "qty": 10, "mark": mark, "wide": wide}]}]}
     out = r.portfolio_risk(view, download=lambda *a, **kw: {}, now=NOW)
-    assert out["unavailable_tickers"] == ["AAA"]
-    assert out["totals"]["delta_dollars"] is None
-    assert all(item["pnl"] is None and item["pct"] is None for item in out["scenarios"])
-    assert "unavailable" in r.summary_line(out) and "+0.0%" not in r.summary_line(out)
-    assert next(row for row in out["rows"] if row["ticker"] == "GOOD")["delta_dollars"] == 1000
+    assert out["unavailable_tickers"] == ["AAA"] and not out["complete"]
+    assert out["totals"]["delta_dollars"] == 1000  # GOOD only: AAA is never counted as zero exposure
+    line = r.summary_line(out)
+    assert "excludes AAA" in line and "SPY -3%" in line
+    assert next(row for row in out["rows"] if row["ticker"] == "AAA")["delta_dollars"] is None
 
 
-def test_stale_stock_mark_is_not_used_for_portfolio_totals():
-    out = r.portfolio_risk({"stocks": [{"ticker": "AAA", "qty": 100, "price": 10, "price_fresh": False}]},
+def test_after_the_close_the_latest_prices_still_give_an_estimate():
+    # Quotes are not "fresh" outside the regular session, but the closing price is the right input here.
+    r._beta_cache.clear()
+    out = r.portfolio_risk({"total_assets": 100000,
+                            "stocks": [{"ticker": "AAA", "qty": 100, "price": 10, "price_fresh": False}]},
                            download=lambda *a, **kw: {}, now=NOW)
-    assert out["totals"]["delta_dollars"] is None and out["scenarios"][0]["pnl"] is None
+    assert out["complete"] and out["totals"]["delta_dollars"] == 1000
+    assert r.summary_line(out).startswith("Risk (estimate): if SPY -3%")

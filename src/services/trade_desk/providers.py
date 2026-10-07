@@ -27,7 +27,7 @@ from types import ModuleType
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
-from .models import OptionQuote, QuoteSnapshot
+from .models import OptionQuote, QuoteSnapshot, utcnow
 from .quality import CLOCK_SKEW_SECONDS, MAX_QUOTE_AGE_SECONDS, snapshot_fresh
 
 try:  # pragma: no cover - pandas is an optional implementation detail
@@ -1469,6 +1469,7 @@ class MoomooProvider:
         quotes: dict[str, dict[str, Any]] = {}
         for start in range(0, len(tickers), 400):  # OpenD allows 400 codes per snapshot
             rows = self._snapshot_rows([f"US.{ticker}" for ticker in tickers[start:start + 400]])
+            fetched_at = utcnow().isoformat()  # the snapshot is current as of now, whenever each code last traded
             for row in rows:
                 ticker = _text(row.get("code"))[3:]
                 price, prev_close = _safe_float(row.get("last_price")), _safe_float(row.get("prev_close_price"))
@@ -1478,7 +1479,8 @@ class MoomooProvider:
                          "volume": _safe_float(row.get("volume")),
                          "bid": _safe_float(row.get("bid_price")), "ask": _safe_float(row.get("ask_price")),
                          "change_pct": (price / prev_close - 1) * 100 if prev_close else None,
-                         "updated_at": _text(row.get("update_time")), "session": session, "extended": None}
+                         "updated_at": _text(row.get("update_time")), "fetched_at": fetched_at,
+                         "session": session, "extended": None}
                 if extended_fields:
                     ext_price, ext_change = (_safe_float(row.get(name)) for name in extended_fields)
                     if ext_price and ext_price > 0:

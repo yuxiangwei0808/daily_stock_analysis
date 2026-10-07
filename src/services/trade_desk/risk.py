@@ -5,7 +5,8 @@ Read-only estimates for the Holdings page and the daily summary:
 - Each option leg's implied volatility is backed out of its mark (Black-Scholes, European;
   American early exercise is ignored), then delta (share-equivalents) and the value change over
   one day at today's price (theta) follow from it. A leg whose IV cannot be solved (no mark, a
-  mark below intrinsic) is unavailable; incomplete exposure is never reported as zero.
+  mark below intrinsic, a quote too wide to trust) is unavailable: its underlying is left out of the
+  totals and named, never counted as zero.
 - Beta to SPY and QQQ comes from a year of daily returns (at least 60 shared days; otherwise 1.0,
   flagged). Leveraged and inverse funds get their real, large or negative, betas this way.
 - A scenario moves each underlying by beta × the index move and re-prices the options at the
@@ -124,19 +125,20 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
         return rows.setdefault(ticker, {"ticker": ticker, "price": price, "shares_equiv": 0.0, "theta_per_day": 0.0,
                                         "stock_qty": 0.0, "legs": [], "theta_known": True})
     for stock in view.get("stocks") or []:
-        entry = row(stock["ticker"], stock.get("price") if stock.get("price_fresh", True) else None)
+        # An estimate at the latest prices: after the close that is the closing price.
+        entry = row(stock["ticker"], stock.get("price"))
         entry["shares_equiv"] += float(stock["qty"])
         entry["stock_qty"] += float(stock["qty"])
     for position in view.get("options") or []:
         if position.get("expired"):
             continue
-        spot = position.get("underlying_price") if position.get("underlying_fresh", True) else None
+        spot = position.get("underlying_price")
         entry = row(position["underlying"], spot)
         entry["price"] = entry["price"] or spot
         for leg in position["legs"]:
+            # No mark, a mark below intrinsic (IV unsolvable) or a quote too wide to trust: unavailable.
             measured = (leg_risk({**leg, "expiry": position["expiry"]}, spot, now)
-                        if spot and leg.get("mark_fresh", True) and not leg.get("wide")
-                        else {"iv": None, "delta": None, "theta": None})
+                        if spot and not leg.get("wide") else {"iv": None, "delta": None, "theta": None})
             if measured["delta"] is None:
                 entry["shares_equiv"] = None
             elif entry["shares_equiv"] is not None:
@@ -161,9 +163,7 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
         betas_here = beta.get(ticker) or {}
         complete = price > 0 and entry["shares_equiv"] is not None and entry["theta_known"]
         for name, move in SCENARIOS:
-            key = f"{name}{move:+g}"
-            if not complete or scenarios[key] is None:
-                scenarios[key] = None
+            if not complete:  # left out of the totals, and named as left out
                 continue
             b = betas_here.get(name)
             moved = max(0.0, price * (1 + (1.0 if b is None else b) * move / 100))
@@ -183,11 +183,15 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
                          "beta_assumed": betas_here.get("SPY") is None,
                          "beta_qqq_assumed": betas_here.get("QQQ") is None, "complete": complete})
     out_rows.sort(key=lambda item: -abs(item["delta_dollars"] or 0))
-    complete = all(item["complete"] for item in out_rows)
-    theta = sum(item["theta_per_day"] for item in out_rows) if all(item["theta_per_day"] is not None for item in out_rows) else None
-    delta = sum(item["delta_dollars"] for item in out_rows) if complete else None
+    # Totals cover the underlyings that could be priced; the rest are listed, never counted as zero.
+    priced = [item for item in out_rows if item["complete"]]
+    complete = len(priced) == len(out_rows)
+    theta = sum(item["theta_per_day"] for item in priced) if priced else None
+    delta = sum(item["delta_dollars"] for item in priced) if priced else None
     beta_dollars = (sum(item["delta_dollars"] * (item["beta_spy"] if item["beta_spy"] is not None else 1.0)
-                        for item in out_rows) if complete else None)
+                        for item in priced) if priced else None)
+    if not priced:
+        scenarios = {key: None for key in scenarios}
 
     def rounded(value):
         return round(value, 2) if value is not None else None
@@ -206,11 +210,13 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
 
 def summary_line(risk: Dict[str, Any]) -> str:
     """Percent-only risk line for Discord: index moves and time decay as a share of the account."""
-    if risk.get("complete") is False:
-        return "Risk estimate unavailable: fresh usable quotes are missing for " + ", ".join(risk["unavailable_tickers"]) + "."
+    missing = risk.get("unavailable_tickers") or []
     parts = [f"{item['label']} ≈ {item['pct']:+.1f}%" for item in risk["scenarios"] if item["pct"] is not None
              and item["key"] in ("SPY-3", "QQQ-5")]
     theta = risk["totals"].get("theta_pct")
     if theta is not None and abs(theta) >= 0.005:
         parts.append(f"time decay ≈ {theta:+.2f}%/day")
-    return ("Risk (estimate): if " + " · ".join(parts)) if parts else ""
+    if not parts:
+        return f"Risk estimate unavailable: no usable price for {', '.join(missing)}." if missing else ""
+    excluded = f" (excludes {', '.join(missing)}: no usable option price)" if missing else ""
+    return "Risk (estimate): if " + " · ".join(parts) + excluded

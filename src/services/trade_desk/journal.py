@@ -3,7 +3,9 @@
 Fills come from ``history_deal_list_query`` (the last year, see ``providers.broker_deals``).
 Per contract they are matched first-in, first-out into round trips: a buy against an open
 short closes it, a sell against an open long closes it, the rest opens a new lot. An option
-still open after expiry requires reconciliation, not an inferred cash exit. Histories with
+still open after expiry that finished out of the money (the underlying's actual close on the expiry
+day) expired worthless: a certain result, so it counts. One that finished in the money, or whose
+close is unknown, may have been exercised or assigned and requires reconciliation instead. Histories with
 unexplained inventory are excluded until their cost basis can be established. Spreads appear as their legs.
 Amounts are gross of commissions (the fill history does not carry them).
 
@@ -18,7 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional
 
-CALCULATION_VERSION = 2
+CALCULATION_VERSION = 3  # bump whenever saved journals must be rebuilt
 SIGNAL_DAYS = 5
 _NEW_YORK = ZoneInfo("America/New_York")  # moomoo reports US fills in New York time
 HOLD_BUCKETS = (("same_day", "Same day", 0, 0), ("days_1_5", "1–5 days", 1, 5), ("days_6_20", "6–20 days", 6, 20),
@@ -87,7 +89,8 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
     ``starting`` is an unexplained inventory difference, not a dated opening lot.
     All matching for affected codes is excluded: fills cannot date an assignment
     or establish which sale consumed shares held before the history window.
-    ``expiry_close`` is retained for callers but never establishes realized P&L.
+    ``expiry_close`` (underlying, day) gives the actual close on an expiry day: an option still open
+    then that finished out of the money expired worthless; anything else needs reconciliation.
     """
     from .holdings import parse_code
     lots: Dict[str, List[Dict[str, Any]]] = {}
@@ -136,10 +139,16 @@ def round_trips(deals: List[Dict[str, Any]], today: date,
         info = parse_code(code)
         if info["kind"] != "option" or info["expiry"] >= today:
             continue
-        if unresolved is not None:
-            unresolved.extend({"code": code, "reason": "expiry_reconciliation", "qty": lot["qty"],
-                               "opened": lot["time"].isoformat(), "expiry": info["expiry"].isoformat()}
-                              for lot in book)
+        close_on_expiry = expiry_close(info["underlying"], info["expiry"]) if expiry_close else None
+        worthless = close_on_expiry is not None and (
+            close_on_expiry < info["strike"] if info["right"] == "call" else close_on_expiry > info["strike"])
+        for lot in book:
+            if worthless:  # out of the money at expiry: nothing was exercised or assigned
+                close(code, info, lot, abs(lot["qty"]), 0.0, datetime.combine(info["expiry"], datetime.min.time()),
+                      "expired worthless")
+            elif unresolved is not None:
+                unresolved.append({"code": code, "reason": "expiry_reconciliation", "qty": lot["qty"],
+                                   "opened": lot["time"].isoformat(), "expiry": info["expiry"].isoformat()})
     return sorted(trips, key=lambda trip: trip["closed"])
 
 
@@ -211,6 +220,6 @@ def build(deals: List[Dict[str, Any]], signals: List[Dict[str, Any]], today: dat
                                 key=lambda item: -abs(item["total_pnl"]))[:10],
         "best": sorted(trips, key=lambda trip: -trip["pnl"])[:5],
         "worst": sorted(trips, key=lambda trip: trip["pnl"])[:5],
-        "open_lots_note": "Only matched fills count as realized results. Expired lots and unexplained inventory require reconciliation.",
+        "open_lots_note": "Matched fills and options that expired out of the money count as realized results; in-the-money expiries and unexplained inventory require reconciliation.",
         "unmatched_closes": len(unmatched),  # sales of positions bought before the history (unknown cost)
     }

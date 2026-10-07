@@ -66,20 +66,25 @@ def candidate_quotes_fresh(snapshot, candidate, now=None):
     return bool(legs)
 
 
-def watch_quote_fresh(quote, now, *, option=False):
-    """Validate a watchlist snapshot; OpenD's naive US timestamps are New York time.
+# The worker refreshes its shared watchlist snapshot once a minute; alerts read it in between.
+WATCH_QUOTE_MAX_AGE_SECONDS = 150
 
-    Options need a usable bid/ask book, not merely an old last trade. Stock snapshots
-    outside regular hours expose a separate extended price without a verified timestamp;
-    those cannot drive regular-price triggers.
+
+def watch_quote_fresh(quote, now, *, option=False):
+    """Validate a watchlist snapshot for alerts; OpenD's naive US timestamps are New York time.
+
+    Age is measured from when the snapshot was fetched (``fetched_at``), not from the security's
+    last trade (``updated_at``): a thin option can show a current bid/ask beside a trade from an
+    hour ago. Options need a usable bid/ask book. Stock snapshots outside regular hours expose a
+    separate extended price without a verified timestamp; those cannot drive regular-price triggers.
     """
     if not quote or now.tzinfo is None:
         return False
     try:
-        stamp = datetime.fromisoformat(str(quote.get("updated_at", "")).replace("Z", "+00:00"))
+        stamp = datetime.fromisoformat(str(quote.get("fetched_at") or quote.get("updated_at", "")).replace("Z", "+00:00"))
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=ZoneInfo("America/New_York"))
-        if not quote_age_ok(stamp, now):
+        if not quote_age_ok(stamp, now, WATCH_QUOTE_MAX_AGE_SECONDS):
             return False
         if quote.get("session") in ("premarket", "postmarket", "overnight", "closed"):
             return False

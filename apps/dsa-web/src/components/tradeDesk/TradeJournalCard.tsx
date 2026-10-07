@@ -69,7 +69,7 @@ export function TradeJournalCard() {
             {journal.total.avgHoldDays != null ? ` · average hold ${journal.total.avgHoldDays} days` : ''}
           </p>
           {journal.unresolved?.length ? (
-            <p role="status" className="text-xs text-secondary-text">Excluded pending reconciliation: {Array.from(new Set(journal.unresolved.map((item) => item.code))).join(', ')}. Expiration and unexplained inventory do not establish realized P&amp;L.</p>
+            <p role="status" className="text-xs text-secondary-text">Excluded pending reconciliation: {Array.from(new Set(journal.unresolved.map((item) => item.code))).join(', ')}. Options that expired in the money (possibly exercised or assigned) and holdings without matching fills have no known result yet; options that expired out of the money count as expired worthless.</p>
           ) : null}
           {journal.unmatchedCloses ? (
             <p className="text-xs text-secondary-text" data-testid="journal-unmatched">

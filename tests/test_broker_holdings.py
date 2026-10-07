@@ -646,8 +646,9 @@ def test_the_trade_journal_is_built_from_fills_and_kept(store):
     built = store.refresh_journal(date(2026, 9, 30), bars=lambda tickers, period="1y", adjusted=True: bars,
                                   split_ratios=lambda ticker: [])
     assert calls == [("1234", "FUTUINC", 365)] and built["fills"] == 4
-    assert built["total"]["trades"] == 1 and built["total"]["total_pnl"] == 50.0  # only the matched AMD fills
-    assert any(row["reason"] == "expiry_reconciliation" for row in built["unresolved"])
+    # The AMD round trip, and the short SPY put that expired out of the money (SPY closed at 560).
+    assert built["total"]["trades"] == 2 and built["total"]["total_pnl"] == 250.0
+    assert not any(row["reason"] == "expiry_reconciliation" for row in built["unresolved"])
     assert built["unmatched_closes"] == 1
     assert store.journal()["built_at"] == built["built_at"]
 
@@ -673,12 +674,24 @@ def test_stale_and_crossed_option_books_pause_pnl_but_keep_expiry_alerts(store):
     store.repo.set_setting("broker_holdings", raw)
     store.add_rule({"position_key": "AAA 2026-09-25", "kind": "pnl_above", "value": 50})
     monitor, events = _monitor(store)
-    for quote in ({"bid": 3, "ask": 4, "updated_at": (MIDDAY - timedelta(minutes=1)).isoformat()},
-                  {"bid": 5, "ask": 4, "updated_at": MIDDAY.isoformat()}):
+    for quote in ({"bid": 3, "ask": 4, "fetched_at": (MIDDAY - timedelta(minutes=5)).isoformat()},
+                  {"bid": 5, "ask": 4, "fetched_at": MIDDAY.isoformat()}):
         monitor.check(MIDDAY, quotes={"AAA260925C100000": {"price": 4, **quote}})
     assert store.rules()[0]["status"] == "active"
     assert any(e[1]["kind"] == "expiry" for e in events)
     assert not any(e[1]["kind"] in ("rule", "profit", "loss") for e in events)
+
+
+def test_a_thin_option_with_an_old_last_trade_but_a_current_book_is_priced(store):
+    # Live 2026-10-07: a held SQQQ call quoted 14 minutes after its last trade, with a normal bid/ask.
+    store.repo.set_setting("broker_holdings", {"positions": [
+        {"code": "US.AAA260925C100000", "qty": 1, "average_cost": 1, "price": 4}]})
+    store.add_rule({"position_key": "AAA 2026-09-25", "kind": "pnl_above", "value": 50})
+    monitor, _events = _monitor(store)
+    monitor.check(MIDDAY, quotes={"AAA260925C100000": {"price": 4, "bid": 3.9, "ask": 4.1,
+                                                       "updated_at": (MIDDAY - timedelta(minutes=14)).isoformat(),
+                                                       "fetched_at": (MIDDAY - timedelta(seconds=50)).isoformat()}})
+    assert store.rules()[0]["status"] == "triggered"  # +300% on cost: the rule fires
 
 
 def test_unknown_leg_cost_does_not_become_free_profit():

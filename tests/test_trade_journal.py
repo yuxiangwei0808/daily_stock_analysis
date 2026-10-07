@@ -25,8 +25,19 @@ def test_fills_match_first_in_first_out_into_round_trips():
     assert tsla["position"] == "short" and tsla["pnl"] == 100.0 and tsla["hold_days"] == 0 and tsla["view"] == "short"
 
 
+def test_an_option_that_expired_out_of_the_money_is_a_realized_loss():
+    deals = [deal("QQQ260918C500000", "BUY", 1, 4.0, "2026-09-02 10:00:00"),
+             deal("SPY260918P550000", "SELL_SHORT", 2, 3.0, "2026-09-01 10:00:00")]
+    closes = {("QQQ", date(2026, 9, 18)): 490.0, ("SPY", date(2026, 9, 18)): 560.0}
+    result = j.build(deals, [], TODAY, lambda ticker, day: closes.get((ticker, day)), current={})
+    trips = {trip["ticker"]: trip for trip in result["best"] + result["worst"]}
+    assert trips["QQQ"]["pnl"] == -400.0 and trips["QQQ"]["how"] == "expired worthless"  # the premium is lost
+    assert trips["SPY"]["pnl"] == 600.0  # a short put that expired worthless keeps its premium
+    assert result["unresolved"] == []
+
+
 @pytest.mark.parametrize("underlying_close", [None, 510.0])
-def test_expired_options_require_reconciliation_even_with_a_closing_price(underlying_close):
+def test_in_the_money_or_unknown_expiries_require_reconciliation(underlying_close):
     deals = [deal("QQQ260918C500000", "BUY", 1, 4.0, "2026-09-02 10:00:00")]
     result = j.build(deals, [], TODAY, lambda ticker, day: underlying_close, current={})
     assert result["total"]["trades"] == 0 and result["total"]["total_pnl"] == 0

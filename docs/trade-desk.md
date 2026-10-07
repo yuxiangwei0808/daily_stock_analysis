@@ -614,9 +614,11 @@ what you hold, as read-only estimates:
 
 - Delta per underlying in share-equivalents and dollars, and the SPY-beta-weighted total (the
   SPY dollars that would move like the account). Each option's implied volatility is backed out
-  of its mark (Black-Scholes; early exercise ignored). A missing/stale underlying, missing or
-  crossed/wide option book, or unsolvable IV leaves that exposure unavailable. Portfolio delta
-  and scenario totals are unavailable if any included holding is unpriced; priced rows remain visible.
+  of its mark (Black-Scholes; early exercise ignored). Prices are the latest available (after the
+  close, the closing price). A missing underlying price, a missing or crossed/wide option book, or
+  an unsolvable IV leaves that underlying's exposure unavailable: the totals and scenarios cover
+  the priced underlyings and name the ones left out (the card and the daily summary say so); an
+  unpriced holding is never counted as zero.
 - Time decay: the value change over one day at today's price, per underlying and in total.
 - Beta to SPY and QQQ from a year of daily returns (at least 60 shared days, else 1.0, marked
   with *); leveraged and inverse funds get their real betas this way.
@@ -626,13 +628,17 @@ what you hold, as read-only estimates:
 The daily portfolio summary on Discord adds one line in percentages only, e.g. "Risk
 (estimate): if SPY -3% ≈ -0.7% · QQQ -5% ≈ -1.0% · time decay ≈ -0.02%/day".
 
-Holdings price/P&L alerts require timestamps within 30 seconds (at most 2 seconds of future
-clock skew); naive OpenD US timestamps are interpreted in New York time. Cached broker prices
-remain available for display, but cannot consume alerts or populate live risk totals. Date-only
-expiry/earnings reminders continue. Extended-session snapshot fields lack an independently
-verified timestamp and do not drive regular-price triggers. Missing cost basis leaves option
-P&L unavailable. Wide option books pause custom P&L rules as well as default profit/loss
-alerts. Discord reports incomplete risk as unavailable, not zero.
+Holdings price/P&L alerts require a quote fetched within 150 seconds (the shared snapshot
+refreshes every 60; at most 2 seconds of future clock skew), during regular hours, with a usable
+book for options. Freshness is when the quote was fetched, not OpenD's `update_time`: that is
+the last trade, which for a thin option or ETF can be many minutes old while its bid/ask is
+current. Naive OpenD US timestamps are interpreted in New York time. Cached broker prices remain
+available for display but cannot consume alerts. Date-only expiry/earnings reminders continue.
+Extended-session snapshot fields lack an independently verified timestamp and do not drive
+regular-price triggers. Missing cost basis leaves option P&L unavailable. Wide option books
+pause custom P&L rules as well as default profit/loss alerts. Discord names the underlyings a
+risk line leaves out, and says the estimate is unavailable when nothing could be priced; an
+unpriced holding is never reported as zero.
 
 ## Your trades (journal from moomoo fills)
 
@@ -646,9 +652,11 @@ shares held before the history from a later assignment. All round trips for an a
 are excluded and listed for reconciliation rather than assigning an invented FIFO cost basis.
 Current-day corrected fills supersede older versions of the same deal; cancellations remove
 those deals. A failed current-day fill query fails the refresh instead of silently truncating it.
-Options left open after expiry also require reconciliation: neither a missing expiry price nor
-a historical intrinsic value establishes a realized cash exit. Only quantities closed by matched
-fills enter realized statistics. Spreads count as their legs; amounts are gross of commissions. The card
+An option left open after expiry that finished out of the money (the underlying's actual,
+unadjusted close on the expiry day) expired worthless, a certain result that counts as a realized
+round trip (a lost premium, or a kept one for a short option). One that finished in the money may
+have been exercised or assigned, and one whose close is unknown has no known result: both are
+listed for reconciliation instead. Otherwise only quantities closed by matched fills count. Spreads count as their legs; amounts are gross of commissions. The card
 shows realized P&L, win rate and average hold, grouped by type (long/short stock, calls, puts), by
 holding time, and by whether the trade agreed with one of the system's tracked signals (idea,
 breakout, report call, social pick, YouTube call) on the ticker in the five days before it opened

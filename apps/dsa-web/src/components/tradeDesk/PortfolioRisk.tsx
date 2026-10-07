@@ -31,7 +31,7 @@ export function PortfolioRisk({ syncedAt }: { syncedAt?: string | null }) {
       {error ? <p className="mt-2 text-xs text-secondary-text">{error}</p> : null}
       {risk ? (
         <div data-testid="portfolio-risk">
-          {risk.complete === false ? <p role="status" className="mt-2 text-xs text-secondary-text">Portfolio totals unavailable: fresh usable quotes are missing for {risk.unavailableTickers?.join(', ')}. Priced holdings remain visible below.</p> : null}
+          {risk.complete === false ? <p role="status" className="mt-2 text-xs text-secondary-text">Totals leave out {risk.unavailableTickers?.join(', ')}: no usable option price (no quote, a mark below intrinsic, or a spread too wide to trust).</p> : null}
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
             {risk.scenarios.map((item) => (
               <span key={item.key} className="rounded-lg bg-elevated/60 px-2.5 py-1.5">
