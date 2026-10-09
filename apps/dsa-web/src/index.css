@@ -1423,7 +1423,7 @@ textarea {
 }
 
 .history-selection-badge {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   padding: 3px 8px;
 }
@@ -1431,7 +1431,7 @@ textarea {
 .history-batch-delete-button {
   height: 22px;
   padding: 0 6px;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -1751,7 +1751,7 @@ textarea {
 }
 
 .home-board-status-badge {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -1962,7 +1962,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.24em;

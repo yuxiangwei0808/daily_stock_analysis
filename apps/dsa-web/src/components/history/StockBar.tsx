@@ -99,7 +99,7 @@ export const StockBar: React.FC<StockBarProps> = ({
                   {t('common.selectedCount', { count: selectedCount })}
                 </Badge>
               ) : items.length > 0 ? (
-                <span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: items.length })}</span>
+                <span className="text-xs text-muted-text">{t('common.itemsCount', { count: items.length })}</span>
               ) : undefined
             }
           />
@@ -120,7 +120,7 @@ export const StockBar: React.FC<StockBarProps> = ({
                   aria-label={t('history.selectAllStockAria')}
                   className="h-3.5 w-3.5 cursor-pointer bg-transparent accent-primary focus:ring-primary/30 disabled:opacity-50"
                 />
-                <span className="text-[11px] text-muted-text select-none">{t('common.selectAllCurrent')}</span>
+                <span className="text-xs text-muted-text select-none">{t('common.selectAllCurrent')}</span>
               </label>
               <Button
                 variant="danger-subtle"

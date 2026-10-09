@@ -28,6 +28,7 @@ import type {
   TradePreferencesUpdate,
   TradeReconciliationRequest,
   UpdateTradePlanRequest,
+  PositionPlansResponse,
   PositionQuestion,
 } from '../types/tradeDesk';
 
@@ -332,6 +333,15 @@ export const tradeDeskApi = {
     const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/holdings/rules/parse`,
       withoutUndefined({ text, position_key: positionKey ?? undefined }), { timeout: 180_000 });
     return toCamelCase<HoldingRuleDraft>(response.data);
+  },
+
+  async getPositionPlans(): Promise<PositionPlansResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/plans`, { timeout: 30_000 });
+    return toCamelCase<PositionPlansResponse>(response.data);
+  },
+
+  async reviewPositions(): Promise<void> {
+    await apiClient.post(`${BASE_PATH}/holdings/plans/review`, undefined, { timeout: 60_000 });
   },
 
   async getPositionQuestions(): Promise<PositionQuestion[]> {

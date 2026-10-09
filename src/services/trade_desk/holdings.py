@@ -31,7 +31,7 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from . import earnings, position_plan, trend
+from . import earnings, position_plan, position_plans, trend
 from .models import identity, utcnow
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,17 @@ def _wide(quote: Optional[Dict[str, Any]]) -> bool:
 def _intrinsic(legs: List[Dict[str, Any]], spot: float) -> float:
     return sum(leg["qty"] * 100 * (max(0.0, spot - leg["strike"]) if leg["right"] == "call"
                                    else max(0.0, leg["strike"] - spot)) for leg in legs)
+
+
+def _still_running(review: Dict[str, Any]) -> bool:
+    """A review marked running that started recently (a restart leaves an old one behind)."""
+    from .position_questions import STALE_MINUTES
+    if review.get("status") != "running":
+        return False
+    try:
+        return utcnow() - datetime.fromisoformat(review.get("started_at", "")) < timedelta(minutes=STALE_MINUTES)
+    except ValueError:
+        return False
 
 
 def option_side(position: Dict[str, Any]) -> str:
@@ -547,6 +558,72 @@ class Holdings:
         from .risk import portfolio_risk
         return portfolio_risk(self.view(now=now), download=download, now=now)
 
+    # plans: one action, stop and target per position --------------------------------
+    def plans(self) -> Dict[str, Any]:
+        """{"plans": {position key: plan}, "review": the last daily review's state}."""
+        stored = self.repo.setting("position_plans", {}) or {}
+        return {"plans": stored.get("plans") or {}, "review": stored.get("review") or {}}
+
+    def mutate_plans(self, change: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """Read-modify-write under the lock: the monitor, the review and the API share the plans."""
+        with self._lock:
+            stored = self.plans()
+            updated = change(stored)
+            self.repo.set_setting("position_plans", updated)
+            return updated
+
+    def plans_view(self) -> Dict[str, Any]:
+        """The Home panel: every open position with its plan, live distances and status."""
+        from . import position_plans
+        view = self.view()
+        stored = self.plans()
+        review = dict(stored["review"])
+        if review.get("status") == "running" and not _still_running(review):
+            review.update(status="failed", error="Interrupted (the server restarted); review again")
+        return {"enabled": True, "synced_at": view.get("synced_at"),
+                "items": position_plans.panel_rows(view, stored["plans"], self.rules()),
+                "review": {key: review.get(key) for key in ("status", "at", "model", "summary", "error", "started_at")}}
+
+    def review_positions(self, day: Optional[date] = None, *, wait: bool = True, generate=None, bars=None,
+                         report=None, earnings_date=None) -> Dict[str, Any]:
+        """The daily review: the model sets an action, a stop and a target for every open position."""
+        from . import position_plans, position_questions
+        if _still_running(self.plans()["review"]):
+            raise ValueError("A review is already running")
+        day = day or _local(utcnow()).date()
+        view = self.view()
+        rows = position_questions.positions_in(view)
+        if not rows:
+            return {}
+        started = utcnow().isoformat()
+        self.mutate_plans(lambda stored: {**stored, "review": {**stored.get("review", {}), "status": "running",
+                                                                "started_at": started, "error": ""}})
+
+        def run():
+            from .opportunities import geared_fund
+            names = {row["ticker"]: row.get("name", "") for row in view["stocks"]}
+            try:
+                context = position_questions.build_context(
+                    rows, view, self.rules(), day, bars=bars or trend.download_bars,
+                    geared=lambda ticker: geared_fund(names.get(ticker, "")),
+                    report=report or position_plan.report_line, earnings_date=earnings_date or earnings.next_earnings)
+                answer = position_questions.answer(position_plans.REVIEW_QUESTION, context, generate_fn=generate)
+                when = utcnow().isoformat()
+                self.mutate_plans(lambda stored: {
+                    "plans": position_plans.apply_review(stored["plans"], answer, view, day, when),
+                    "review": {"status": "done", "day": day.isoformat(), "at": when, "started_at": started,
+                               "model": answer.get("model", ""), "summary": answer.get("summary", "")}})
+            except Exception as exc:  # the plans keep their levels; the panel says why there is no review
+                logger.warning("Position review failed: %s", type(exc).__name__)
+                error = str(exc)[:300] if isinstance(exc, ValueError) else f"The model is unavailable ({type(exc).__name__})"
+                self.mutate_plans(lambda stored: {**stored, "review": {**stored.get("review", {}), "status": "failed",
+                                                                        "day": day.isoformat(), "error": error}})
+        if wait:
+            run()
+        else:
+            threading.Thread(target=run, name="position-review", daemon=True).start()
+        return self.plans()["review"]
+
     # questions about your positions ---------------------------------------------
     def questions(self) -> List[Dict[str, Any]]:
         """Your questions about your positions and their answers, newest first."""
@@ -805,6 +882,8 @@ class HoldingsMonitor:
         self._levels_for: Optional[date] = None
         self._levels_retry_at = 0.0
         self._levels: Dict[str, Dict[str, float]] = {}
+        self._plans_day: Optional[date] = None  # the after-close plan update ran for this day
+        self._review_day: Optional[date] = None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="holdings")
         self._tasks: Dict[str, Any] = {}
         # Keys already stored (sent now or before a restart): a held condition re-checks every
@@ -844,7 +923,8 @@ class HoldingsMonitor:
         levels = {}
         self._warm_earnings(day)
         from .levels import breakout_levels
-        for ticker, rows in self._bars(tickers).items():
+        rows_by_ticker = self._bars(tickers)
+        for ticker, rows in rows_by_ticker.items():
             found = breakout_levels(rows, day)
             if found:
                 history = [row for row in rows if row["date"] < day.isoformat()]
@@ -853,6 +933,34 @@ class HoldingsMonitor:
         if stock_tickers and not levels:
             raise RuntimeError("no daily bars for held stocks")  # retried in a few minutes
         self._levels, self._levels_day = levels, day
+        self._refresh_plans(day, rows_by_ticker, levels, include_today=False)
+
+    def _refresh_plans(self, day: date, bars: Dict[str, List[Dict[str, Any]]], levels: Dict[str, Dict[str, Any]], *,
+                       include_today: bool) -> None:
+        """Plans for new positions, closed ones dropped, and each stop trailed by the closes since it was set."""
+        from . import position_plans
+        view = self.holdings.view(live=False)
+
+        def change(stored):
+            plans = position_plans.ensure(stored["plans"], view, levels, day, self._geared)
+            for plan in plans.values():
+                rows = bars.get(plan["ticker"]) or []
+                position_plans.trail(plan, position_plans.closes_since(rows, plan.get("set_on", day.isoformat()), day,
+                                                                       include_through=include_today))
+            return {**stored, "plans": plans}
+        self.holdings.mutate_plans(change)
+
+    def _after_close_plans(self, day: date) -> None:
+        from .levels import breakout_levels
+        tickers = self.holdings.tickers()
+        bars = self._bars(tickers) if tickers else {}
+        levels = {}
+        for ticker, rows in bars.items():
+            found = breakout_levels(rows, day)
+            if found:
+                history = [row for row in rows if row["date"] < day.isoformat()]
+                levels[ticker] = {**found, "last_close": history[-1]["close"]}
+        self._refresh_plans(day, bars, levels, include_today=True)
 
     def _warm_earnings(self, day: date) -> None:
         tickers = [t for t in self.holdings.tickers() if not self._geared(t)]
@@ -881,6 +989,16 @@ class HoldingsMonitor:
               and self._tasks["sync"].done()):
             self._summary_day = day
             self._run("summary", self._daily_summary, now)
+            return
+        elif self._summary_day == day and self._plans_day != day:
+            self._plans_day = day  # stops trail today's close
+            self._run("plans", self._after_close_plans, day)
+            return
+        elif (local.time() >= position_plans.REVIEW_AT and self._plans_day == day and self._review_day != day
+              and self._tasks.get("plans") is not None and self._tasks["plans"].done()):
+            self._review_day = day
+            if self.holdings.plans()["review"].get("day") != day.isoformat():  # once a day, across restarts
+                self._run("review", self.holdings.review_positions, day)
             return
         elif not self.holdings.raw():
             if clock >= self._next_sync:
@@ -935,8 +1053,67 @@ class HoldingsMonitor:
         return [rule for rule in self.holdings.rules()
                 if (key and rule.get("position_key") == key) or (not rule.get("position_key") and rule.get("ticker") == ticker)]
 
-    def _ref(self, ticker: str, side: str, price: Optional[float]) -> Optional[Dict[str, Any]]:
-        return position_plan.reference_levels(side, price, self._levels.get(ticker), geared=self._geared(ticker))
+    def _ref(self, ticker: str, side: str, price: Optional[float], key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Reference levels for the alert text: the position's plan when it has one, else the ATR rule."""
+        ref = position_plan.reference_levels(side, price, self._levels.get(ticker), geared=self._geared(ticker))
+        plan = self._plan_for(key)
+        if plan is None or side not in {"long", "short"}:
+            return ref
+        base = ref or {"side": side, "price": price, "low20": None, "high20": None, "ma50": None}
+        return {**base, "stop": plan.get("stop"), "target": plan.get("target"),
+                "stop_note": position_plans.note(plan, "stop"), "target_note": position_plans.note(plan, "target")}
+
+    def _plan_for(self, key: Optional[str]) -> Optional[Dict[str, Any]]:
+        plan = self.holdings.plans()["plans"].get(key) if key else None
+        if not plan:
+            return None
+        row = {"key": key, "type": plan.get("type", "stock"), "ticker": plan["ticker"], "underlying": plan["ticker"]}
+        return position_plans.resolve(plan, row, self.holdings.rules())
+
+    def _plan_alerts(self, view: Dict[str, Any], prices: Dict[str, float], now: datetime) -> None:
+        """A plan's stop or target crossed: one card per level. Levels from your own alerts fire as your alerts."""
+        stored = self.holdings.plans()["plans"]
+        if not stored:
+            return
+        rules, day, marks = self.holdings.rules(), _local(now).date(), {}
+        for row in position_plans.open_rows(view):
+            plan = stored.get(row["key"])
+            if not plan:
+                continue
+            merged = position_plans.resolve(plan, row, rules)
+            ticker, key = position_plans.ticker_of(row), row["key"]
+            price = prices.get(ticker)
+            state = position_plans.status(merged, price)
+            text = describe_option(row) if row["type"] == "option" else describe_stock(row)
+            for kind, hit, level in (("stop", state == "stop_hit", merged.get("stop")),
+                                     ("target", state == "target_hit", merged.get("target"))):
+                if not hit or merged.get(f"{kind}_source") not in {"review", "rule"} or plan.get(f"{kind}_hit_at"):
+                    continue
+                title = f"{ticker} at {price:.2f}: crossed the plan's {kind} {level:.2f}"
+                action = ("The plan's stop is hit: exit or cut as planned, or set a new stop if your view changed."
+                          if kind == "stop" else "The plan's target is reached: take profit, or trail the stop to "
+                          "protect the gain.")
+                basis = merged.get(f"{kind}_basis")
+                ref = self._ref(ticker, merged["exposure"], price, key)  # only when it fires: two reads
+                levels = [position_plan.levels_line(ref)] if ref else []
+                self._alert(f"plan_{kind}", ticker, f"{title}: {text}", f"plan-{kind}:{key}:{level:.2f}",
+                            self._card(title, [text, f"Set by the {position_plans.note(merged, kind)}: {basis}" if basis else ""],
+                                       [action, *levels], ticker=ticker, key=key, day=day))
+                marks.setdefault(key, {})[f"{kind}_hit_at"] = now.isoformat()
+            pnl = row.get("pnl_pct") if row["type"] == "option" and not row.get("quotes_wide") else None
+            for kind, level in (("stop", merged.get("pnl_stop_pct")), ("target", merged.get("pnl_target_pct"))):
+                if (pnl is None or level is None or merged.get(f"pnl_{kind}_source") == "you"
+                        or plan.get(f"pnl_{kind}_hit_at") or (pnl > level if kind == "stop" else pnl < level)):
+                    continue
+                title = f"{'Down' if kind == 'stop' else 'Up'} to the plan's {'cut' if kind == 'stop' else 'take-profit'} level ({level:+.0f}% on cost)"
+                self._alert(f"plan_{kind}", ticker, f"{title}: {text}", f"plan-pnl-{kind}:{key}:{level:g}",
+                            self._card(title, [text], ["Close it as planned, or decide again with fresh eyes."
+                                                       if kind == "stop" else "Take profit, or at least half."],
+                                       ticker=ticker, key=key, day=day))
+                marks.setdefault(key, {})[f"pnl_{kind}_hit_at"] = now.isoformat()
+        if marks:
+            self.holdings.mutate_plans(lambda current: {**current, "plans": {
+                key: {**plan, **marks.get(key, {})} for key, plan in current["plans"].items()}})
 
     def _card(self, title: str, detail: List[str], plan: List[str], *, ticker: str, key: Optional[str],
               day: date) -> Dict[str, Any]:
@@ -953,13 +1130,13 @@ class HoldingsMonitor:
         side = self.holdings.side(ticker, view)
         price = payload.get("price") or (stock or {}).get("price") or next(
             (row.get("underlying_price") for row in options if row.get("underlying_price")), None)
-        ref = self._ref(ticker, side, price)
+        key = (stock or {}).get("key") if stock else (options[0]["key"] if len(options) == 1 else None)
+        ref = self._ref(ticker, side, price, key)
         change = payload.get("change_pct") if payload.get("kind") == "day_move" else None
         plan = position_plan.stock_actions("move", ref, geared=self._geared(ticker), change_pct=change) \
             if change is not None else ([position_plan.levels_line(ref)] if ref else [])
         lines = str(payload.get("message", "")).split("\n")
         detail = [*lines[1:], *([describe_stock(stock)] if stock else []), *(describe_option(row) for row in options)]
-        key = (stock or {}).get("key") if stock else (options[0]["key"] if len(options) == 1 else None)
         item = self._card(lines[0], detail, plan, ticker=ticker, key=key, day=_local(now or utcnow()).date())
         # The bar's colour: red for a move against what you hold, green for one with it, blue for news.
         against = change is not None and side in {"long", "short"} and (change < 0) == (side == "long")
@@ -985,6 +1162,7 @@ class HoldingsMonitor:
             except Exception as exc:
                 logger.info("Alert quotes unavailable: %s", type(exc).__name__)
         self._rules(view, prices, now)
+        self._plan_alerts(view, prices, now)
         from src.core.trading_calendar import get_market_session_bounds
         try:
             closing = get_market_session_bounds("us", now)[1]
@@ -1024,7 +1202,7 @@ class HoldingsMonitor:
             key = f"rule:{rule['id']}:{rule.get('arm') or 0}:{day if rule['repeat'] == 'daily' else 'once'}"
             side = (option_side(position) if option else "long" if position["qty"] > 0 else "short") if position else ""
             plan = [position_plan.rule_action(rule, side)] if position else []
-            ref = self._ref(rule["ticker"], side, prices.get(rule["ticker"])) if position else None
+            ref = self._ref(rule["ticker"], side, prices.get(rule["ticker"]), rule.get("position_key")) if position else None
             if ref:
                 plan.append(position_plan.levels_line(ref))
             self._alert("rule", rule["ticker"], message, key,
@@ -1041,7 +1219,7 @@ class HoldingsMonitor:
         text = describe_option(position)
         brief = describe_option(position, with_days=False)
         where = moneyness(position)
-        ref = self._ref(ticker, option_side(position), position.get("underlying_price"))
+        ref = self._ref(ticker, option_side(position), position.get("underlying_price"), position["key"])
 
         def alert(kind, title, detail, plan_kind, dedup, level=None):
             message = f"{title}: {detail[0]}" + "".join(f"\n{line}" for line in detail[1:] if line)
@@ -1088,7 +1266,7 @@ class HoldingsMonitor:
         levels = self._levels.get(ticker)
         text = describe_stock(position)
         side = "long" if position["qty"] > 0 else "short"
-        ref = self._ref(ticker, side, price)
+        ref = self._ref(ticker, side, price, position["key"])
         geared = self._geared(ticker)
 
         def alert(kind, title, plan_kind, dedup, level=None, message=None):

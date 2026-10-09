@@ -522,7 +522,8 @@ class TradeDeskWorker:
                 icon, label = {"rule": ("🛎️", "Your alert"), "expiry": ("⏳", "Expiry"),
                                "assignment": ("⚠️", "Assignment risk"), "profit": ("💰", "Profit"),
                                "loss": ("🩸", "Loss"), "earnings": ("📅", "Earnings"),
-                               "trend": ("📉", "Trend break")}.get(payload.get("kind"), ("🛎️", "Holding"))
+                               "trend": ("📉", "Trend break"), "plan_stop": ("🛑", "Stop hit"),
+                               "plan_target": ("🎯", "Target reached")}.get(payload.get("kind"), ("🛎️", "Holding"))
                 content, embeds = routes.position_message(ticker, label, icon, payload, holdings_link)
             elif event["event_type"] == "breakout":
                 up = payload.get("kind") == "breakout"

@@ -16,12 +16,12 @@ LEVELS = {"low20": 205.0, "high20": 230.0, "ma50": 199.0, "atr": 5.0, "last_clos
 
 def test_reference_levels_follow_the_side_and_skip_targets_for_geared_funds():
     long = plan.reference_levels("long", 200.0, LEVELS)
-    assert (long["stop"], long["target"]) == (192.5, 215.0)
+    assert (long["stop"], long["target"]) == (190.0, 215.0)
     short = plan.reference_levels("short", 200.0, LEVELS)
-    assert (short["stop"], short["target"]) == (207.5, 185.0)
+    assert (short["stop"], short["target"]) == (210.0, 185.0)
     assert plan.reference_levels("long", 30.0, {**LEVELS, "atr": 2.0}, geared=True)["target"] is None
     assert plan.reference_levels("mixed", 200.0, LEVELS) is None and plan.reference_levels("long", 200.0, None) is None
-    assert plan.levels_line(long) == "Levels: stop 192.50 (1.5 ATR) · target 215.00 (3 ATR)"
+    assert plan.levels_line(long) == "Levels: stop 190.00 (2 ATR) · target 215.00 (3 ATR)"
     assert "20-day low 195.00" in plan.levels_line(plan.reference_levels("long", 200.0, {**LEVELS, "low20": 195.0}))
 
 
@@ -36,8 +36,8 @@ def test_option_actions_depend_on_where_the_legs_are():
     assert today.startswith("In the money: sell to close") and "exercised automatically" in today
     ref = plan.reference_levels("long", 150.0, {**LEVELS, "atr": 2.0})
     loss = plan.option_actions("loss", long_call, ref, level=-50)
-    assert loss[0] == "The common rule cuts a long option at 50% down: close it — keep it only if USO holds above 147.00."
-    assert loss[1].startswith("USO levels: stop 147.00")
+    assert loss[0] == "The common rule cuts a long option at 50% down: close it — keep it only if USO holds above 146.00."
+    assert loss[1].startswith("USO levels: stop 146.00")
 
 
 def test_alerts_and_report_lines():
@@ -61,8 +61,8 @@ def test_a_trend_break_alert_says_what_to_do(store):
     assert payload["message"].startswith("Broke below its 20-day low 205.00 at 200.00: NVDA shares")  # unchanged lead
     card = payload["card"]
     assert card["title"] == "Broke below its 20-day low 205.00 at 200.00" and card["detail"][0].startswith("NVDA shares")
-    assert card["plan"][0] == "A close below 205.00 (the 20-day low) is the usual exit signal: exit or cut (stop 192.50)."
-    assert card["plan"][1] == "Levels: stop 192.50 (1.5 ATR) · target 215.00 (3 ATR)"
+    assert card["plan"][0] == "A close below 205.00 (the 20-day low) is the usual exit signal: exit or cut (stop 190.00)."
+    assert card["plan"][1] == "Levels: stop 190.00 (2 ATR) · target 215.00 (3 ATR)"
     assert card["report"].startswith("Daily report") and card["alerts"] == "Your alerts: at or below 150"
     assert "→ A close below 205.00" in payload["message"] and payload["held"] is True
     assert payload["message"].endswith("Review in moomoo — nothing is traded automatically.")
@@ -91,7 +91,7 @@ def test_a_big_move_on_something_you_hold_becomes_its_position_card(store):
     card = monitor.move_card("NVDA", {"kind": "day_move", "price": 190.0, "change_pct": -5.2,
                                       "message": "NVDA down 5.2% today (past -5%) at 190.00."})
     assert card["title"].startswith("NVDA down 5.2%") and card["tone"] == "danger"
-    assert card["plan"][0].startswith("A big move against you: exit if it closes past your stop (stop 182.50)")
+    assert card["plan"][0].startswith("A big move against you: exit if it closes past your stop (stop 180.00)")
     assert any(line.startswith("NVDA shares") for line in card["detail"])
     up = monitor.move_card("NVDA", {"kind": "day_move", "price": 210.0, "change_pct": 5.0, "message": "NVDA up 5%"})
     assert up["tone"] == "success" and "take some profit near 225.00" in up["plan"][0]
@@ -171,7 +171,7 @@ def test_the_model_sees_prices_and_percentages_but_no_sizes_or_amounts(store):
     assert '"qty"' not in text and "10000" not in text and "total_assets" not in text and '"value"' not in text
     nvda = next(item for item in context["positions"] if item["key"] == "NVDA")
     assert nvda["exposure"] == "long" and nvda["average_cost"] == 120.0 and nvda["weight_pct_of_account"] == 10.0
-    assert nvda["rule_of_thumb"] == {"stop": 192.5, "target": 215.0}
+    assert nvda["rule_of_thumb"] == {"stop": 190.0, "target": 215.0}
     spread = next(item for item in context["positions"] if item["type"] == "option")
     assert spread["exposure"] == "long" and [leg["side"] for leg in spread["legs"]] == ["long", "short"]
     assert context["tickers"]["SOXS"]["leveraged_or_inverse_fund"] is True
@@ -188,7 +188,7 @@ def test_levels_on_the_wrong_side_are_replaced_and_unknown_positions_dropped(sto
         {"key": "USO 2026-10-16", "action": "hold", "stop": 145, "target": None, "pnl_stop_pct": -40, "pnl_target_pct": -20},
         {"key": "AAPL", "action": "close"}]}, context)
     nvda, spread = answer["positions"]
-    assert nvda["action"] == "take_profit" and nvda["stop"] == 192.5 and nvda["stop_source"] == "rule"
+    assert nvda["action"] == "take_profit" and nvda["stop"] == 190.0 and nvda["stop_source"] == "rule"
     assert "wrong side" in nvda["stop_basis"] and (nvda["target"], nvda["target_source"]) == (230.0, "model")
     assert spread["stop"] == 145.0 and spread["target"] is None
     # The spread is at -17.8%: a cut at -40% is ahead of it, a "target" of -20% is already behind it.

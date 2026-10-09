@@ -116,7 +116,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onOpenRunFlow }) => {
             style={{ width: `${progress}%` }}
           />
         </div>
-        <span className="shrink-0 text-[11px] text-muted-text tabular-nums">
+        <span className="shrink-0 text-xs text-muted-text tabular-nums">
           {progress}%
         </span>
       </div>
@@ -128,14 +128,14 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onOpenRunFlow }) => {
             data-testid="task-panel-diagnostics-summary"
           >
             <span className="whitespace-nowrap">{t('taskPanel.diagnostics')}</span>
-            <span className="min-w-0 truncate font-mono text-[11px] text-secondary-text">
+            <span className="min-w-0 truncate font-mono text-xs text-secondary-text">
               {traceId.length > 18 ? `${traceId.slice(0, 10)}...` : traceId}
             </span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open/task:rotate-180" aria-hidden="true" />
           </summary>
           <div className="mt-1 rounded-lg border border-subtle bg-base/50 px-2 py-1.5 text-muted-text">
             <span className="mr-1">Trace:</span>
-            <code className="break-all font-mono text-[11px] text-secondary-text">
+            <code className="break-all font-mono text-xs text-secondary-text">
               {traceId}
             </code>
           </div>

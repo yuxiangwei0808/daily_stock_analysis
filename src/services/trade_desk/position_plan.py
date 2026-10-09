@@ -1,8 +1,9 @@
 """What to do about a position you hold: reference stop/target levels and the usual action per alert.
 
-Levels follow the desk's other rules (``trend.py``): a stop 1.5 ATR(14) from the price and a
-target 3 ATR away (2R), on the side your position is exposed to; the prior 20-day low/high
-and the 50-day average are named as structure. Leveraged/inverse funds get no target (daily
+Levels: a stop 2 ATR(14) from the price and a target 3 ATR away, on the side your position is
+exposed to (the ideas use 1.5 ATR for a fresh entry; a held position trails a little wider);
+the prior 20-day low/high and the 50-day average are named as structure. A position's saved
+plan (``position_plans``: your alerts, the daily review, a trailing stop) replaces these. Leveraged/inverse funds get no target (daily
 reset: ATR targets mean little). The actions are the common rules of thumb for each alert
 (cut a long option at -50 %, take some profit at +50/+100 %, close a spread near its maximum,
 close or roll a short leg in the money before expiry). None of this is a tested edge
@@ -18,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-STOP_ATR = 1.5
+STOP_ATR = 2.0
 TARGET_ATR = 3.0
 REPORT_MAX_AGE_DAYS = 3
 FOOTER = "Rule-of-thumb levels, not tested signals · read-only: nothing is traded automatically"
@@ -43,9 +44,9 @@ def levels_line(ref: Optional[Dict[str, Any]]) -> str:
     """'Stop 192.50 (1.5 ATR) · target 215.00 (3 ATR) · 20-day low 205.00'."""
     if not ref:
         return ""
-    parts = [f"stop {ref['stop']:.2f} ({STOP_ATR:g} ATR)"]
+    parts = [f"stop {ref['stop']:.2f} ({ref.get('stop_note') or f'{STOP_ATR:g} ATR'})"] if ref.get("stop") is not None else []
     if ref.get("target") is not None:
-        parts.append(f"target {ref['target']:.2f} ({TARGET_ATR:g} ATR)")
+        parts.append(f"target {ref['target']:.2f} ({ref.get('target_note') or f'{TARGET_ATR:g} ATR'})")
     # The structure on the stop side: the level whose loss ends the trade.
     structure = ref.get("low20") if ref["side"] == "long" else ref.get("high20")
     if structure and (structure < ref["price"] if ref["side"] == "long" else structure > ref["price"]):
@@ -60,7 +61,7 @@ def _held_word(ref: Optional[Dict[str, Any]]) -> str:
 def stock_actions(kind: str, ref: Optional[Dict[str, Any]], *, geared: bool = False,
                   level: Optional[float] = None, change_pct: Optional[float] = None) -> List[str]:
     """The usual next step for a stock alert, then the levels."""
-    stop = f" (stop {ref['stop']:.2f})" if ref else ""
+    stop = f" (stop {ref['stop']:.2f})" if ref and ref.get("stop") is not None else ""
     against = ref is not None and change_pct is not None and (change_pct < 0) == (ref["side"] == "long")
     if kind == "low20" and level:
         action = f"A close {_held_word(ref)} {level:.2f} (the 20-day low) is the usual exit signal: exit or cut{stop}."
@@ -72,7 +73,7 @@ def stock_actions(kind: str, ref: Optional[Dict[str, Any]], *, geared: bool = Fa
     elif kind == "move" and change_pct is not None:
         if against:
             action = f"A big move against you: exit if it closes past your stop{stop}; do not average down by reflex."
-        elif ref and ref.get("target") is not None:
+        elif ref and ref.get("target") is not None and ref.get("stop") is not None:
             action = f"A big move your way: take some profit near {ref['target']:.2f} or trail the stop to {ref['stop']:.2f}."
         else:
             action = f"A big move your way: take some profit, or trail the stop{stop}."
@@ -98,7 +99,8 @@ def option_actions(kind: str, position: Dict[str, Any], ref: Optional[Dict[str, 
         return bool(spot) and (spot > leg["strike"] if leg["right"] == "call" else spot < leg["strike"])
 
     if kind == "loss":
-        hold_if = f" — keep it only if {position['underlying']} holds {'above' if not ref or ref['side'] == 'long' else 'below'} {ref['stop']:.2f}" if ref else ""
+        hold_if = (f" — keep it only if {position['underlying']} holds {'above' if ref['side'] == 'long' else 'below'} "
+                   f"{ref['stop']:.2f}" if ref and ref.get("stop") is not None else "")
         action = f"The common rule cuts a long option at {abs(level or 50):g}% down: close it{hold_if}."
     elif kind == "profit_max":
         action = "Close it: the last part of the maximum profit rarely pays for holding the risk to expiry."

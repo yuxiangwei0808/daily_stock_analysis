@@ -40,6 +40,7 @@ import type { RunFlowSnapshotSource } from '../types/runFlow';
 import { getTodayInShanghai } from '../utils/format';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
+import { PositionPlansPanel } from '../components/tradeDesk/PositionPlansPanel';
 
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
@@ -1773,6 +1774,9 @@ const HomePage: React.FC = () => {
             data-testid="home-dashboard-scroll"
             className="flex-1 min-w-0 min-h-0 overflow-x-auto overflow-y-auto px-3 pb-4 md:px-6 touch-pan-y"
           >
+            <div className="mb-4 max-w-6xl">
+              <PositionPlansPanel />
+            </div>
             {marketReviewNotice ? (
               <div className="mb-3">
                 <InlineAlert

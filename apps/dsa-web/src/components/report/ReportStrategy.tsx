@@ -23,7 +23,9 @@ const StrategyItem: React.FC<StrategyItemProps> = ({
   <div className="home-subpanel home-strategy-card p-3" style={{ ['--home-strategy-tone' as string]: `var(${tone})` }}>
     <div className="flex flex-col">
       <span className="home-strategy-label mb-0.5 text-xs">{label}</span>
-      <span className="home-strategy-value text-lg font-bold font-mono" style={!value ? { color: 'var(--text-muted-text)' } : undefined}>
+      {/* A level ("$27.40") stays large; a sentence ("No ideal buy — wait for…") reads as text. */}
+      <span className={`home-strategy-value ${value && value.length > 24 ? 'text-sm font-medium leading-6 sm:text-[15px]' : 'text-lg font-bold font-mono'}`}
+        style={!value ? { color: 'var(--text-muted-text)' } : undefined}>
         {value || '—'}
       </span>
     </div>

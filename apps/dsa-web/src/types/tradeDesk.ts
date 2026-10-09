@@ -523,6 +523,47 @@ export interface PositionQuestion {
   error?: string;
 }
 
+export type PlanLevelSource = 'you' | 'review' | 'rule' | '';
+export type PlanStatus = 'stop_hit' | 'near_stop' | 'target_hit' | 'near_target' | 'ok';
+
+/** One open position's plan (the Home panel): action, stop and target with live distances. */
+export interface PositionPlanRow {
+  key: string;
+  ticker: string;
+  type: 'stock' | 'option';
+  exposure: 'long' | 'short' | 'mixed';
+  label: string;
+  price?: number | null;
+  dayPct?: number | null;
+  pnlPct?: number | null;
+  weightPct?: number | null;
+  daysLeft?: number | null;
+  action: PositionAction | '';
+  reason?: string;
+  risk?: string;
+  stop?: number | null;
+  stopSource: PlanLevelSource;
+  stopBasis?: string;
+  stopNote?: string;
+  stopDistancePct?: number | null;
+  target?: number | null;
+  targetSource: PlanLevelSource;
+  targetBasis?: string;
+  targetDistancePct?: number | null;
+  pnlStopPct?: number | null;
+  pnlTargetPct?: number | null;
+  status: PlanStatus;
+  reviewedAt?: string | null;
+}
+
+export interface PositionPlansResponse {
+  enabled: boolean;
+  syncedAt?: string | null;
+  items: PositionPlanRow[];
+  review: { status?: 'running' | 'done' | 'failed' | null; at?: string | null; model?: string | null;
+    summary?: string | null; error?: string | null; startedAt?: string | null };
+}
+
 export interface PortfolioSummary {
   date: string;
   message: string;

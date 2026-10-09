@@ -262,8 +262,8 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
           <Card variant="gradient" padding="md" className="home-report-hero">
             <div className="mb-5 flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-3">
-                  <h2 className="text-[28px] font-bold leading-tight text-foreground">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <h2 className="min-w-0 text-2xl font-bold leading-tight text-foreground sm:text-[26px]">
                     {meta.stockName || meta.stockCode}
                   </h2>
                   {/* 价格和涨跌幅 */}
@@ -351,7 +351,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   </svg>
                 </div>
                 <div className="space-y-1.5">
-                  <h4 className="home-insight-title text-[11px] font-medium uppercase tracking-[0.16em]">{text.actionAdvice}</h4>
+                  <h4 className="home-insight-title text-xs font-medium uppercase tracking-[0.16em]">{text.actionAdvice}</h4>
                   <p className="home-insight-body text-sm leading-6">
                     {summary.operationAdvice || text.noAdvice}
                   </p>
@@ -374,7 +374,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   </svg>
                 </div>
                 <div className="space-y-1.5">
-                  <h4 className="home-insight-title text-[11px] font-medium uppercase tracking-[0.16em]">{text.trendPrediction}</h4>
+                  <h4 className="home-insight-title text-xs font-medium uppercase tracking-[0.16em]">{text.trendPrediction}</h4>
                   <p className="home-insight-body text-sm leading-6">
                     {summary.trendPrediction || text.noPrediction}
                   </p>
@@ -416,7 +416,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   {watchlist.isInWatchlist(meta.stockCode) ? t('report.removeFromWatchlist') : t('report.addToWatchlist')}
                 </Button>
                 {watchlist.actionMessage && (
-                  <p className="text-[11px] text-secondary-text animate-in fade-in">{watchlist.actionMessage}</p>
+                  <p className="text-xs text-secondary-text animate-in fade-in">{watchlist.actionMessage}</p>
                 )}
               </div>
             </Card>

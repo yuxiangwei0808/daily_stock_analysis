@@ -4,6 +4,7 @@ import { Bell, BellOff, Pause, Play, Plus, RefreshCw, Sparkles, Trash2, Wallet, 
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { PortfolioRisk } from './PortfolioRisk';
 import { PositionAsk } from './PositionAsk';
+import { PositionPlansPanel } from './PositionPlansPanel';
 import type { PositionAskHandle, PositionChoice } from './PositionAsk';
 import { Badge, Button, Card, EmptyState, InlineAlert, Loading } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -452,6 +453,7 @@ export const HoldingsPanel: React.FC<{ onAsk?: (ticker: string) => void }> = ({ 
         </div>
       </Card>
       {view?.syncedAt ? <>
+      <PositionPlansPanel showHoldingsLink={false} />
       <PositionAsk ref={askBox} choices={choices} rules={rules} onRulesChanged={changed} onCompare={onAsk} />
       <SummaryCard summary={data?.summary} onBuilt={(summary) => setData((current) => (current ? { ...current, summary } : current))} />
       <PortfolioRisk syncedAt={view.syncedAt} />

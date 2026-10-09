@@ -368,6 +368,21 @@ async def refresh_trade_journal(request: Request):
     return {"journal": await invoke(get_service(request).holdings.refresh_journal)}
 
 
+@router.get("/holdings/plans")
+async def position_plans(request: Request):
+    """Each open position's action, stop and target with live distances (the Home panel)."""
+    from src.services.trade_desk import holdings
+    if not holdings.enabled():
+        return {"enabled": False, "items": [], "review": {}}
+    return await invoke(get_service(request).holdings.plans_view)
+
+
+@router.post("/holdings/plans/review", status_code=202)
+async def position_plans_review(request: Request):
+    """Runs the daily review of every position now (about a minute); poll GET /holdings/plans."""
+    return {"review": await invoke(_holdings(request).review_positions, None, wait=False)}
+
+
 @router.get("/holdings/questions")
 async def position_questions(request: Request):
     """Your questions about your positions and the answers (levels and actions), newest first."""

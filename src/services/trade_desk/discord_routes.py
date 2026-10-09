@@ -94,8 +94,8 @@ def batch_message(events: List[Dict[str, Any]]) -> str:
 
 
 _TONES = {"danger": 0xE5484D, "success": 0x30A46C, "warning": 0xF5A524, "info": 0x3E63DD}
-_KIND_TONE = {"loss": "danger", "trend": "danger", "assignment": "danger", "profit": "success",
-              "expiry": "warning", "earnings": "warning"}
+_KIND_TONE = {"loss": "danger", "trend": "danger", "assignment": "danger", "plan_stop": "danger", "profit": "success",
+              "plan_target": "success", "expiry": "warning", "earnings": "warning"}
 _REVIEW = "Review in moomoo — nothing is traded automatically."
 
 

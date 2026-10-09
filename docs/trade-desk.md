@@ -585,9 +585,9 @@ unlocked and nothing is ordered. The snapshot is stored locally
   expiry", "alert if I lose 40%") are read by a pattern first and the routine model
   second; the draft is shown for confirmation and nothing is saved until you do.
 - **What to do** (`trade_desk/position_plan.py`): every holding alert adds the usual next step
-  and reference levels, also in the dashboard's event text (lines starting "→"). Stocks: a
-  stop 1.5 ATR(14) from the price and a target 3 ATR away on the side you hold (no target
-  for leveraged/inverse funds), with the 20-day low/high as structure; a break below the
+  and the position's plan levels (below), also in the dashboard's event text (lines starting
+  "→"). Without a plan yet: a stop 2 ATR(14) from the price and a target 3 ATR away on the
+  side you hold (no target for leveraged/inverse funds), with the 20-day low/high as structure; a break below the
   20-day low reads "a close below it is the usual exit signal", a drop below the 50-day
   average "tighten the stop or trim". Options: cut a long option at −50 %, take half off
   at +50 % and profit at +100 %, close a spread at 75 % of its maximum, close or roll a short
@@ -597,6 +597,28 @@ unlocked and nothing is ordered. The snapshot is stored locally
   daily report verdict on the ticker with its stop/target when it is at most 3 days old, and
   your active alerts on the position ("none set" says where to set one). These are the same
   rules of thumb as the ideas' levels, not tested signals (`docs/strategy-backtest.md`).
+- **Plans: one action, stop and target per position** (`trade_desk/position_plans.py`, `GET
+  /holdings/plans`, `POST /holdings/plans/review`; `trade_desk_settings` id `position_plans`):
+  shown on Home ("Your positions: plan", above the report) and on the Holdings tab, and used
+  by the Discord cards, so all three agree. Each level comes from your own active alerts on
+  the position first ("your alert": price at or below / above, P&L levels; they never move),
+  then the **daily review** (after the close, once a trading day from 17:00 New York, the
+  generation backend reviews every position with the same data as Ask about your positions
+  and sets an action, a stop, a target and P&L levels for options; **Review now** runs it at
+  any time, about a minute), then for a position not reviewed yet a 2 ATR stop and 3 ATR
+  target from its last close ("2 ATR rule"). Stops trail: each morning and after the close a
+  long position's stop becomes max(stop, highest close since it was set − 2 ATR) — a short
+  one's min(stop, lowest close + 2 ATR) — so it only moves toward the price. A review can
+  tighten a stop but not loosen it ("kept: … would loosen it"), except after the stop was hit
+  with the position still held, when the review sets a new one. Targets change only with a
+  review or your alerts. The panel lists each open position with its price and day change,
+  P&L on cost, action, stop and target, how far the price is from each (%), where each level
+  came from, and "Near stop/target" (within half an ATR) or "Stop hit/Target reached";
+  positions needing attention come first, and a row opens the reasons, each level's basis and
+  the risk. Crossing a plan's stop or target (or an option's P&L cut/take-profit level) sends
+  one position card per level (🛑 "Stop hit", 🎯 "Target reached"); levels from your own
+  alerts fire as your alerts. Options' price levels are on the underlying. The plans are
+  risk-management levels, not tested signals; nothing is traded.
 - **Ask about your positions** (Holdings tab, `POST /holdings/questions`, `GET
   /holdings/questions`, `DELETE /holdings/questions/{id}`; `trade_desk/position_questions.py`):
   a question about one position or all of them ("Where should my stop-loss be?", "At what
