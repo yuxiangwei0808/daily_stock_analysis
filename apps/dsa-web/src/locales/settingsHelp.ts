@@ -53,7 +53,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     title: '备用生成方式',
     showFieldKey: false,
     summary: '决定本地 CLI 生成失败后，是直接报错，还是再尝试默认模型配置。',
-    usage: '选择“禁用”表示失败就报错；选择“默认模型配置”表示再尝试你已经配置好的普通模型。',
+    usage: '选择“禁用”表示失败就报错；选择“默认模型配置”表示再尝试你已经配置好的普通模型；选择“先 Codex CLI，再默认模型配置”表示依次尝试本机 Codex CLI 与普通模型（例如 Claude Code 额度用尽时）。',
     valueNotes: [
       '如果只是想设置主模型失败后的备用模型，请使用“备选模型”，不是这个字段。',
       '主生成方式本身就是默认模型配置时，这个字段不会额外生效。',
@@ -1306,7 +1306,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     title: 'Fallback Generation Method',
     showFieldKey: false,
     summary: 'Chooses whether a failed local CLI generation should stop with an error or try Default model settings next.',
-    usage: 'Disabled means the local failure is returned immediately. Default model settings means the system tries your configured regular model next.',
+    usage: 'Disabled means the local failure is returned immediately. Default model settings means the system tries your configured regular model next. Codex CLI, then default model settings tries the local Codex CLI first and then the regular model (useful while Claude Code is rate-limited).',
     valueNotes: [
       'Use fallback models for model-to-model fallback; this field only handles local CLI backends versus Default model settings.',
       'When the primary generation method is already Default model settings, this field has no extra effect.',

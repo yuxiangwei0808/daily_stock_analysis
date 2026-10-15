@@ -66,7 +66,7 @@ TRADE_DESK_BROKER_ACCOUNT=1234           # read-only holdings: last digits of th
 FREE_NEWS_SOURCES=google_news,yahoo_finance
 SOCIAL_SCAN_ENABLED=true
 YOUTUBE_CHANNELS=Meet Kevin=UCUvvj5lwue7PspotMDjk5UA   # channel ids, not handles
-GENERATION_FALLBACK_BACKEND=litellm      # fallback when the routine model fails
+GENERATION_FALLBACK_BACKEND=litellm      # fallback when the routine model fails (codex_cli,litellm tries in order)
 ```
 
 ## 💖 Sponsors

@@ -75,7 +75,10 @@ def model_label(backend_id: str, config: Any) -> str:
             model = str(getattr(config, "targeted_claude_code_cli_model", "") or "") or model
         return model or "Claude Code"
     if backend_id == "codex_cli":
-        return _codex_model() or "Codex"
+        model = str(getattr(config, "codex_cli_model", "") or "")
+        if is_targeted():
+            model = str(getattr(config, "targeted_codex_cli_model", "") or "") or model
+        return model or _codex_model() or "Codex"
     if backend_id == "opencode_cli":
         return str(getattr(config, "opencode_cli_model", "") or "") or "OpenCode"
     return backend_id

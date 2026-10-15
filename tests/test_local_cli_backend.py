@@ -3169,3 +3169,52 @@ print(json.dumps({{"type": "result", "subtype": "success", "result": "{{\\"senti
     with pytest.raises(GenerationError) as exc_info:
         invalid.generate("prompt", {})
     assert exc_info.value.error_code == GenerationErrorCode.UNSAFE_CONFIG
+
+
+# -- usage limits and the Codex model ----------------------------------------------------------
+def test_a_usage_limit_refusal_skips_the_cli_until_its_reset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(local_cli_backend_module, "_USAGE_LIMIT_UNTIL", {})
+    marker = tmp_path / "ran"
+    backend = _backend(
+        tmp_path,
+        f"""
+import sys
+open({str(marker)!r}, "a").write("x")
+print('{{"is_error":true,"api_error_status":429,"result":"You\\'ve hit your weekly limit · resets 5pm (UTC)"}}')
+sys.exit(1)
+""",
+    )
+    with pytest.raises(GenerationError) as first:
+        backend.generate("hello", {})
+    assert first.value.details["reason"] == "usage_limit" and first.value.fallbackable
+    assert first.value.details["skipped_until"].endswith("17:00:00+00:00")
+    with pytest.raises(GenerationError) as second:
+        backend.generate("hello", {})
+    assert second.value.details["reason"] == "usage_limit" and second.value.fallbackable
+    assert marker.read_text() == "x"  # the second call never started the CLI
+
+
+def test_usage_limit_reset_times() -> None:
+    from datetime import datetime, timezone
+    from src.llm.local_cli_backend import USAGE_LIMIT_COOLDOWN_SECONDS, usage_limit_reset
+
+    def at(hour, minute=0, day=15):
+        return datetime(2026, 10, day, hour, minute, tzinfo=timezone.utc).timestamp()
+    assert usage_limit_reset("hit your weekly limit · resets 5pm (UTC)", at(16)) == at(17)
+    assert usage_limit_reset("hit your weekly limit · resets 5pm (UTC)", at(19, 30)) == at(17, day=16)
+    assert usage_limit_reset("limit reached · resets Fri 9:30am (UTC)", at(8)) == at(9, 30)
+    assert usage_limit_reset("rate limited", at(8)) == at(8) + USAGE_LIMIT_COOLDOWN_SECONDS
+
+
+def test_codex_model_and_effort_follow_the_settings(tmp_path: Path) -> None:
+    script = _script(tmp_path, "import json, sys\nsys.stdin.read()\nprint(json.dumps({'argv': sys.argv[1:]}))\n")
+    preset = LocalCliPreset(preset_id="codex_cli", executable=sys.executable, argv=(script, "exec", "-"),
+                            display_name="Mock Codex CLI")
+    backend = LocalCliGenerationBackend(_config(codex_cli_model="gpt-6.1-sol", codex_cli_effort="medium"), preset=preset)
+    result = backend.generate("hello", {})
+    assert json.loads(result.text)["argv"] == ["exec", "--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium", "-"]
+    assert result.usage["cli_model"] == "codex_cli:gpt-6.1-sol"
+    plain = LocalCliGenerationBackend(_config(), preset=preset).generate("hello", {})
+    assert json.loads(plain.text)["argv"] == ["exec", "-"]  # unset: CODEX_HOME/config.toml decides
+    with pytest.raises(GenerationError):
+        LocalCliGenerationBackend(_config(codex_cli_effort="extreme"), preset=preset).generate("hello", {})

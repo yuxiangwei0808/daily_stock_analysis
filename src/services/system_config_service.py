@@ -2472,9 +2472,10 @@ class SystemConfigService:
             if "GENERATION_FALLBACK_BACKEND" not in effective_map
             else (effective_map.get("GENERATION_FALLBACK_BACKEND") or "").strip().lower()
         )
+        fallback_chain = [item.strip() for item in fallback_backend.split(",")]
         litellm_selected = (
             primary_backend == LITELLM_BACKEND_ID
-            or (fallback_backend == LITELLM_BACKEND_ID and primary_backend != LITELLM_BACKEND_ID)
+            or (LITELLM_BACKEND_ID in fallback_chain and primary_backend != LITELLM_BACKEND_ID)
         )
         if not litellm_selected:
             return []

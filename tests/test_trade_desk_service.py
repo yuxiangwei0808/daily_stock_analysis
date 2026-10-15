@@ -1273,3 +1273,57 @@ def test_the_watchdog_keeps_running_while_the_monitor_is_stuck(repo, monkeypatch
     finally:
         worker.stop()
         svc.stop()
+
+
+def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo, monkeypatch):
+    empty = snapshot().model_copy(update={"options": []})
+    svc = service(repo, snap=empty)
+    prompts = []
+
+    class Backend:
+        def generate(self, prompt, config, **kwargs):
+            prompts.append(prompt)
+            return SimpleNamespace(text="Tech is pulling back after hot CPI; wait for 95 to hold.")
+    monkeypatch.setattr('src.services.trade_desk.advisor._generation_backend', lambda backend_id=None: (Backend(), 'x'))
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='Thoughts on this tech selloff?').model_dump(mode='json'),
+                             source='manual')
+    svc._run_advice(job['id'], threading.Event())
+    answered = repo.advice(job['id'])
+    assert answered['status'] == 'completed' and answered['llm_status'] == 'view_only'
+    assert "no quotable TEST options" in answered['explanation']
+    assert "The desk's view (no priced strategies): Tech is pulling back" in answered['explanation']
+    assert "Thoughts on this tech selloff?" in prompts[0]
+    # Automatic follow-ups and model failures keep the plain reason.
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='x').model_dump(mode='json'), source='opportunity')
+    svc._run_advice(job['id'], threading.Event())
+    assert repo.advice(job['id'])['llm_status'] == 'unavailable' and len(prompts) == 1
+
+    class Broken:
+        def generate(self, *args, **kwargs):
+            raise RuntimeError("down")
+    monkeypatch.setattr('src.services.trade_desk.advisor._generation_backend', lambda backend_id=None: (Broken(), 'x'))
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='again?').model_dump(mode='json'), source='manual')
+    svc._run_advice(job['id'], threading.Event())
+    failed = repo.advice(job['id'])
+    assert failed['llm_status'] == 'unavailable' and "desk's view" not in failed['explanation']
+
+
+def test_routine_trade_desk_calls_get_the_fallback_chain(monkeypatch):
+    from src.services.trade_desk import advisor
+    calls = {}
+
+    class Analyzer:
+        def _call_litellm(self, prompt, config, **kwargs):
+            calls.update(prompt=prompt, kwargs=kwargs)
+            return SimpleNamespace(text="ok", backend="codex_cli")
+
+        def _resolve_generation_backend_config(self):
+            return ("claude_code_cli", "codex_cli")
+
+        def _get_generation_backend(self, backend_id):
+            return f"raw:{backend_id}"
+    monkeypatch.setattr('src.analyzer.GeminiAnalyzer', Analyzer)
+    backend, primary = advisor._generation_backend()
+    assert primary == "claude_code_cli" and backend.generate("p", {"temperature": 0}, system_prompt="s").backend == "codex_cli"
+    assert calls["kwargs"] == {"system_prompt": "s", "return_generation_result": True}
+    assert advisor._generation_backend("claude_code_cli") == ("raw:claude_code_cli", "claude_code_cli")  # second opinions

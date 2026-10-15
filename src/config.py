@@ -47,6 +47,7 @@ from src.llm.backend_registry import (
     SUPPORTED_AGENT_GENERATION_BACKENDS,
     SUPPORTED_AGENT_UI_BACKENDS,
     SUPPORTED_GENERATION_BACKENDS,
+    SUPPORTED_GENERATION_FALLBACK_BACKENDS,
 )
 from src.llm.local_cli_backend import (
     DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
@@ -910,6 +911,11 @@ class Config:
     claude_code_cli_effort: str = ""
     targeted_claude_code_cli_model: str = ""
     targeted_claude_code_cli_effort: str = ""
+    # codex_cli model / reasoning effort; empty keeps CODEX_HOME/config.toml (TARGETED_* inside user requests)
+    codex_cli_model: str = ""
+    codex_cli_effort: str = ""
+    targeted_codex_cli_model: str = ""
+    targeted_codex_cli_effort: str = ""
     # Model tiers: routine runs (scheduled reports, market review, automatic
     # scans) use GENERATION_BACKEND; user-requested analyses use
     # TARGETED_GENERATION_BACKEND plus independent second opinions.
@@ -1844,6 +1850,10 @@ class Config:
             claude_code_cli_effort=os.getenv('CLAUDE_CODE_CLI_EFFORT', '').strip().lower(),
             targeted_claude_code_cli_model=os.getenv('TARGETED_CLAUDE_CODE_CLI_MODEL', '').strip(),
             targeted_claude_code_cli_effort=os.getenv('TARGETED_CLAUDE_CODE_CLI_EFFORT', '').strip().lower(),
+            codex_cli_model=os.getenv('CODEX_CLI_MODEL', '').strip(),
+            codex_cli_effort=os.getenv('CODEX_CLI_EFFORT', '').strip().lower(),
+            targeted_codex_cli_model=os.getenv('TARGETED_CODEX_CLI_MODEL', '').strip(),
+            targeted_codex_cli_effort=os.getenv('TARGETED_CODEX_CLI_EFFORT', '').strip().lower(),
             targeted_generation_backend=targeted_generation_backend,
             second_opinion_backends=second_opinion_backends,
             litellm_model=litellm_model,
@@ -3179,13 +3189,19 @@ class Config:
                 ),
                 field="GENERATION_BACKEND",
             ))
-        if generation_fallback_backend and generation_fallback_backend == generation_backend:
-            generation_fallback_backend = ""
-        if generation_fallback_backend and generation_fallback_backend != LITELLM_BACKEND_ID:
+        # One fallback or a comma list tried in order (e.g. codex_cli,litellm); the primary itself is a no-op.
+        unsupported_fallbacks = [
+            item.strip() for item in generation_fallback_backend.split(",")
+            if item.strip() and item.strip() != generation_backend
+            and item.strip() not in SUPPORTED_GENERATION_FALLBACK_BACKENDS
+        ]
+        if unsupported_fallbacks:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "GENERATION_FALLBACK_BACKEND 当前支持 litellm、与 primary 相同的 no-op 值，或空字符串。"
+                    "GENERATION_FALLBACK_BACKEND 当前支持 "
+                    f"{'、'.join(sorted(SUPPORTED_GENERATION_FALLBACK_BACKENDS))} 中的一个或用逗号分隔的多个（按顺序尝试）、"
+                    "与 primary 相同的 no-op 值，或空字符串。"
                     f"已配置的值为：{generation_fallback_backend}。"
                 ),
                 field="GENERATION_FALLBACK_BACKEND",

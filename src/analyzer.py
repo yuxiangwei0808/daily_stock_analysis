@@ -57,6 +57,7 @@ from src.llm.backend_registry import (
     LITELLM_BACKEND_ID,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
+    resolve_generation_fallback_backend_ids,
 )
 from src.llm.backend_factory import create_generation_backend
 from src.llm.generation_backend import (
@@ -2688,13 +2689,12 @@ class GeminiAnalyzer:
         if not backend_error.fallbackable:
             return False
         try:
-            _backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+            chain = self._resolve_generation_fallback_chain(backend_id)
         except GenerationError:
             return False
-        return (
-            fallback_backend_id == LITELLM_BACKEND_ID
-            and self._litellm_runtime_available()
-        )
+        # A local CLI fallback reports its own problems when it runs; LiteLLM needs a runtime source.
+        return any(item != LITELLM_BACKEND_ID or self._litellm_runtime_available() for item in chain)
 
     def _start_second_opinions(self, config, backend_id, prompt, system_prompt, report_language):
         """Start independent verdicts from SECOND_OPINION_BACKENDS for targeted runs."""
@@ -2753,7 +2753,15 @@ class GeminiAnalyzer:
             # User-requested analyses use the targeted (stronger) backend.
             backend_id = resolve_generation_backend_id({"generation_backend": override})
         fallback_backend_id = resolve_generation_fallback_backend_id(config)
+        if fallback_backend_id == backend_id:  # a targeted primary that is also the first fallback
+            chain = self._resolve_generation_fallback_chain(backend_id)
+            fallback_backend_id = chain[0] if chain else None
         return backend_id, fallback_backend_id
+
+    def _resolve_generation_fallback_chain(self, backend_id: str) -> List[str]:
+        """The fallback backends tried in order after ``backend_id`` fails (never itself)."""
+        chain = resolve_generation_fallback_backend_ids(self._get_runtime_config())
+        return [item for item in chain if item != backend_id]
 
     def get_generation_backend_config_error(self) -> Optional[GenerationError]:
         """Return a structured backend config error, if the backend cannot run."""
@@ -3361,89 +3369,84 @@ class GeminiAnalyzer:
                                backend_id)
                 result = primary_generate()
         except GenerationError as exc:
-            if not exc.fallbackable or not fallback_backend_id:
+            chain = self._resolve_generation_fallback_chain(backend_id) if fallback_backend_id else []
+            if fallback_backend_id and chain[:1] != [fallback_backend_id]:  # the resolved first fallback leads
+                chain = [fallback_backend_id, *[item for item in chain if item != fallback_backend_id]]
+            if not exc.fallbackable or not chain:
                 raise
-            try:
-                fallback_backend = self._get_generation_backend(fallback_backend_id)
-            except GenerationError as fallback_exc:
-                raise GenerationError(
-                    error_code=fallback_exc.error_code,
-                    stage="fallback",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=fallback_backend_id,
-                    provider=fallback_exc.provider,
-                    details={
-                        "primary_error": {
-                            "error_code": exc.error_code.value,
-                            "backend": exc.backend,
-                            "provider": exc.provider,
-                            "stage": exc.stage,
-                            "details": exc.details,
+            primary_error = {
+                "error_code": exc.error_code.value,
+                "backend": exc.backend,
+                "provider": exc.provider,
+                "stage": exc.stage,
+                "details": exc.details,
+            }
+            result = None
+            for position, fallback_backend_id in enumerate(chain):
+                last = position == len(chain) - 1
+                try:
+                    fallback_backend = self._get_generation_backend(fallback_backend_id)
+                    result = fallback_backend.generate(
+                        prompt,
+                        generation_config,
+                        system_prompt=system_prompt,
+                        stream=stream,
+                        stream_progress_callback=stream_progress_callback,
+                        response_validator=response_validator,
+                        audit_context=audit_context,
+                    )
+                    break
+                except _AllModelsFailedError:
+                    if last:
+                        raise
+                    logger.warning("[generation] fallback %s: every model failed; trying %s",
+                                   fallback_backend_id, chain[position + 1])
+                except GenerationError as fallback_exc:
+                    if not last:  # the next fallback in the chain gets its turn
+                        logger.warning("[generation] fallback %s failed (%s); trying %s", fallback_backend_id,
+                                       fallback_exc.error_code.value, chain[position + 1])
+                        continue
+                    fallback_identity = self._promote_error_identity(fallback_exc.details)
+                    raise GenerationError(
+                        error_code=fallback_exc.error_code,
+                        stage="fallback",
+                        retryable=False,
+                        fallbackable=False,
+                        backend=fallback_backend_id,
+                        provider=fallback_exc.provider,
+                        details={
+                            "reason": "fallback_backend_failed",
+                            **fallback_identity,
+                            "fallback_chain": chain,
+                            "primary_error": primary_error,
+                            "fallback_error": {
+                                "error_code": fallback_exc.error_code.value,
+                                "backend": fallback_exc.backend,
+                                "provider": fallback_exc.provider,
+                                "stage": fallback_exc.stage,
+                                "details": fallback_exc.details,
+                            },
                         },
-                        "fallback_error": fallback_exc.details,
-                    },
-                ) from fallback_exc
-            try:
-                result = fallback_backend.generate(
-                    prompt,
-                    generation_config,
-                    system_prompt=system_prompt,
-                    stream=stream,
-                    stream_progress_callback=stream_progress_callback,
-                    response_validator=response_validator,
-                    audit_context=audit_context,
-                )
-            except _AllModelsFailedError:
-                raise
-            except GenerationError as fallback_exc:
-                fallback_identity = self._promote_error_identity(fallback_exc.details)
-                raise GenerationError(
-                    error_code=fallback_exc.error_code,
-                    stage="fallback",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=fallback_backend_id,
-                    provider=fallback_exc.provider,
-                    details={
-                        "reason": "fallback_backend_failed",
-                        **fallback_identity,
-                        "primary_error": {
-                            "error_code": exc.error_code.value,
-                            "backend": exc.backend,
-                            "provider": exc.provider,
-                            "stage": exc.stage,
-                            "details": exc.details,
+                    ) from fallback_exc
+                except Exception as fallback_exc:
+                    if not last:
+                        logger.warning("[generation] fallback %s failed (%s); trying %s", fallback_backend_id,
+                                       type(fallback_exc).__name__, chain[position + 1])
+                        continue
+                    raise GenerationError(
+                        error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                        stage="fallback",
+                        retryable=False,
+                        fallbackable=False,
+                        backend=fallback_backend_id,
+                        provider=fallback_backend_id,
+                        details={
+                            "reason": "fallback_backend_failed",
+                            "fallback_chain": chain,
+                            "primary_error": primary_error,
+                            "fallback_error": str(fallback_exc),
                         },
-                        "fallback_error": {
-                            "error_code": fallback_exc.error_code.value,
-                            "backend": fallback_exc.backend,
-                            "provider": fallback_exc.provider,
-                            "stage": fallback_exc.stage,
-                            "details": fallback_exc.details,
-                        },
-                    },
-                ) from fallback_exc
-            except Exception as fallback_exc:
-                raise GenerationError(
-                    error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
-                    stage="fallback",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=fallback_backend_id,
-                    provider=fallback_backend_id,
-                    details={
-                        "reason": "fallback_backend_failed",
-                        "primary_error": {
-                            "error_code": exc.error_code.value,
-                            "backend": exc.backend,
-                            "provider": exc.provider,
-                            "stage": exc.stage,
-                            "details": exc.details,
-                        },
-                        "fallback_error": str(fallback_exc),
-                    },
-                ) from fallback_exc
+                    ) from fallback_exc
         if return_generation_result:
             return result
         return result.text, result.model, result.usage

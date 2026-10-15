@@ -240,7 +240,9 @@ daily_stock_analysis/
 |--------|------|--------|:----:|
 | `GENERATION_BACKEND` | 普通分析生成后端；支持 `litellm` 或显式 opt-in 的 `codex_cli` / `claude_code_cli` / `opencode_cli`（experimental/limited） | `litellm` | 否 |
 | `OPENCODE_CLI_MODEL` | `GENERATION_BACKEND=opencode_cli` 时可选传给 OpenCode `--model` 的模型覆盖；留空则使用本机 OpenCode 默认模型，认证和模型可用性由本机 OpenCode 配置负责 | 空 | 否 |
-| `GENERATION_FALLBACK_BACKEND` | backend 级 fallback；未配置默认 `litellm`，空值禁用，self fallback 解析为 no-op | `litellm` | 否 |
+| `GENERATION_FALLBACK_BACKEND` | backend 级 fallback；一个或逗号分隔的多个，按顺序尝试（如 `codex_cli,litellm`：先 Codex CLI 再默认模型配置）；未配置默认 `litellm`，空值禁用，与 primary 相同的项跳过（self no-op）。本地 CLI 返回额度/速率上限（如 Claude Code 周额度）后会被跳过，直到其提示的重置时间（无提示时 30 分钟），期间请求直接走 fallback | `litellm` | 否 |
+| `CODEX_CLI_MODEL` / `CODEX_CLI_EFFORT` | `codex_cli` 的模型与推理强度（`minimal`/`low`/`medium`/`high`/`xhigh`）覆盖，传给 `codex exec --model` 与 `-c model_reasoning_effort`；留空沿用 `CODEX_HOME/config.toml` | 空 | 否 |
+| `TARGETED_CODEX_CLI_MODEL` / `TARGETED_CODEX_CLI_EFFORT` | 用户请求的分析中 `codex_cli` 使用的模型与强度；留空沿用上面的常规值 | 空 | 否 |
 | `GENERATION_BACKEND_TIMEOUT_SECONDS` | 单次 generation backend 调用超时秒数，主要用于本地 CLI backend；范围 `1-3600` | `300` | 否 |
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |

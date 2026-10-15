@@ -245,7 +245,7 @@ const fieldDescriptionMap: Record<string, string> = {
   PYTDX_SERVERS: 'Pytdx 自定义节点列表，支持 host:port 逗号分隔。',
   BIAS_THRESHOLD: 'BIAS 偏离阈值，超过后用于增强超买超卖提示。',
   GENERATION_BACKEND: '用于个股分析、大盘复盘和普通文本生成。本地 CLI 生成方式需要本机已安装并登录对应 CLI，仍可能调用对应云服务，不是离线模型。',
-  GENERATION_FALLBACK_BACKEND: '本地 CLI 生成失败后的处理方式：禁用表示直接报错，默认模型配置表示再尝试普通模型。',
+  GENERATION_FALLBACK_BACKEND: '本地 CLI 生成失败后的处理方式（按顺序尝试）：禁用表示直接报错，默认模型配置表示再尝试普通模型，先 Codex CLI 再默认模型配置适合 Claude Code 额度用尽时。',
   OPENCODE_CLI_MODEL: 'OpenCode CLI 的可选模型覆盖；留空时使用本机 OpenCode 默认模型。认证和模型可用性由本机 OpenCode 配置负责。',
   GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于本地 CLI 这类命令行方式。',
   GENERATION_BACKEND_MAX_OUTPUT_BYTES: '单次本地命令行生成可读取的输出大小上限，默认 1048576 字节。',
@@ -429,6 +429,7 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
   GENERATION_FALLBACK_BACKEND: {
     '': '禁用',
     litellm: '默认模型配置',
+    'codex_cli,litellm': '先 Codex CLI，再默认模型配置',
   },
   AGENT_GENERATION_BACKEND: {
     auto: '自动',
@@ -513,6 +514,7 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
   GENERATION_FALLBACK_BACKEND: {
     '': 'Disabled',
     litellm: 'Default model settings',
+    'codex_cli,litellm': 'Codex CLI, then default model settings',
   },
   AGENT_GENERATION_BACKEND: {
     auto: 'Auto',

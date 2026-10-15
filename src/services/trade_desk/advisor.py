@@ -178,10 +178,24 @@ class CodexTradeAdvisor:
         return narrative, pool, contexts
 
 
+class _WithFallback:
+    """The routine backend with GENERATION_FALLBACK_BACKEND behind it (e.g. Claude, then Codex, then LiteLLM)."""
+
+    def __init__(self, analyzer):
+        self._analyzer = analyzer
+
+    def generate(self, prompt, generation_config, *, system_prompt=None, **kwargs):
+        return self._analyzer._call_litellm(prompt, generation_config, system_prompt=system_prompt,
+                                            return_generation_result=True, **kwargs)
+
+
 def _generation_backend(backend_id=None):
+    """A named backend as is (second opinions), or the routine backend with its fallback chain."""
     from src.analyzer import GeminiAnalyzer
     analyzer = GeminiAnalyzer()
-    return analyzer._get_generation_backend(backend_id), backend_id or analyzer._resolve_generation_backend_config()[0]
+    if backend_id:
+        return analyzer._get_generation_backend(backend_id), backend_id
+    return _WithFallback(analyzer), analyzer._resolve_generation_backend_config()[0]
 
 
 class RoutineTradeAdvisor:
@@ -201,7 +215,8 @@ class RoutineTradeAdvisor:
         result = backend.generate(json.dumps(_payload(request, snapshot, candidates), ensure_ascii=False),
                                   {"temperature": 0.2, "max_output_tokens": 8192},
                                   system_prompt=_system_prompt("Compare the supplied calculated candidates. "))
-        label = model_label(backend_id, get_config())
+        # The model that answered: a fallback when the routine backend was unavailable.
+        label = model_label(getattr(result, "backend", "") or backend_id, get_config())
         narrative = _validated(result.text or "", pool, label)
         contexts["_usage"] = {**(result.usage or {}), "model": label}
         contexts["_tool_calls"] = []

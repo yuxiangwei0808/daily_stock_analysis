@@ -423,9 +423,9 @@ def recent_picks(repo: Any, ticker: str, days: int = RECENT_DAYS, now: Optional[
     return sorted(rows, key=lambda row: row["published_at"], reverse=True)
 
 
-def flag(repo: Any, ticker: str, days: int = 14) -> str:
+def flag(repo: Any, ticker: str, days: int = 14, now: Optional[datetime] = None) -> str:
     """A line for a trade idea when a followed channel called the stock lately; "" otherwise."""
-    picks = recent_picks(repo, ticker, days)
+    picks = recent_picks(repo, ticker, days, now=now)
     return f"📺 YouTube: {summary_line(picks, 'en')}" if picks else ""
 
 

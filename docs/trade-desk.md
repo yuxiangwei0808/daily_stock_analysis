@@ -106,7 +106,19 @@ as trigger, invalidation and stop levels and mention them, but not pick or rejec
 trade because of NX. The answer shows a "Your NX tunnel" panel. Replay requests skip it.
 
 When no contracts can be compared, the answer says why (no quotable options, or
-none passing the filters, with the provider's notes) instead of a generic message.
+none passing the filters, with the provider's notes) instead of a generic message. Live
+quotes taken outside 9:30 AM–4:00 PM ET say so instead: US options trade only in the
+regular session, so before the open or after the close the broker has no option bid/ask
+to price ("ask again after the open"). Your own question still gets an answer: the
+routine model (with its fallback chain) writes a short view from the ticker's price, news,
+position and NX evidence — the move you ask about, the levels that matter, what would
+change the view and what to check once options can be priced — marked "The desk's view (no
+priced strategies)" (`llm_status` `view_only`). Automatic follow-ups do not.
+
+The desk's routine model calls (the daily ideas, news ratings, alert wording, routine
+reviews, YouTube picks) use the configured fallback chain (`GENERATION_FALLBACK_BACKEND`,
+e.g. `codex_cli,litellm`), so a rate-limited Claude Code answers through Codex and then the
+default models; second opinions stay with the backend they name.
 
 1. Open Trade Desk directly or use **Explore trade strategies** from a report or
    screening result. Choose live or clearly labeled replay data.

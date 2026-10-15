@@ -28,7 +28,9 @@ SUPPORTED_GENERATION_BACKENDS = frozenset({
     LITELLM_BACKEND_ID,
     *LOCAL_CLI_GENERATION_BACKEND_IDS,
 })
-SUPPORTED_GENERATION_FALLBACK_BACKENDS = frozenset({LITELLM_BACKEND_ID})
+# Fallback targets, tried in the configured order after the primary fails
+# (GENERATION_FALLBACK_BACKEND=codex_cli,litellm: Codex first, then the LiteLLM models).
+SUPPORTED_GENERATION_FALLBACK_BACKENDS = frozenset({LITELLM_BACKEND_ID, *LOCAL_CLI_GENERATION_BACKEND_IDS})
 SUPPORTED_AGENT_GENERATION_BACKENDS = frozenset({
     AUTO_AGENT_BACKEND_ID,
     *AGENT_CAPABLE_BACKEND_IDS,
@@ -96,25 +98,35 @@ def resolve_generation_backend_id(config: Any) -> str:
     return backend_id
 
 
-def resolve_generation_fallback_backend_id(config: Any) -> Optional[str]:
-    """Return the backend-level fallback target, or None for self/no-op."""
+def resolve_generation_fallback_backend_ids(config: Any) -> list[str]:
+    """Return the backend-level fallback chain in order; empty for none.
+
+    ``GENERATION_FALLBACK_BACKEND`` is one backend or a comma list (``codex_cli,litellm``).
+    Unset means ``litellm``; an empty value disables fallback; the primary itself and
+    repeats are skipped (self fallback is a no-op).
+    """
     primary = resolve_generation_backend_id(config)
     raw_fallback = _read_backend_config_value(
         config,
         "generation_fallback_backend",
         None,
     )
-    if raw_fallback is None:
-        fallback = LITELLM_BACKEND_ID
-    else:
-        fallback = str(raw_fallback).strip().lower()
-        if not fallback:
-            return None
-    if fallback == primary:
-        return None
-    if fallback != LITELLM_BACKEND_ID:
-        raise _unsupported_backend_error(fallback, field="GENERATION_FALLBACK_BACKEND")
-    return fallback
+    names = [LITELLM_BACKEND_ID] if raw_fallback is None else str(raw_fallback).split(",")
+    chain: list[str] = []
+    for item in names:
+        fallback = item.strip().lower()
+        if not fallback or fallback == primary or fallback in chain:
+            continue
+        if fallback not in SUPPORTED_GENERATION_FALLBACK_BACKENDS:
+            raise _unsupported_backend_error(fallback, field="GENERATION_FALLBACK_BACKEND")
+        chain.append(fallback)
+    return chain
+
+
+def resolve_generation_fallback_backend_id(config: Any) -> Optional[str]:
+    """Return the first backend-level fallback target, or None for self/no-op."""
+    chain = resolve_generation_fallback_backend_ids(config)
+    return chain[0] if chain else None
 
 
 def resolve_agent_generation_backend_id(config: Any) -> str:

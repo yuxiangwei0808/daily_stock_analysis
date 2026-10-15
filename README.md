@@ -64,7 +64,7 @@ TRADE_DESK_BROKER_ACCOUNT=1234           # 只读持仓：账户号末几位
 FREE_NEWS_SOURCES=google_news,yahoo_finance
 SOCIAL_SCAN_ENABLED=true
 YOUTUBE_CHANNELS=Meet Kevin=UCUvvj5lwue7PspotMDjk5UA   # 频道 ID，不是用户名
-GENERATION_FALLBACK_BACKEND=litellm      # 常规模型失败时回退
+GENERATION_FALLBACK_BACKEND=litellm      # 常规模型失败时回退（可写 codex_cli,litellm 按顺序尝试）
 ```
 
 ## 💖 赞助商 (Sponsors)

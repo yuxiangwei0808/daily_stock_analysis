@@ -16,6 +16,7 @@ from src.llm.backend_registry import (
     resolve_agent_generation_backend_id,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
+    resolve_generation_fallback_backend_ids,
 )
 from src.llm.generation_backend import (
     GenerationBackend,
@@ -48,4 +49,5 @@ __all__ = [
     "resolve_agent_generation_backend_id",
     "resolve_generation_backend_id",
     "resolve_generation_fallback_backend_id",
+    "resolve_generation_fallback_backend_ids",
 ]

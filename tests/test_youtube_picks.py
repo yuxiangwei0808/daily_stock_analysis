@@ -227,7 +227,7 @@ def test_recent_picks_and_channel_results(repo):
     picks = yp.recent_picks(repo, "MU", now=NOW)
     assert [pick["channel"] for pick in picks] == ["Meet Kevin"]  # Tom Nash's call is older than 30 days
     assert yp.summary_line(picks, "en") == "Meet Kevin bullish (09-30)"
-    assert yp.flag(repo, "MU").startswith("📺 YouTube: Meet Kevin bullish")
+    assert yp.flag(repo, "MU", now=NOW).startswith("📺 YouTube: Meet Kevin bullish")
     assert "不得据此调整评分或买卖结论" in yp.prompt_section(picks)
     rows = [{"channel": "A", "group": "bullish", "direction": "long", "benchmark_return_5d_pct": 3.0, "spy_5d_pct": 1.0,
              "benchmark_return_20d_pct": 5.0, "spy_20d_pct": 1.0},

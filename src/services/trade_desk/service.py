@@ -1,6 +1,7 @@
 """Trade Desk orchestration. There is deliberately no broker order interface."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -51,12 +52,35 @@ _NARRATIVE_FIELDS = ("evidence_confidence", "reasons", "entry_conditions", "inva
                      "exit_conditions", "warnings")
 
 
-def _no_candidates_reason(snapshot, request):
+def _us_session(when):
+    """The US session at the time the quotes were taken; "regular" (no claim) when unknown."""
+    if when is None:
+        return "regular"
+    try:
+        from data_provider.us_session import session_window
+        return session_window(when)[0]
+    except Exception:
+        return "regular"
+
+
+def _no_candidates_reason(snapshot, request, now=None):
     """Say why nothing could be compared instead of a generic message."""
     ticker = request.ticker
     notes = [w for w in snapshot.warnings if w.split(":")[0] in {
         "expiration_dates_unavailable", "expiry_unverified_or_unavailable", "option_quotes_unavailable",
         "expired_contracts_excluded"}]
+    when = now or getattr(snapshot, "quoted_at", None) or getattr(snapshot, "received_at", None)
+    session = _us_session(when) if request.data_mode == "live" else "regular"
+    if session != "regular":
+        # Options trade 9:30-16:00 New York only: outside it the book is empty, so nothing is priced.
+        when = {"premarket": "before the 9:30 AM ET open", "postmarket": "after the 4:00 PM ET close"}.get(
+            session, "while the market is closed")
+        reason = (f"US options trade only 9:30 AM–4:00 PM ET; {when} the broker has no {ticker} option "
+                  f"bid/ask, so no strategy could be priced.")
+        if notes:
+            reason += " Provider notes: " + ", ".join(sorted(set(notes))) + "."
+        return reason + (" Ask again after the open for priced strategies." if session == "premarket"
+                         else " Ask again during market hours, or use Replay to study the setup.")
     if not snapshot.options:
         reason = f"The broker returned no quotable {ticker} options"
         if request.expiry:
@@ -268,6 +292,31 @@ class TradeDeskService:
         return context, request
 
     @staticmethod
+    def _view_without_strategies(request, snapshot, why: str) -> str:
+        """The model's written answer to your question when no option strategy could be priced; "" if unavailable."""
+        from .advisor import _generation_backend
+        evidence = [{key: item.get(key) for key in ("kind", "title", "summary", "published_at", "url") if item.get(key)}
+                    for item in (snapshot.evidence or [])[:12]]
+        prompt = (
+            "You are a US stock and options desk. No option strategy could be priced for this question "
+            f"({why}). Answer the trader's question in 4-8 sentences from the data below: your view on the "
+            "stock and the move they ask about, the levels that matter, what would change the view, and what "
+            "to check once options can be priced. Never place or suggest placing orders for them; do not promise "
+            "outcomes; say plainly when the data is thin. Plain text, no headings.\n\n"
+            + json.dumps({"ticker": request.ticker, "question": request.message, "direction": request.direction,
+                          "horizon": request.horizon, "spot": getattr(snapshot, "spot", None),
+                          "quoted_at": str(getattr(snapshot, "quoted_at", "") or ""), "evidence": evidence},
+                         ensure_ascii=False, default=str))
+        try:
+            backend, _ = _generation_backend()
+            result = backend.generate(prompt, {"temperature": 0.3, "max_output_tokens": 2048})
+        except Exception as exc:  # the reason above still answers why nothing was priced
+            logger.info("Trade Desk view without strategies unavailable: %s", type(exc).__name__)
+            return ""
+        text = " ".join(str(getattr(result, "text", "") or "").split())
+        return f"The desk's view (no priced strategies): {text}" if text else ""
+
+    @staticmethod
     def _nx_levels(request):
         """The user's NX tunnel on a live US ticker (context and reference levels), or None."""
         if request.data_mode != "live":
@@ -454,7 +503,12 @@ class TradeDeskService:
                        "snapshots": {snapshot.id: snapshot.model_dump(mode="json")},
                        "assessment": "wait", "llm_status": "unavailable", "triggers": {}}
             if not candidates:
-                changes.update(status="completed", explanation=_no_candidates_reason(snapshot, request))
+                explanation = _no_candidates_reason(snapshot, request)
+                # Your question still gets an answer, from what the desk knows without option prices.
+                view = self._view_without_strategies(request, snapshot, explanation) \
+                    if request.message and job.get("source") == "manual" else ""
+                changes.update(status="completed", explanation=f"{explanation}\n\n{view}" if view else explanation,
+                               llm_status="view_only" if view else "unavailable")
                 self.repo.update_advice(advice_id, changes)
                 return
             def compare(effective, required_contracts=()):

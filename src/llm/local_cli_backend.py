@@ -465,6 +465,59 @@ _OPENCODE_DISABLED_TOOL_NAMES = (
     "write",
 )
 _CONCURRENCY_CONDITION = threading.Condition()
+
+# A CLI that refused with "usage limit reached" (e.g. Claude Code's weekly limit) is skipped
+# until its stated reset, or for a cooldown, so calls go straight to the fallback chain
+# instead of spending seconds on another refusal each time.
+USAGE_LIMIT_COOLDOWN_SECONDS = 1800
+USAGE_LIMIT_MAX_SECONDS = 24 * 3600
+_USAGE_LIMIT_LOCK = threading.Lock()
+_USAGE_LIMIT_UNTIL: Dict[str, float] = {}
+_USAGE_LIMIT_TEXT = re.compile(
+    r"api_error_status\W{0,3}429|hit your [a-z ]{0,20}limit|usage limit (?:reached|exceeded)|"
+    r"rate[ _-]?limit(?:ed| exceeded|_exceeded)|too many requests",
+    re.IGNORECASE,
+)
+_RESETS_AT = re.compile(
+    r"resets\s+(?:(?:on\s+)?[A-Za-z]{3,9},?\s+)?(?:[A-Za-z]{3,9}\s+\d{1,2},?\s+)?(?:at\s+)?"
+    r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\((?:UTC|GMT)\)",
+    re.IGNORECASE,
+)
+
+
+def usage_limit_reset(text: str, now: float) -> float:
+    """When a "limit · resets 5pm (UTC)" refusal ends (the next such time), else now plus a cooldown."""
+    match = _RESETS_AT.search(text or "")
+    if not match:
+        return now + USAGE_LIMIT_COOLDOWN_SECONDS
+    from datetime import datetime, timedelta, timezone
+    hour = int(match.group(1)) % 12 + (12 if match.group(3).lower() == "pm" else 0)
+    current = datetime.fromtimestamp(now, timezone.utc)
+    reset = current.replace(hour=hour, minute=int(match.group(2) or 0), second=0, microsecond=0)
+    if reset.timestamp() <= now:
+        reset += timedelta(days=1)  # a weekday in the text is not parsed: a later refusal sets the next wait
+    return min(reset.timestamp(), now + USAGE_LIMIT_MAX_SECONDS)
+
+
+def usage_limited_until(preset_id: str, now: Optional[float] = None) -> Optional[float]:
+    """The time a usage-limited CLI is skipped until, or None when it may run."""
+    now = time.time() if now is None else now
+    with _USAGE_LIMIT_LOCK:
+        until = _USAGE_LIMIT_UNTIL.get(preset_id)
+        if until is not None and until <= now:
+            _USAGE_LIMIT_UNTIL.pop(preset_id, None)
+            return None
+        return until
+
+
+def _mark_usage_limited(preset_id: str, until: float) -> None:
+    with _USAGE_LIMIT_LOCK:
+        _USAGE_LIMIT_UNTIL[preset_id] = until
+
+
+def _iso(epoch: float) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 _CONCURRENCY_ACTIVE = 0
 
 
@@ -2106,6 +2159,16 @@ class LocalCliGenerationBackend(GenerationBackend):
         response_validator: Optional[Callable[[str], None]] = None,
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> GenerationResult:
+        limited_until = usage_limited_until(self._preset.preset_id)
+        if limited_until is not None:
+            raise self._error(
+                GenerationErrorCode.NON_ZERO_EXIT,
+                stage="execution",
+                retryable=False,
+                fallbackable=True,
+                details={"preset_id": self._preset.preset_id, "reason": "usage_limit",
+                         "skipped_until": _iso(limited_until)},
+            )
         executable, argv, executable_summary = self._resolve_command()
         timeout_seconds = min(
             _positive_int(
@@ -2581,6 +2644,18 @@ class LocalCliGenerationBackend(GenerationBackend):
             claude_effort = self._get_claude_code_cli_effort()
             extra = (["--model", claude_model] if claude_model else []) + (["--effort", claude_effort] if claude_effort else [])
             return [*argv, *extra]
+        if self._preset.preset_id == CODEX_CLI_BACKEND_ID:
+            # CODEX_CLI_MODEL/_EFFORT (or TARGETED_* inside user-requested analyses) override
+            # CODEX_HOME/config.toml; unset keeps the config file's model and effort.
+            codex_model = self._get_cli_model("codex_cli_model", "CODEX_CLI_MODEL")
+            codex_effort = self._get_cli_effort("codex_cli_effort", "CODEX_CLI_EFFORT",
+                                                {"minimal", "low", "medium", "high", "xhigh"})
+            extra = (["--model", codex_model] if codex_model else []) + (
+                ["-c", f"model_reasoning_effort={codex_effort}"] if codex_effort else [])
+            if extra and "exec" in argv:
+                at = argv.index("exec") + 1
+                return [*argv[:at], *extra, *argv[at:]]
+            return argv
         if self._preset.preset_id != OPENCODE_CLI_BACKEND_ID:
             return argv
         model = self._get_opencode_cli_model()
@@ -2611,13 +2686,14 @@ class LocalCliGenerationBackend(GenerationBackend):
         return runtime_argv
 
     def _cli_model_label(self) -> str:
-        if self._preset.preset_id != "claude_code_cli":
+        if self._preset.preset_id not in {CLAUDE_CODE_CLI_BACKEND_ID, CODEX_CLI_BACKEND_ID}:
             return self._preset.preset_id
         try:
-            model = self._get_claude_code_cli_model()
+            model = (self._get_claude_code_cli_model() if self._preset.preset_id == CLAUDE_CODE_CLI_BACKEND_ID
+                     else self._get_cli_model("codex_cli_model", "CODEX_CLI_MODEL"))
         except Exception:
             model = ""
-        return f"claude_code_cli:{model}" if model else "claude_code_cli"
+        return f"{self._preset.preset_id}:{model}" if model else self._preset.preset_id
 
     def _claude_setting(self, name: str) -> str:
         """Routine value, or the TARGETED_* value inside a user-requested analysis."""
@@ -2628,6 +2704,33 @@ class LocalCliGenerationBackend(GenerationBackend):
             if targeted:
                 return targeted
         return str(getattr(self._config, name, "") or "").strip()
+
+    def _get_cli_model(self, name: str, field: str) -> str:
+        model = self._claude_setting(name)
+        if model and (_first_unsafe_token([model]) or any(ch.isspace() for ch in model) or "$" in model
+                      or model.startswith("-")):
+            raise self._error(
+                GenerationErrorCode.UNSAFE_CONFIG,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={"reason": f"unsafe_{name}", "field": field,
+                         "token_preview": redact_diagnostic_text(model, limit=120)},
+            )
+        return model
+
+    def _get_cli_effort(self, name: str, field: str, allowed: set) -> str:
+        effort = self._claude_setting(name).lower()
+        if effort and effort not in allowed:
+            raise self._error(
+                GenerationErrorCode.UNSAFE_CONFIG,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={"reason": f"invalid_{name}", "field": field,
+                         "token_preview": redact_diagnostic_text(effort, limit=40)},
+            )
+        return effort
 
     def _get_claude_code_cli_effort(self) -> str:
         effort = self._claude_setting("claude_code_cli_effort").lower()
@@ -2769,9 +2872,25 @@ class LocalCliGenerationBackend(GenerationBackend):
         logger.warning("%s exited %s: %s", self._preset.preset_id, returncode, tail or "(no output)")
         code = GenerationErrorCode.NON_ZERO_EXIT
         reason = "non_zero_exit"
+        if _USAGE_LIMIT_TEXT.search(combined):
+            until = usage_limit_reset(f"{stdout}\n{stderr}", time.time())
+            _mark_usage_limited(self._preset.preset_id, until)
+            logger.warning("%s hit a usage limit; skipped until %s (calls go to the fallback)",
+                           self._preset.preset_id, _iso(until))
+            return self._error(
+                code,
+                stage="execution",
+                retryable=False,
+                fallbackable=True,
+                details={**diagnostics, "reason": "usage_limit", "returncode": returncode,
+                         "skipped_until": _iso(until)},
+            )
         if _is_cli_contract_unsupported(combined):
             code = GenerationErrorCode.CAPABILITY_UNSUPPORTED
             reason = "cli_contract_unsupported"
+        elif "model is not supported" in combined or "model_not_found" in combined or "does not exist" in combined:
+            code = GenerationErrorCode.CAPABILITY_UNSUPPORTED  # e.g. a Codex model the account cannot use
+            reason = "model_unsupported"
         elif (
             self._preset.preset_id == OPENCODE_CLI_BACKEND_ID
             and _opencode_output_has_error_event(f"{stdout}\n{stderr}")

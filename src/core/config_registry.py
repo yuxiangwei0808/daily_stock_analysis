@@ -196,7 +196,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "GENERATION_FALLBACK_BACKEND": {
         "title": "Fallback Generation Method",
-        "description": "Backend-level fallback method. Empty disables backend fallback; litellm can be used as fallback for local CLI generation backends.",
+        "description": "Backend-level fallback, tried in order when the primary fails. Empty disables backend fallback; litellm uses the default model settings; codex_cli,litellm tries Codex CLI first (e.g. while Claude Code is rate-limited).",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "select",
@@ -207,11 +207,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [
             {"label": "Disabled", "value": ""},
             {"label": "Default model settings", "value": "litellm"},
+            {"label": "Codex CLI, then default model settings", "value": "codex_cli,litellm"},
         ],
-        "validation": {"enum": ["", "litellm"]},
+        "validation": {"enum": ["", "litellm", "codex_cli,litellm"]},
         "display_order": 0,
         "help_key": "settings.ai_model.GENERATION_FALLBACK_BACKEND",
-        "examples": ["GENERATION_FALLBACK_BACKEND=litellm", "GENERATION_FALLBACK_BACKEND="],
+        "examples": ["GENERATION_FALLBACK_BACKEND=litellm", "GENERATION_FALLBACK_BACKEND=codex_cli,litellm",
+                     "GENERATION_FALLBACK_BACKEND="],
         "docs": [
             {
                 "label": "LLM 配置指南",

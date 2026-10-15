@@ -63,6 +63,21 @@ def test_empty_result_says_why():
     assert "3 SOXS option quotes came back" in service._no_candidates_reason(snapshot, TradeAdviceRequest(ticker="SOXS"))
 
 
+def test_before_the_open_the_answer_says_options_have_no_prices_yet():
+    from datetime import datetime, timezone
+    request = TradeAdviceRequest(ticker="SOXS", message="What's your recommendation?")
+    premarket = SimpleNamespace(options=[], warnings=[], quoted_at=datetime(2026, 10, 15, 13, 28, tzinfo=timezone.utc))
+    text = service._no_candidates_reason(premarket, request)
+    assert "US options trade only 9:30 AM–4:00 PM ET; before the 9:30 AM ET open" in text
+    assert text.endswith("Ask again after the open for priced strategies.")
+    evening = SimpleNamespace(options=[], warnings=[], quoted_at=datetime(2026, 10, 15, 23, 0, tzinfo=timezone.utc))
+    assert "after the 4:00 PM ET close" in service._no_candidates_reason(evening, request)
+    midday = SimpleNamespace(options=[], warnings=[], quoted_at=datetime(2026, 10, 15, 16, 0, tzinfo=timezone.utc))
+    assert "no quotable SOXS options" in service._no_candidates_reason(midday, request)
+    replay = TradeAdviceRequest(ticker="SOXS", data_mode="replay")
+    assert "no quotable SOXS options" in service._no_candidates_reason(premarket, replay)
+
+
 def _repo():
     from contextlib import contextmanager
 
