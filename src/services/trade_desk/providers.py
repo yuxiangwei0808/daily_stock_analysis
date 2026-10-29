@@ -19,6 +19,7 @@ import hashlib
 import math
 import os
 import re
+import socket
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -1302,6 +1303,7 @@ class MoomooProvider:
             context_factory = getattr(sdk, "OpenQuoteContext", None)
             if not callable(context_factory):
                 raise ProviderError("sdk_unsupported", "Quote SDK does not expose OpenQuoteContext")
+            self._require_listening()
             try:
                 self._configure_encryption(sdk)
                 self._ctx = context_factory(host=self._host, port=self._port)
@@ -1312,6 +1314,24 @@ class MoomooProvider:
                 self._last_error = error
                 raise error from exc
             return self._ctx
+
+    def _require_listening(self) -> None:
+        """Fail at once when nothing listens on OpenD's port.
+
+        The SDK's context constructor connects synchronously and, with OpenD down (e.g. its
+        remembered login expired), retries every few seconds without returning, holding this
+        provider's lock: every quote call then hung, and the context never recovered once OpenD
+        was back. Checked first, the call fails now and the next one connects afresh.
+        """
+        if self._sdk is not None and not hasattr(self._sdk, "__file__"):
+            return  # a test double stands in for OpenD itself; the real SDK is a module
+        try:
+            with socket.create_connection((self._host, int(self._port)), timeout=2.0):
+                return
+        except OSError as exc:
+            error = ProviderError("connection_unavailable", f"OpenD is not listening on {self._host}:{self._port}")
+            self._last_error = error
+            raise error from exc
 
     @staticmethod
     def _encryption_key_file() -> Optional[str]:
@@ -1535,6 +1555,7 @@ class MoomooProvider:
         if firm is None:
             raise ProviderError("broker_account_unavailable", f"Unknown security firm {security_firm}")
         real = self._enum("TrdEnv", "REAL", "REAL")
+        self._require_listening()  # the trade context's constructor blocks the same way
         ctx = factory(filter_trdmarket=self._enum("TrdMarket", "NONE", "N/A"), host=self._host, port=self._port,
                       security_firm=firm)
         try:

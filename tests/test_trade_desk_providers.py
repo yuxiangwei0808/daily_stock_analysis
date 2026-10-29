@@ -1221,3 +1221,29 @@ def test_replay_lists_weekly_expiries_and_quotes_a_named_one() -> None:
     assert dates[0] == date(2026, 9, 18) and all(day.weekday() == 4 for day in dates) and dates[-1] >= date(2027, 3, 1)
     snapshot = replay.snapshot("SPY", now=now, expiries=[date(2026, 12, 18)])
     assert date(2026, 12, 18) in {option.expiry.astimezone(providers.US_EASTERN).date() for option in snapshot.options}
+
+
+def test_a_closed_opend_port_fails_at_once_instead_of_blocking_the_provider(monkeypatch) -> None:
+    import socket
+    import time as time_module
+    import types
+
+    with socket.socket() as probe:  # a port nothing listens on
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    constructed = []
+    sdk = types.ModuleType("moomoo")
+    sdk.__file__ = "moomoo/__init__.py"
+    sdk.OpenQuoteContext = lambda **kwargs: constructed.append(kwargs)
+    sdk.OpenSecTradeContext = lambda **kwargs: constructed.append(kwargs)
+    sdk.SecurityFirm = types.SimpleNamespace(FUTUINC="FUTUINC")
+    provider = providers.MoomooProvider(sdk=sdk, host="127.0.0.1", port=port)
+    started = time_module.monotonic()
+    with pytest.raises(providers.ProviderError) as error:
+        provider._ensure_context()
+    assert error.value.code == "connection_unavailable" and "not listening" in error.value.message
+    assert time_module.monotonic() - started < 5 and constructed == []  # the SDK never got to block
+    with pytest.raises(providers.ProviderError) as trade_error:
+        with provider._trade_account("1234", "FUTUINC"):
+            pass
+    assert trade_error.value.code == "connection_unavailable" and constructed == []
