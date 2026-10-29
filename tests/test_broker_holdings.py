@@ -71,6 +71,8 @@ class FakeProvider:
 @pytest.fixture
 def store(repo, monkeypatch):
     monkeypatch.setenv("TRADE_DESK_BROKER_ACCOUNT", "1234")
+    # The fixture's options expire 2026-10-16: views are built on the test's own date, not today's.
+    monkeypatch.setattr(h, "utcnow", lambda: MIDDAY)
     provider = FakeProvider()
     service = SimpleNamespace(repo=repo, provider=lambda mode: provider)
     holdings = h.Holdings(service)

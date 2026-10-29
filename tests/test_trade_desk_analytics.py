@@ -451,5 +451,12 @@ def test_the_catalog_lists_what_auto_compares_for_each_market_view() -> None:
     body = asyncio.run(catalog())
     ids = {item["id"] for item in body["items"]}
     assert set(body["defaults"]) == {"auto", "bullish", "bearish", "neutral", "volatile"}
-    assert body["defaults"]["bullish"] == ["bull_call_debit", "bull_put_credit", "long_call", "covered_call"]
+    # Auto compares the share trade that fits the view first, then option structures.
+    assert body["defaults"]["bullish"] == ["long_stock", "bull_call_debit", "bull_put_credit", "long_call"]
+    assert body["defaults"]["auto"] == ["long_stock", "short_stock", "bull_call_debit", "bear_put_debit"]
+    assert body["defaults"]["neutral"] == ["iron_condor", "short_strangle", "covered_call", "cash_secured_put"]
+    by_instrument = body["defaults_by_instrument"]
+    assert by_instrument["options"]["bullish"] == ["bull_call_debit", "bull_put_credit", "long_call", "covered_call"]
+    assert by_instrument["stock"]["bearish"] == ["short_stock"]
+    assert by_instrument["stock"]["neutral"] == ["long_stock", "short_stock"]  # shares cannot be neutral: both sides
     assert all(set(strategies) <= ids for strategies in body["defaults"].values())

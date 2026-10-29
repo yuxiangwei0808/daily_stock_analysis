@@ -107,12 +107,19 @@ class ProbabilityEstimate(Model):
     sensitivity: list[dict[str, Any]] = Field(default_factory=list)
 
 
+# How long a trade is meant to be held: intraday (out by the close), interday (1-5 trading days),
+# swing (1-6 weeks) and position (1-6 months). Options pick an expiry that fits; shares hold until
+# the horizon's end (a time stop).
+HORIZONS = ("intraday", "interday", "swing", "position")
+HORIZON_LABELS = {"intraday": "intraday", "interday": "1-5 days", "swing": "1-6 weeks", "position": "1-6 months"}
+
+
 class StrategyCandidate(Model):
     id: str = Field(default_factory=identity)
     strategy: str
     title: str
     underlying: str
-    horizon: Literal["intraday", "swing"]
+    horizon: Literal["intraday", "interday", "swing", "position"]
     snapshot_id: str
     legs: list[OptionLeg]
     payoff: PayoffAnalysis
@@ -125,6 +132,11 @@ class StrategyCandidate(Model):
     entry_conditions: list[str] = Field(default_factory=list)
     invalidation: str = ""
     exit_conditions: list[str] = Field(default_factory=list)
+    # Share trades: the volatility rule's stop and target on the stock, and the time stop.
+    stop_price: Optional[float] = Field(default=None, gt=0)
+    target_price: Optional[float] = Field(default=None, gt=0)
+    hold_until: Optional[AwareDatetime] = None
+    levels_basis: str = ""
     calculation_version: str = "trade-desk-v1"
 
 
@@ -175,7 +187,10 @@ class TradeAdviceRequest(Model):
     ticker: str
     allocation: Optional[float] = Field(default=None, gt=0)
     direction: Literal["auto", "bullish", "bearish", "neutral", "volatile"] = "auto"
-    horizon: Literal["intraday", "swing", "both"] = "both"
+    # "auto" lets the desk mix a near and a longer horizon ("both" is the older name for it).
+    horizon: Literal["auto", "intraday", "interday", "swing", "position", "both"] = "auto"
+    # What to compare when no strategies are named: shares, options, or both ("auto").
+    instrument: Literal["auto", "stock", "options"] = "auto"
     data_mode: Literal["live", "replay"] = "live"
     expiry: Optional[date] = None
     strategies: list[str] = Field(default_factory=list)
@@ -197,6 +212,11 @@ class TradeAdviceRequest(Model):
     @classmethod
     def _read_plan_legs(cls, value):
         return parse_plan_legs(value)
+
+    @field_validator("horizon", mode="after")
+    @classmethod
+    def _auto_horizon(cls, value):
+        return "auto" if value == "both" else value
 
     @model_validator(mode="after")
     def _plan_expiry(self):

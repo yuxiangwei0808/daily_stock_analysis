@@ -397,6 +397,50 @@ describe('TradeDeskPage', () => {
     await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({ strategies: ['iron_condor'] })));
   });
 
+  it('compares shares and options over the horizon you choose', async () => {
+    api.getCatalog.mockResolvedValue({ items: [
+      { id: 'long_stock', title: 'Buy shares', category: 'shares' },
+      { id: 'bull_call_debit', title: 'Bull call debit spread', category: 'directional' },
+    ], defaults: { auto: ['long_stock', 'bull_call_debit'] }, defaultsByInstrument: {
+      auto: { auto: ['long_stock', 'bull_call_debit'] }, stock: { auto: ['long_stock'] }, options: { auto: ['bull_call_debit'] } } });
+    renderPage('/trade-desk?ticker=AAPL');
+    expect(await screen.findByTestId('auto-strategies')).toHaveTextContent('Compares Buy shares, Bull call debit spread.');
+    fireEvent.change(screen.getByLabelText(/^(Trade|交易品种)$/), { target: { value: 'stock' } });
+    expect(screen.getByTestId('auto-strategies')).toHaveTextContent('Compares Buy shares.');
+    const horizon = screen.getByLabelText(/^(Horizon|时间范围)$/) as HTMLSelectElement;
+    expect(Array.from(horizon.options).map((option) => option.value)).toEqual(['auto', 'intraday', 'interday', 'swing', 'position']);
+    fireEvent.change(horizon, { target: { value: 'position' } });
+    fireEvent.click(screen.getByRole('radio', { name: /Replay/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^(Ask|提问)$/ }));
+    await waitFor(() => expect(api.createAdvice).toHaveBeenCalledWith(expect.objectContaining({
+      instrument: 'stock', horizon: 'position', strategies: [] })));
+  });
+
+  it('shows a share trade with its stop, target and hold-until date', async () => {
+    const share: StrategyCandidate = { ...candidate, id: 'candidate-share', strategy: 'long_stock', title: 'Buy shares (1-6 weeks)',
+      horizon: 'swing', legs: [{ contractId: 'TEST', right: 'stock', side: 'buy', quantity: 100, multiplier: 1, entryPrice: 100,
+        existing: false, exerciseStyle: 'american' }],
+      payoff: { ...candidate.payoff, entryDebit: 10000, maxGain: null, maxLoss: 10000, gainBound: 'unbounded', lossBound: 'bounded',
+        breakevens: [100], capitalRequired: 10000 },
+      probability: { ...candidate.probability, available: true, probabilityOfProfit: 0.48, horizonLabel: 'time stop',
+        assumptions: { targetBeforeStop: 0.34 } },
+      stopPrice: 97.17, targetPrice: 105.67, holdUntil: '2026-11-25T21:00:00Z', levelsBasis: 'stop 1.5 x ATR(14) of daily bars' };
+    api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', assessment: 'compare', explanation: 'Shares are simplest.',
+      candidates: [share, candidate], triggers: { 'candidate-share': {} } }] });
+    renderPage();
+    const table = await screen.findByTestId('answer-compare');
+    expect(within(table).getAllByText('$283.00 at stop').length).toBeGreaterThan(0);
+    expect(within(table).getAllByText('$567.00 at target').length).toBeGreaterThan(0);
+    expect(within(table).getAllByText(/hold to Nov 25/).length).toBeGreaterThan(0);
+    const detail = screen.getByTestId('candidate-detail');
+    expect(detail).toHaveTextContent('Hold until');
+    const levels = screen.getByTestId('share-levels');
+    expect(levels).toHaveTextContent('Stop 97.17 (-$283.00)');
+    expect(levels).toHaveTextContent('Target 105.67 (+$567.00)');
+    expect(levels).toHaveTextContent('Target before stop ≈ 34%');
+    expect(screen.getByTestId('candidate-legs')).toHaveTextContent('Buy 100 shares');
+  });
+
   it('shows the NX tunnel an answer used', async () => {
     api.listAdvice.mockResolvedValue({ items: [{ ...queuedJob, status: 'completed', explanation: 'Use the fast tunnel as the stop',
       nxTunnel: { asOf: '2026-09-29', close: 33.26, fast: { top: 43.04, bottom: 40.01, state: 'below' }, slow: { top: 85.03, bottom: 77.83, state: 'below' },

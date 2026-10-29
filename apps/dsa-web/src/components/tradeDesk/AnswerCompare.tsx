@@ -1,10 +1,18 @@
 import { Info, Star } from 'lucide-react';
 import type { StrategyCandidate, TradeAdviceJob } from '../../types/tradeDesk';
-import { boundText, breakevenText, costText, dayLabel, expiryOf, pickedIds, popText } from './answerFormat';
+import { baseTitle, boundText, breakevenText, costText, dayLabel, expiryOf, horizonLabel, isShares, money, pickedIds, popText, shareAt } from './answerFormat';
 import type { SharedNotes } from './answerFormat';
 
 const GAIN = 'hsl(var(--color-success))';
 const LOSS = 'hsl(var(--color-danger))';
+
+// A share trade has no expiry and its loss is to the stop, not to zero: the cells say so.
+const gainText = (candidate: StrategyCandidate) => (isShares(candidate) && candidate.targetPrice != null
+  ? `${money(shareAt(candidate, candidate.targetPrice))} at target` : boundText(candidate.payoff.gainBound, candidate.payoff.maxGain));
+const lossText = (candidate: StrategyCandidate) => (isShares(candidate) && candidate.stopPrice != null
+  ? `${money(Math.abs(shareAt(candidate, candidate.stopPrice) ?? 0))} at stop` : boundText(candidate.payoff.lossBound, candidate.payoff.maxLoss));
+const whenText = (candidate: StrategyCandidate) => (isShares(candidate)
+  ? `hold to ${dayLabel(candidate.holdUntil)}` : dayLabel(expiryOf(candidate)));
 
 /** The candidates side by side; a row opens that candidate below. */
 export function AnswerCompare({ job, selectedId, onSelect }: {
@@ -26,7 +34,7 @@ export function AnswerCompare({ job, selectedId, onSelect }: {
               <th className="px-3 py-2 font-medium">Max loss</th>
               <th className="px-3 py-2 font-medium">Breakeven</th>
               <th className="px-3 py-2 font-medium">Chance of profit</th>
-              <th className="px-3 py-2 font-medium">Expires</th>
+              <th className="px-3 py-2 font-medium">Expires / hold</th>
             </tr>
           </thead>
           <tbody>
@@ -39,16 +47,16 @@ export function AnswerCompare({ job, selectedId, onSelect }: {
                     <button type="button" onClick={(event) => { event.stopPropagation(); onSelect(candidate); }}
                       className={`text-left font-medium ${selected ? 'text-cyan' : 'text-foreground'}`}>
                       {picked.has(candidate.id) ? <Star className="mr-1 inline h-3.5 w-3.5 fill-current text-cyan" aria-label="Picked by the desk" /> : null}
-                      {candidate.title.replace(/ \((intraday|swing)\)$/, '')}
+                      {baseTitle(candidate.title)}
                     </button>
-                    {horizons.size > 1 ? <span className="ml-2 text-xs text-muted-text">{candidate.horizon}</span> : null}
+                    {horizons.size > 1 ? <span className="ml-2 text-xs text-muted-text">{horizonLabel(candidate.horizon)}</span> : null}
                   </td>
                   <td className="px-3 py-2.5 font-mono text-foreground">{costText(candidate)}</td>
-                  <td className="px-3 py-2.5 font-mono" style={{ color: GAIN }}>{boundText(candidate.payoff.gainBound, candidate.payoff.maxGain)}</td>
-                  <td className="px-3 py-2.5 font-mono" style={{ color: LOSS }}>{boundText(candidate.payoff.lossBound, candidate.payoff.maxLoss)}</td>
+                  <td className="px-3 py-2.5 font-mono" style={{ color: GAIN }}>{gainText(candidate)}</td>
+                  <td className="px-3 py-2.5 font-mono" style={{ color: LOSS }}>{lossText(candidate)}</td>
                   <td className="px-3 py-2.5 font-mono text-foreground">{breakevenText(candidate)}</td>
                   <td className="px-3 py-2.5 font-mono text-foreground">{popText(candidate)}</td>
-                  <td className="px-3 py-2.5 text-secondary-text">{dayLabel(expiryOf(candidate))}</td>
+                  <td className="px-3 py-2.5 text-secondary-text">{whenText(candidate)}</td>
                 </tr>
               );
             })}
@@ -64,15 +72,16 @@ export function AnswerCompare({ job, selectedId, onSelect }: {
               className={`rounded-xl border p-3 text-left text-xs ${selected ? 'border-cyan/50 bg-cyan/10' : 'border-border/50'}`}>
               <span className="flex items-center gap-1 text-sm font-medium text-foreground">
                 {picked.has(candidate.id) ? <Star className="h-3.5 w-3.5 fill-current text-cyan" aria-label="Picked by the desk" /> : null}
-                {candidate.title.replace(/ \((intraday|swing)\)$/, '')}
+                {baseTitle(candidate.title)}
+                {horizons.size > 1 ? <span className="text-xs font-normal text-muted-text">· {horizonLabel(candidate.horizon)}</span> : null}
               </span>
               <span className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-secondary-text">
                 <span>Cost <strong className="text-foreground">{costText(candidate)}</strong></span>
                 <span>Chance <strong className="text-foreground">{popText(candidate)}</strong></span>
-                <span>Max gain <strong style={{ color: GAIN }}>{boundText(candidate.payoff.gainBound, candidate.payoff.maxGain)}</strong></span>
-                <span>Max loss <strong style={{ color: LOSS }}>{boundText(candidate.payoff.lossBound, candidate.payoff.maxLoss)}</strong></span>
+                <span>Max gain <strong style={{ color: GAIN }}>{gainText(candidate)}</strong></span>
+                <span>Max loss <strong style={{ color: LOSS }}>{lossText(candidate)}</strong></span>
                 <span>Breakeven <strong className="text-foreground">{breakevenText(candidate)}</strong></span>
-                <span>Expires <strong className="text-foreground">{dayLabel(expiryOf(candidate))}</strong></span>
+                <span>{isShares(candidate) ? 'Hold to' : 'Expires'} <strong className="text-foreground">{isShares(candidate) ? dayLabel(candidate.holdUntil) : dayLabel(expiryOf(candidate))}</strong></span>
               </span>
             </button>
           );

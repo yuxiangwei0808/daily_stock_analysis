@@ -44,6 +44,7 @@ function toAdvicePayload(request: TradeAdviceRequest): Record<string, unknown> {
     allocation: request.allocation,
     direction: request.direction,
     horizon: request.horizon,
+    instrument: request.instrument,
     data_mode: request.dataMode,
     expiry: request.expiry,
     strategies: request.strategies,
@@ -174,9 +175,15 @@ export const tradeDeskApi = {
   },
 
   /** Every strategy, and ``defaults``: what is compared automatically for each market view. */
-  async getCatalog(): Promise<{ items: TradeDeskCatalogItem[]; defaults?: Record<string, string[]> }> {
+  async getCatalog(): Promise<{
+    items: TradeDeskCatalogItem[]; defaults?: Record<string, string[]>;
+    defaultsByInstrument?: Record<string, Record<string, string[]>>;
+  }> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/catalog`);
-    return toCamelCase<{ items: TradeDeskCatalogItem[]; defaults?: Record<string, string[]> }>(response.data);
+    return toCamelCase<{
+      items: TradeDeskCatalogItem[]; defaults?: Record<string, string[]>;
+      defaultsByInstrument?: Record<string, Record<string, string[]>>;
+    }>(response.data);
   },
 
   async createAdvice(request: TradeAdviceRequest): Promise<TradeAdviceJob> {

@@ -1030,6 +1030,12 @@ class ReplayProvider:
             return 5.0
         return 10.0
 
+    def expiration_dates(self, ticker: str) -> list[date]:
+        """Synthetic weekly (Friday) expiries for about seven months, so every horizon has one."""
+        today = self._now(None).astimezone(US_EASTERN).date()
+        fridays = [today + timedelta(days=(4 - today.weekday()) % 7 + 7 * week) for week in range(31)]
+        return [day for day in fridays if day >= today]
+
     def _expiries(self, current: datetime, requested: Optional[date]) -> list[datetime]:
         local_date = current.astimezone(US_EASTERN).date()
         current_eastern = current.astimezone(US_EASTERN)
@@ -1052,6 +1058,7 @@ class ReplayProvider:
         expiry: Optional[date | datetime | str] = None,
         now: Optional[datetime] = None,
         required_contracts: Sequence[str] = (),
+        expiries: Sequence[date | datetime | str] = (),
     ) -> QuoteSnapshot:
         if self._closed:
             raise ProviderError("provider_closed", "Replay provider is closed")
@@ -1065,9 +1072,15 @@ class ReplayProvider:
         spread = round(max(0.02, min(0.20, spot * 0.0008)), 2)
         bid = round(spot - spread, 2)
         ask = round(spot + spread, 2)
-        expiries = self._expiries(current, requested)
+        expiry_closes = self._expiries(current, requested)
+        if requested is None:
+            for value in expiries:  # longer horizons' expiries beyond the nearest sessions
+                day = _requested_expiry(value)
+                close = _replay_session_close(day) if day is not None else None
+                if close is not None and close > current.astimezone(US_EASTERN) and close not in expiry_closes:
+                    expiry_closes.append(close)
         options: list[OptionQuote] = []
-        for expiry_close in expiries:
+        for expiry_close in sorted(expiry_closes):
             time_years = max((expiry_close - current.astimezone(US_EASTERN)).total_seconds(), 0) / (
                 365.0 * 24.0 * 3600.0
             )
@@ -2021,6 +2034,7 @@ class MoomooProvider:
         expiry: Optional[date | datetime | str] = None,
         now: Optional[datetime] = None,
         required_contracts: Sequence[str] = (),
+        expiries: Sequence[date | datetime | str] = (),
     ) -> QuoteSnapshot:
         if self._closed:
             raise ProviderError("provider_closed", "Moomoo provider is closed")
@@ -2031,6 +2045,17 @@ class MoomooProvider:
         # The static chain can take many seconds on a symbol's first request;
         # load it before any timestamped quote so quotes are not aged by it.
         contracts = self._fetch_chain(symbol, requested)
+        # Longer horizons name expiries beyond the nearest few: their chains are fetched one date each,
+        # and the quote budget is shared by the two nearest expiries and those (``keep_dates``).
+        extra = sorted({day for day in (_requested_expiry(value) for value in expiries) if day is not None}) \
+            if requested is None else []
+        keep_dates: Optional[set] = None
+        if extra:
+            nearest = sorted({item.expiry_date for item in contracts})[:2]
+            for day in extra:
+                if day not in {item.expiry_date for item in contracts}:
+                    contracts = [*contracts, *self._fetch_chain(symbol, day)]
+            keep_dates = {*nearest, *extra}
         received_at = _coerce_now(now) if now is not None else self._now()
         self._subscribe([symbol], "QUOTE")
         underlying, underlying_is_fund = self._underlying_quote(symbol)
@@ -2078,12 +2103,14 @@ class MoomooProvider:
             self._warn("expiry_unverified_or_unavailable")
         if requested is not None and not any(item.expiry_date == requested for item in contracts):
             self._warn(f"expiry_unverified_or_unavailable:{requested.isoformat()}")
+        if keep_dates is not None:
+            contracts = [item for item in contracts if item.expiry_date in keep_dates]
         contracts = self._prioritize_contracts(
             contracts,
             spot,
             requested=requested,
             max_contracts=self._max_contracts,
-            max_expiries=self._max_expiries,
+            max_expiries=self._max_expiries if keep_dates is None else len(keep_dates),
             current_date=received_at.astimezone(US_EASTERN).date(),
             required_contracts=required_contracts,
         )
@@ -2221,11 +2248,19 @@ class MoomooProvider:
         expiry: Optional[date | datetime | str] = None,
         now: Optional[datetime] = None,
         required_contracts: Sequence[str] = (),
+        expiries: Sequence[date | datetime | str] = (),
     ) -> QuoteSnapshot:
         # OpenD quote contexts are not documented as thread-safe. Serialize
         # snapshot, health, reconnect, and close operations on this provider.
         with self._lock:
-            return self._snapshot_impl(ticker, expiry=expiry, now=now, required_contracts=required_contracts)
+            return self._snapshot_impl(ticker, expiry=expiry, now=now, required_contracts=required_contracts,
+                                       expiries=expiries)
+
+    def expiration_dates(self, ticker: str) -> list[date]:
+        """Upcoming option expiry dates for a ticker (empty when unavailable)."""
+        with self._lock:
+            symbol = _us_symbol(_normalize_ticker(ticker))
+            return self._upcoming_expiries(symbol, self._now())
 
     def _health_impl(self) -> dict[str, Any]:
         """Probe only quote connection, rights, and subscription quota."""

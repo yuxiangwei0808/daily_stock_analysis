@@ -43,6 +43,8 @@ const TradeDeskPage: React.FC = () => {
   const [catalog, setCatalog] = useState<TradeDeskCatalogItem[]>([]);
   // What "Auto" compares for each market view (from the server, so it matches the calculation).
   const [autoStrategies, setAutoStrategies] = useState<Record<string, string[]>>({});
+  // The same per what to trade (shares, options or both).
+  const [autoByInstrument, setAutoByInstrument] = useState<Record<string, Record<string, string[]>>>({});
   const [advice, setAdvice] = useState<TradeAdviceJob[]>([]);
   const [selectedAdviceId, setSelectedAdviceId] = useState<string | null>(linkedAdviceId);
   // Expired, stale, empty or week-old jobs: kept on the server, loaded only when the archive is opened.
@@ -108,7 +110,11 @@ const TradeDeskPage: React.FC = () => {
     const results = await Promise.allSettled([tradeDeskApi.getHealth(), tradeDeskApi.getCatalog(), tradeDeskApi.listAdvice(),
       withArchive ? tradeDeskApi.listAdvice('archive') : Promise.resolve(null)]);
     if (results[0].status === 'fulfilled') setHealth(results[0].value);
-    if (results[1].status === 'fulfilled') { setCatalog(results[1].value.items || []); setAutoStrategies(results[1].value.defaults || {}); }
+    if (results[1].status === 'fulfilled') {
+      setCatalog(results[1].value.items || []);
+      setAutoStrategies(results[1].value.defaults || {});
+      setAutoByInstrument(results[1].value.defaultsByInstrument || {});
+    }
     if (results[2].status === 'fulfilled' && sequence === adviceListSequence.current) {
       const items = results[2].value.items || [];
       const archived = results[3].status === 'fulfilled' && results[3].value ? results[3].value.items || [] : null;
@@ -253,6 +259,7 @@ const TradeDeskPage: React.FC = () => {
     allocation: parseNumber(form.allocation),
     direction: form.direction,
     horizon: form.horizon,
+    instrument: form.instrument,
     dataMode: form.dataMode,
     expiry: form.expiry || undefined,
     strategies: selectedStrategies,
@@ -332,7 +339,7 @@ const TradeDeskPage: React.FC = () => {
     setIsSubmitting(true); setError('');
     const baseline = { ...job.request };
     const effective = job.candidates.map((candidate) => job.effectiveRequests?.[candidate.id] || job.request);
-    const fields: (keyof TradeAdviceRequest)[] = ['allocation', 'direction', 'horizon', 'expiry', 'strategies', 'existingShares', 'feePerContract', 'riskFreeRate', 'dividendYield', 'marginPerUnit'];
+    const fields: (keyof TradeAdviceRequest)[] = ['allocation', 'direction', 'horizon', 'instrument', 'expiry', 'strategies', 'existingShares', 'feePerContract', 'riskFreeRate', 'dividendYield', 'marginPerUnit'];
     for (const field of fields) {
       if (effective.length && effective.every((request) => JSON.stringify(request[field]) === JSON.stringify(effective[0][field]))) {
         Object.assign(baseline, { [field]: effective[0][field] });
@@ -420,7 +427,7 @@ const TradeDeskPage: React.FC = () => {
       </div> : null}
     </div></Card>;
   };
-  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} autoStrategies={autoStrategies} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
+  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} autoStrategies={autoByInstrument[form.instrument] || autoStrategies} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
   // Replay events must never read as live: resolve each event's data mode from
   // its payload or advice so the journal can label it.
   const journalMode = (event: TradeJournalEvent): string | undefined => {

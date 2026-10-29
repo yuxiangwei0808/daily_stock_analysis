@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -1185,3 +1185,39 @@ def test_broker_history_includes_the_start_day_on_a_ninety_day_boundary(monkeypa
     provider.broker_deals("123", days=90, today=today)
     assert calls[-1]["start"] == (today - timedelta(days=90)).isoformat()
     assert calls[-1]["end"] == calls[-1]["start"]
+
+
+class _LongChainContext(_FakeQuoteContext):
+    """Answers a one-date chain request with that date's contracts (a longer horizon's expiry)."""
+
+    def get_option_chain(self, code, **kwargs):
+        start = kwargs.get("start")
+        if start and start == kwargs.get("end") and start not in {"2026-09-18", "2026-09-25"}:
+            root = code.replace("US.", "")
+            stamp = start.replace("-", "")[2:]
+            return 0, [{"code": f"US.{root}{stamp}{right[0]}00500000", "strike_time": start, "expiry_time": "16:00:00",
+                        "option_type": right, "strike_price": 500, "option_standard": "STANDARD",
+                        "index_option_type": "NORMAL", "contract_size": 100, "option_style": "AMERICAN"}
+                       for right in ("CALL", "PUT")]
+        return super().get_option_chain(code, **kwargs)
+
+
+def test_a_longer_horizon_expiry_is_quoted_beside_the_nearest_ones(monkeypatch) -> None:
+    monkeypatch.setattr(providers, "_resolve_session_close", _session_close_16)
+    now = datetime(2026, 9, 18, 19, 0, tzinfo=UTC)
+    provider = providers.MoomooProvider(sdk=_FakeSDK, context=_LongChainContext(), now=now, max_contracts=12)
+    snapshot = provider.snapshot("SPY", now=now, expiries=[date(2026, 10, 16)])
+    expiries = sorted({option.expiry.astimezone(providers.US_EASTERN).date() for option in snapshot.options})
+    assert expiries == [date(2026, 9, 18), date(2026, 9, 25), date(2026, 10, 16)]
+    plain = provider.snapshot("SPY", now=now)
+    assert date(2026, 10, 16) not in {option.expiry.astimezone(providers.US_EASTERN).date() for option in plain.options}
+    provider.close()
+
+
+def test_replay_lists_weekly_expiries_and_quotes_a_named_one() -> None:
+    now = datetime(2026, 9, 18, 15, 0, tzinfo=UTC)  # a Friday
+    replay = providers.ReplayProvider(now=now)
+    dates = replay.expiration_dates("SPY")
+    assert dates[0] == date(2026, 9, 18) and all(day.weekday() == 4 for day in dates) and dates[-1] >= date(2027, 3, 1)
+    snapshot = replay.snapshot("SPY", now=now, expiries=[date(2026, 12, 18)])
+    assert date(2026, 12, 18) in {option.expiry.astimezone(providers.US_EASTERN).date() for option in snapshot.options}

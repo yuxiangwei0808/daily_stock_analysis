@@ -88,15 +88,21 @@ _RULES = (
     "An evidence item with kind 'social_scan' is retail attention (Reddit, WallStreetBets, Stocktwits) and one "
     "with kind 'youtube_picks' lists recent calls by YouTube hosts the user follows. Both are background: mention "
     "crowding or a host's call where relevant, but neither attention nor the hosts' calls has a tested edge, so never choose or reject a trade because of them. "
+    "Candidates with strategy 'long_stock' or 'short_stock' are share trades: stop_price, target_price and hold_until "
+    "(a time stop) come from a volatility rule (levels_basis); compare them with the option structures on risk to "
+    "the stop, capital, time decay and how much the move must be. A short needs margin and a borrow and its loss is "
+    "unbounded past the stop. Each candidate's horizon is how long it is meant to be held: intraday (out before the "
+    "close), interday (1-5 trading days), swing (1-6 weeks) or position (1-6 months); request.horizon 'auto' let the "
+    "server mix them. Match your entry, exit and invalidation ideas to the candidate's horizon. "
 )
 
 
 def _system_prompt(task):
     return (
-        "You are the user's US options research and trade-discussion assistant. Never place orders. "
+        "You are the user's US stock and options research and trade-discussion assistant. Never place orders. "
         + task + _RULES +
         "Use at most four supplied candidate IDs, explain differences, and supply conditional entry, "
-        "invalidation and exit ideas. Numeric price triggers are optional and reference the underlying, "
+        "invalidation and exit ideas. Numeric price triggers are optional and reference the stock (the underlying), "
         "not the option premium. A price trigger alone does not verify all other entry conditions. "
         "Do not copy numerical payoff fields into your output; the server supplies those. "
         "Long puts have bounded profit at an underlying price of zero; never describe their profit as unlimited. "
@@ -244,7 +250,7 @@ def second_opinions(request, snapshot, candidates, backend_ids, config):
 
     language = {"en": "English", "ko": "Korean"}.get(getattr(config, "report_language", "zh"), "Chinese")
     system = (
-        "You are giving an independent second opinion on US options candidates that the server calculated. "
+        "You are giving an independent second opinion on US stock and options candidates that the server calculated. "
         "Never place orders. " + _RULES +
         "Return only a JSON object: {\"action\": \"trade\" or \"wait\", \"candidate_id\": the single supplied "
         "candidate ID you would consider (null when waiting), \"reason\": at most two sentences, "

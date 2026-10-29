@@ -3,7 +3,7 @@ import { Badge } from '../common';
 import type { StrategyCandidate, TradeAdviceJob, TradeQuoteSnapshot } from '../../types/tradeDesk';
 import { PayoffPanel } from './PayoffPanel';
 import { formatDate, formatQuoteAge, textValue } from './deskFormat';
-import { REDUNDANT_SCENARIOS, costText, dayLabel, expiryOf, humanKey, humanValue, money, popText } from './answerFormat';
+import { REDUNDANT_SCENARIOS, costText, dayLabel, expiryOf, formatShareLevels, humanKey, humanValue, isShares, money, popText } from './answerFormat';
 import type { SharedNotes } from './answerFormat';
 
 const CONFIDENCE: Record<string, 'success' | 'warning' | 'default'> = { high: 'success', medium: 'warning', low: 'default' };
@@ -58,6 +58,8 @@ export function CandidateCard({ candidate, advice, shared }: {
   const assumptions = Object.entries(probability.assumptions || {});
   const expiry = expiryOf(candidate);
   const contracts = candidate.legs.filter((leg) => leg.right !== 'stock').length;
+  const shares = isShares(candidate);
+  const shareLevels = shares ? formatShareLevels(candidate) : [];
 
   return (
     <section className="mt-4 rounded-2xl border border-border/50 bg-card/30 p-3 sm:p-4" data-testid="candidate-detail">
@@ -77,9 +79,20 @@ export function CandidateCard({ candidate, advice, shared }: {
       <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
         <Stat label="Cost" value={costText(candidate)} note={`fees ${money(payoff.fees)}${candidate.quantityForAllocation != null ? ` · ${candidate.quantityForAllocation}× fits your allocation` : ''}`} />
         <Stat label="Chance of profit" value={popText(candidate)} note={probability.available ? `at ${probability.horizonLabel}, model estimate` : textValue(probability.reason)} />
-        <Stat label="Expires" value={dayLabel(expiry)} note={`${contracts} option leg${contracts === 1 ? '' : 's'}`} />
+        {shares
+          ? <Stat label="Hold until" value={dayLabel(candidate.holdUntil)} note="time stop: close if neither level is hit" />
+          : <Stat label="Expires" value={dayLabel(expiry)} note={`${contracts} option leg${contracts === 1 ? '' : 's'}`} />}
         <Stat label="Capital needed" value={money(payoff.capitalRequired)} note={payoff.capitalNote || undefined} />
       </div>
+
+      {shareLevels.length ? (
+        <div className="mt-3 rounded-xl border border-border/50 px-3 py-2" data-testid="share-levels">
+          <div className="flex flex-wrap gap-2 text-sm">
+            {shareLevels.map((item) => <span key={item.label} className={`rounded-lg px-2 py-1 font-mono ${item.tone}`}>{item.label}</span>)}
+          </div>
+          {candidate.levelsBasis ? <p className="mt-1 text-xs text-muted-text">{candidate.levelsBasis}</p> : null}
+        </div>
+      ) : null}
 
       <ul className="mt-3 divide-y divide-border/40 rounded-xl border border-border/50 text-sm" data-testid="candidate-legs">
         {candidate.legs.map((leg) => (

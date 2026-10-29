@@ -8,6 +8,7 @@ export type AdviceFormState = {
   dataMode: TradeDeskDataMode;
   direction: TradeAdviceRequest['direction'];
   horizon: TradeAdviceRequest['horizon'];
+  instrument: NonNullable<TradeAdviceRequest['instrument']>;
   expiry: string;
   allocation: string;
   existingShares: string;
@@ -24,7 +25,8 @@ export const DEFAULT_FORM: AdviceFormState = {
   ticker: '',
   dataMode: 'live',
   direction: 'auto',
-  horizon: 'both',
+  horizon: 'auto',
+  instrument: 'auto',
   expiry: '',
   allocation: '',
   existingShares: '0',

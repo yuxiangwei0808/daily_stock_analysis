@@ -147,7 +147,7 @@ def test_the_review_updates_the_plans_and_the_panel(store):
     assert store.plans_view()["review"]["status"] == "failed"
     assert store.plans()["plans"]["NVDA"]["stop"] == 195.0  # a failed review keeps the levels
     store.mutate_plans(lambda stored: {**stored, "review": {"status": "running",
-                                                            "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()}})
+                                                            "started_at": (h.utcnow() - timedelta(hours=1)).isoformat()}})
     assert store.plans_view()["review"]["status"] == "failed"  # left running by a restart
 
 

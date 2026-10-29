@@ -1285,8 +1285,8 @@ def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo,
             prompts.append(prompt)
             return SimpleNamespace(text="Tech is pulling back after hot CPI; wait for 95 to hold.")
     monkeypatch.setattr('src.services.trade_desk.advisor._generation_backend', lambda backend_id=None: (Backend(), 'x'))
-    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='Thoughts on this tech selloff?').model_dump(mode='json'),
-                             source='manual')
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='Thoughts on this tech selloff?',
+                                                instrument='options').model_dump(mode='json'), source='manual')
     svc._run_advice(job['id'], threading.Event())
     answered = repo.advice(job['id'])
     assert answered['status'] == 'completed' and answered['llm_status'] == 'view_only'
@@ -1294,7 +1294,8 @@ def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo,
     assert "The desk's view (no priced strategies): Tech is pulling back" in answered['explanation']
     assert "Thoughts on this tech selloff?" in prompts[0]
     # Automatic follow-ups and model failures keep the plain reason.
-    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='x').model_dump(mode='json'), source='opportunity')
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='x', instrument='options').model_dump(mode='json'),
+                             source='opportunity')
     svc._run_advice(job['id'], threading.Event())
     assert repo.advice(job['id'])['llm_status'] == 'unavailable' and len(prompts) == 1
 
@@ -1302,7 +1303,8 @@ def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo,
         def generate(self, *args, **kwargs):
             raise RuntimeError("down")
     monkeypatch.setattr('src.services.trade_desk.advisor._generation_backend', lambda backend_id=None: (Broken(), 'x'))
-    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='again?').model_dump(mode='json'), source='manual')
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', message='again?', instrument='options').model_dump(mode='json'),
+                             source='manual')
     svc._run_advice(job['id'], threading.Event())
     failed = repo.advice(job['id'])
     assert failed['llm_status'] == 'unavailable' and "desk's view" not in failed['explanation']
@@ -1327,3 +1329,22 @@ def test_routine_trade_desk_calls_get_the_fallback_chain(monkeypatch):
     assert primary == "claude_code_cli" and backend.generate("p", {"temperature": 0}, system_prompt="s").backend == "codex_cli"
     assert calls["kwargs"] == {"system_prompt": "s", "return_generation_result": True}
     assert advisor._generation_backend("claude_code_cli") == ("raw:claude_code_cli", "claude_code_cli")  # second opinions
+
+
+def test_a_share_trade_becomes_a_monitored_plan_and_paper_fills_in_shares(repo):
+    svc = service(repo)
+    job = repo.create_advice(TradeAdviceRequest(ticker='TEST', strategies=['long_stock', 'short_stock'],
+                                                horizon='swing').model_dump(mode='json'))
+    svc._run_advice(job['id'], threading.Event())
+    answered = repo.advice(job['id'])
+    shares = {item['strategy']: item for item in answered['candidates']}
+    assert set(shares) == {'long_stock', 'short_stock'} and shares['long_stock']['stop_price'] < 100.01
+    plan = svc.create_plan(job['id'], shares['long_stock']['id'], 'paper')
+    assert plan['invalidation_price'] == shares['long_stock']['stop_price']
+    assert plan['target_price'] == shares['long_stock']['target_price'] and plan['trigger_direction'] == 'above'
+    assert plan['exit_at'] is not None
+    position = svc.paper_fill(plan['id'], quantity=1)
+    assert [(leg['right'], leg['signed_quantity']) for leg in position['legs']] == [('stock', 100)]
+    short = svc.create_plan(job['id'], shares['short_stock']['id'], 'paper')
+    assert short['trigger_direction'] == 'below' and short['invalidation_price'] > 100
+    assert [leg['signed_quantity'] for leg in svc.paper_fill(short['id'], quantity=1)['legs']] == [-100]

@@ -29,6 +29,8 @@ from typing import Any, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from .models import (
+    HORIZON_LABELS,
+    HORIZONS,
     PLAN_STRATEGY,
     OptionLeg,
     OptionQuote,
@@ -41,6 +43,7 @@ from .models import (
 
 SECONDS_PER_YEAR = 365.0 * 24.0 * 60.0 * 60.0
 _LATE_CLOSE_ALLOWANCE = timedelta(minutes=15)
+_NEW_YORK = ZoneInfo("America/New_York")
 _EPS = 1.0e-10
 _MONEY_EPS = 1.0e-8
 
@@ -218,7 +221,30 @@ _CATALOG: tuple[dict[str, Any], ...] = (
         "max_loss": "defined_at_zero",
         "description": "Sell a put without reserving a cash-secured commitment.",
     },
+    {
+        "id": "long_stock",
+        "title": "Buy shares",
+        "category": "shares",
+        "bias": "bullish",
+        "required_contracts": 0,
+        "max_gain": "unbounded",
+        "max_loss": "defined_at_zero",
+        "description": "Buy the stock with a stop and a target from its recent volatility; no expiry, no time decay.",
+        "aliases": ["buy_shares", "long_shares", "buy_stock", "shares"],
+    },
+    {
+        "id": "short_stock",
+        "title": "Short shares",
+        "category": "shares",
+        "bias": "bearish",
+        "required_contracts": 0,
+        "max_gain": "defined_at_zero",
+        "max_loss": "unbounded",
+        "description": "Sell borrowed shares with a stop above; needs margin and a borrow, loss is unbounded past the stop.",
+        "aliases": ["short_shares", "sell_short", "short_sell"],
+    },
 )
+SHARE_STRATEGIES = frozenset({"long_stock", "short_stock"})
 
 _CATALOG_BY_ID = {item["id"]: item for item in _CATALOG}
 _ALIASES = {
@@ -1677,20 +1703,37 @@ def _strategy_warnings(strategy: str, legs: Sequence[OptionLeg], snapshot: Quote
 AUTO_DIRECTIONS = ("auto", "bullish", "bearish", "neutral", "volatile")
 
 
-def default_strategies(direction: str) -> list[str]:
-    """The strategies compared when the request names none (\"auto\"), by market view."""
-    return {
-        "bullish": ["bull_call_debit", "bull_put_credit", "long_call", "covered_call"],
-        "bearish": ["bear_put_debit", "bear_call_credit", "long_put", "uncovered_call"],
-        "neutral": ["iron_condor", "short_strangle", "covered_call", "cash_secured_put"],
-        # Short straddles/strangles are neutral (short-volatility) views.
-        "volatile": ["long_straddle", "long_strangle"],
-        "auto": ["bull_call_debit", "bear_put_debit", "long_straddle", "iron_condor"],
-    }.get(direction, ["long_call", "long_put", "iron_condor", "long_straddle"])
+_OPTION_DEFAULTS = {
+    "bullish": ["bull_call_debit", "bull_put_credit", "long_call", "covered_call"],
+    "bearish": ["bear_put_debit", "bear_call_credit", "long_put", "uncovered_call"],
+    "neutral": ["iron_condor", "short_strangle", "covered_call", "cash_secured_put"],
+    # Short straddles/strangles are neutral (short-volatility) views.
+    "volatile": ["long_straddle", "long_strangle"],
+    "auto": ["bull_call_debit", "bear_put_debit", "long_straddle", "iron_condor"],
+}
+# Shares fit a directional view; neutral and volatility views are option structures.
+_SHARE_DEFAULTS = {"bullish": ["long_stock"], "bearish": ["short_stock"], "auto": ["long_stock", "short_stock"]}
+INSTRUMENTS = ("auto", "stock", "options")
+
+
+def default_strategies(direction: str, instrument: str = "auto") -> list[str]:
+    """The strategies compared when the request names none ("auto"), by market view and what to trade.
+
+    Options only: the option structures for the view. Shares only: buy and/or short shares (both
+    sides for a view shares cannot express). Auto: the share trade that fits the view first, then
+    option structures, four in all.
+    """
+    options = _OPTION_DEFAULTS.get(direction, ["long_call", "long_put", "iron_condor", "long_straddle"])
+    shares = _SHARE_DEFAULTS.get(direction, [])
+    if instrument == "stock":
+        return shares or ["long_stock", "short_stock"]
+    if instrument == "options":
+        return list(options)
+    return [*shares, *[item for item in options if item not in shares]][:4]
 
 
 def _normalise_requested_strategies(request: TradeAdviceRequest) -> list[str]:
-    requested = request.strategies or default_strategies(request.direction)
+    requested = request.strategies or default_strategies(request.direction, request.instrument)
     result: list[str] = []
     for value in requested:
         key = str(value).strip().lower().replace("-", "_").replace(" ", "_")
@@ -1814,7 +1857,7 @@ def _candidate_from_legs(
     title = "Your plan" if strategy == PLAN_STRATEGY else _CATALOG_BY_ID.get(strategy, {}).get("title", strategy)
     return StrategyCandidate(
         strategy=strategy,
-        title=f"{title} ({'intraday' if horizon_label == 'intraday' else 'swing'})",
+        title=f"{title} ({HORIZON_LABELS.get(horizon_label, horizon_label)})",
         underlying=snapshot.underlying,
         horizon=horizon_label,
         snapshot_id=snapshot.id,
@@ -1828,11 +1871,209 @@ def _candidate_from_legs(
         warnings=warnings,
         entry_conditions=["Use only if the displayed bid/ask remains executable and the quote timestamp is acceptable."],
         invalidation="Reassess if the underlying moves through the modeled break-even or the option chain becomes stale.",
-        exit_conditions=[
-            "For intraday candidates, evaluate exit before the regular close.",
-            "For swing candidates, reassess before expiration and after material volatility or dividend changes.",
-        ],
+        exit_conditions=[_OPTION_EXIT.get(horizon_label, _OPTION_EXIT["swing"])],
     )
+
+
+_OPTION_EXIT = {
+    "intraday": "Exit before the regular close.",
+    "interday": "Reassess each day; exit within about a week, before expiration.",
+    "swing": "Reassess weekly, before expiration and after material volatility or dividend changes.",
+    "position": "Reassess monthly and after earnings; roll or close before the last weeks of time decay.",
+}
+
+# Share trades: the stop in daily ranges (ATR) and the sessions held before the time stop, by
+# horizon (1.5 ATR for a swing, as the desk's ideas use); the target is SHARE_TARGET_R times the risk.
+SHARE_RULE = {"intraday": (0.5, 1), "interday": (1.0, 5), "swing": (1.5, 20), "position": (3.0, 63)}
+SHARE_TARGET_R = 2.0
+REG_T_INITIAL_MARGIN = 0.5
+DEFAULT_DAILY_RANGE = 0.02  # of the price, when neither daily bars nor implied volatility are available
+# Expiry windows for options by horizon, in calendar days: (from, to, aim).
+EXPIRY_WINDOWS = {"interday": (0.0, 10.0, 3.0), "swing": (14.0, 60.0, 30.0), "position": (45.0, 200.0, 90.0)}
+
+
+def _closes_ahead(as_of: datetime, sessions: int) -> datetime | None:
+    """The regular close ``sessions`` trading sessions from ``as_of`` (1 = the next close)."""
+    close = _regular_close_after(as_of)
+    for _ in range(max(0, sessions - 1)):
+        if close is None:
+            return None
+        close = _regular_close_after(close + timedelta(minutes=1))
+    return close
+
+
+def _daily_bars(snapshot: QuoteSnapshot) -> list[dict[str, Any]]:
+    return [bar for bar in snapshot.bars or [] if bar.get("interval") == "1d" and not bar.get("partial")
+            and all(_finite(bar.get(key)) for key in ("high", "low", "close"))]
+
+
+def _atm_iv(snapshot: QuoteSnapshot) -> float | None:
+    ivs = sorted(float(quote.iv) for quote in snapshot.options
+                 if quote.iv and snapshot.spot and abs(float(quote.strike) / float(snapshot.spot) - 1.0) <= 0.05)
+    return ivs[len(ivs) // 2] if ivs else None
+
+
+def share_volatility(snapshot: QuoteSnapshot) -> tuple[float, float, str]:
+    """(daily range in dollars, annual volatility, what they came from) for sizing share stops."""
+    spot = float(snapshot.spot)
+    daily = _daily_bars(snapshot)
+    iv = _atm_iv(snapshot)
+    if len(daily) >= 15:
+        from .levels import atr
+        closes = [float(bar["close"]) for bar in daily]
+        returns = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
+        mean = sum(returns) / len(returns)
+        realized = math.sqrt(sum((r - mean) ** 2 for r in returns) / max(1, len(returns) - 1)) * math.sqrt(252)
+        return float(atr(daily)), float(iv or realized or 0.3), "ATR(14) of daily bars"
+    if iv:
+        return spot * iv / math.sqrt(252) * 1.2, float(iv), "1.2x the implied daily move (no daily bars)"
+    return spot * DEFAULT_DAILY_RANGE, DEFAULT_DAILY_RANGE * math.sqrt(252), \
+        "a 2% daily range (no daily bars or implied volatility)"
+
+
+def _share_candidate(
+    strategy: str,
+    horizon: str,
+    snapshot: QuoteSnapshot,
+    request: TradeAdviceRequest,
+    as_of: datetime,
+    *,
+    keep: StrategyCandidate | None = None,
+) -> StrategyCandidate | None:
+    """Buy or short shares with a volatility stop, a 2R target and a time stop (``keep``: reprice those levels)."""
+    long = strategy == "long_stock"
+    sign = 1 if long else -1
+    entry = float(snapshot.ask if long and snapshot.ask else snapshot.bid if not long and snapshot.bid else snapshot.spot)
+    if entry <= 0:
+        return None
+    daily_range, volatility, basis = share_volatility(snapshot)
+    stop_atr, sessions = SHARE_RULE.get(horizon, SHARE_RULE["swing"])
+    if keep is not None and keep.stop_price and keep.hold_until:
+        stop, target, hold_until, basis = keep.stop_price, keep.target_price, keep.hold_until, keep.levels_basis
+    else:
+        hold_until = _closes_ahead(as_of, sessions) if horizon != "intraday" else _regular_close_after(as_of)
+        if hold_until is None:  # no calendar: about 1.45 calendar days per session
+            hold_until = as_of + timedelta(days=1.45 * sessions)
+        risk = stop_atr * daily_range
+        stop = round(entry - sign * risk, 2)
+        target = round(entry + sign * SHARE_TARGET_R * risk, 2)
+        basis = f"stop {stop_atr:g} x {basis}, target {SHARE_TARGET_R:g}x the risk, time stop after {sessions} session" \
+                f"{'s' if sessions != 1 else ''}"
+    if stop <= 0 or (target is not None and target <= 0) or hold_until <= as_of:
+        return None
+    sized = request.allocation is not None and float(request.allocation) >= entry
+    shares = int(float(request.allocation) // entry) if sized else 100
+    legs = [OptionLeg(contract_id=str(snapshot.underlying), right="stock", side="buy" if long else "sell",
+                      quantity=shares, strike=None, expiry=None, multiplier=1, entry_price=entry, iv=None)]
+    capital = shares * entry * (1.0 if long else REG_T_INITIAL_MARGIN)
+    capital_note = ("Full share cost at the ask." if long else
+                    "Reg T initial margin (50% of the short value); brokers can require more, borrow fees excluded.")
+    payoff = analyze_payoff(legs, fees=0.0, capital_required=capital, capital_note=capital_note)
+    # Model probabilities: lognormal at the time stop, and the target before the stop for a driftless walk.
+    years = max(0.0, _year_fraction(as_of, hold_until))
+    probability = ProbabilityEstimate(available=False, horizon_at=hold_until, horizon_label="time stop",
+                                      reason="Volatility or time to the time stop is unavailable.")
+    spot = float(snapshot.spot)
+    if years > 0 and volatility > 0:
+        mean, variance = _lognormal_parameters(spot, years, volatility, request.risk_free_rate, request.dividend_yield)
+        z = (math.log(entry) - mean) / math.sqrt(variance)
+        profit = 1.0 - _norm_cdf(z) if long else _norm_cdf(z)
+        target_first = None
+        if target and stop and (target - stop) * sign > 0 and min(target, stop, spot) > 0:
+            target_first = math.log(spot / stop) / math.log(target / stop)
+            target_first = max(0.0, min(1.0, target_first))
+        probability = ProbabilityEstimate(
+            available=True, probability_of_profit=max(0.0, min(1.0, profit)), method="lognormal_share_price",
+            horizon_at=hold_until, horizon_label="time stop",
+            assumptions={"distribution": "lognormal", "volatility": round(volatility, 4),
+                         "volatilitySource": "implied" if _atm_iv(snapshot) else "realized",
+                         "timeToHorizonYears": round(years, 6), "initialSpot": spot,
+                         "targetBeforeStop": None if target_first is None else round(target_first, 4)})
+    warnings = []
+    if not long:
+        warnings.append("Short selling needs a margin account and a borrow; borrow fees and recalls apply, "
+                        "and the loss is unbounded past the stop.")
+        if request.existing_shares:
+            warnings.append(f"You hold {request.existing_shares} shares: selling them closes your position rather than opening a short.")
+    elif request.existing_shares:
+        warnings.append(f"Adds to the {request.existing_shares} shares you hold.")
+    if horizon == "intraday":
+        warnings.append("Day trades count toward the pattern-day-trader limit in margin accounts under $25,000.")
+    if not sized and request.allocation is not None:
+        warnings.append("The allocation is below one share; 100 shares are shown.")
+    item = _CATALOG_BY_ID[strategy]
+    side_word = "below" if long else "above"
+    time_stop = "before today's close" if horizon == "intraday" else f"by {hold_until.astimezone(_NEW_YORK):%b %d}"
+    return StrategyCandidate(
+        **({"id": keep.id} if keep is not None else {}),
+        strategy=strategy,
+        title=f"{item['title']} ({HORIZON_LABELS.get(horizon, horizon)})",
+        underlying=snapshot.underlying,
+        horizon=horizon,
+        snapshot_id=snapshot.id,
+        legs=legs,
+        payoff=payoff,
+        probability=probability,
+        scenarios=[{"kind": "stop", "price": stop, "pnl": round((stop - entry) * sign * shares, 2)},
+                   *([{"kind": "target", "price": target, "pnl": round((target - entry) * sign * shares, 2)}] if target else [])],
+        quantity_for_allocation=None,
+        evidence_confidence="low",
+        reasons=[item["description"], *([f"Requested market view: {request.direction}."] if request.direction != "auto" else [])],
+        warnings=warnings,
+        entry_conditions=[f"{'Buy' if long else 'Short'} near {entry:.2f} while the quote is current."],
+        invalidation=f"A trade {side_word} {stop:.2f} (the stop).",
+        exit_conditions=[f"Exit {side_word} the stop {stop:.2f}.", *([f"Take profit near {target:.2f}."] if target else []),
+                         f"Close {time_stop} if neither level is hit (time stop)."],
+        stop_price=stop, target_price=target, hold_until=hold_until, levels_basis=basis,
+    )
+
+
+def _expiry_choices(horizon: str, ordered: Sequence[datetime], as_of: datetime,
+                    regular_close: datetime | None) -> list[datetime]:
+    """Expiries to try for an option horizon, best fit first."""
+    if horizon == "intraday":
+        return list(ordered)
+    # A late-close (16:15) same-day expiry is still today's contract, not a multi-day hold.
+    later = [expiry for expiry in ordered if regular_close is None or expiry > regular_close + _LATE_CLOSE_ALLOWANCE]
+    low, high, aim = EXPIRY_WINDOWS.get(horizon, EXPIRY_WINDOWS["swing"])
+
+    def days(expiry):
+        return (expiry - as_of).total_seconds() / 86400.0
+    inside = sorted((expiry for expiry in later if low <= days(expiry) <= high), key=lambda expiry: abs(days(expiry) - aim))
+    beyond = [expiry for expiry in later if days(expiry) > high]
+    # Nothing in the window: the nearest beyond it, else what is quoted, closest to the aim first.
+    return inside or beyond[:1] or sorted(later or ordered, key=lambda expiry: abs(days(expiry) - aim))
+
+
+def horizon_for_expiry(expiry: datetime, as_of: datetime, regular_close: datetime | None) -> str:
+    """The horizon an option expiry fits (a user's own plan)."""
+    if regular_close is not None and expiry <= regular_close + _LATE_CLOSE_ALLOWANCE:
+        return "intraday"
+    days = (expiry - as_of).total_seconds() / 86400.0
+    return "interday" if days <= EXPIRY_WINDOWS["interday"][1] else "swing" if days <= EXPIRY_WINDOWS["swing"][1] else "position"
+
+
+def target_expiries(horizon: str, expiries: Sequence[Any], today: Any) -> list[Any]:
+    """The expiry dates a snapshot should quote for a request's horizon (dates, nearest first).
+
+    Intraday and interday use the nearest expiries the provider fetches anyway; swing and position
+    add the expiry that best fits their window, which a nearest-four fetch would miss.
+    """
+    wanted = []
+    horizons = ["intraday", "swing"] if horizon == "auto" else [horizon]
+    future = sorted(day for day in expiries if day >= today)
+    for name in horizons:
+        if name in {"intraday", "interday"}:
+            wanted.extend(future[:2])
+            continue
+        low, high, aim = EXPIRY_WINDOWS[name]
+        spans = [(day, (day - today).days) for day in future]
+        inside = sorted((item for item in spans if low <= item[1] <= high), key=lambda item: abs(item[1] - aim))
+        beyond = [item for item in spans if item[1] > high]
+        pick = (inside or beyond[:1])
+        if pick:
+            wanted.append(pick[0][0])
+    return sorted(set(wanted))
 
 
 def reprice_candidate(
@@ -1849,6 +2090,10 @@ def reprice_candidate(
 
     if str(snapshot.underlying).upper() != str(candidate.underlying).upper():
         return None
+    if candidate.strategy in SHARE_STRATEGIES:
+        as_of = _utc(snapshot.quoted_at)
+        return None if as_of is None else _share_candidate(candidate.strategy, candidate.horizon, snapshot, request,
+                                                           as_of, keep=candidate)
     as_of, groups = _valid_quote_groups(snapshot, request.model_copy(update={"expiry": None}))
     if as_of is None:
         return None
@@ -1881,22 +2126,24 @@ def reprice_candidate(
 
 
 def _horizon_slots(strategy_ids: Sequence[str], requested_horizon: str, close_known: bool) -> list[tuple[str, str]]:
-    """Allocate four slots with strategy diversity and both-horizon coverage."""
+    """Allocate four slots with strategy diversity; "auto" mixes a near and a longer horizon.
 
-    if requested_horizon != "both":
+    A chosen horizon applies to every candidate. Under "auto" share trades are swings (a day trade
+    in shares is a choice to make on purpose) and option structures alternate between intraday
+    (interday without a session calendar) and swing.
+    """
+
+    if requested_horizon in HORIZONS:
         return [(strategy, requested_horizon) for strategy in strategy_ids[:4]]
-    if not close_known:
-        return [(strategy, "swing") for strategy in strategy_ids[:4]]
-    if len(strategy_ids) <= 2:
-        return [
-            (strategy, horizon)
-            for horizon in ("intraday", "swing")
-            for strategy in strategy_ids
-        ][:4]
-    return [
-        (strategy, "intraday" if index % 2 == 0 else "swing")
-        for index, strategy in enumerate(strategy_ids[:4])
-    ]
+    near = "intraday" if close_known else "interday"
+    shares = [(strategy, "swing") for strategy in strategy_ids if strategy in SHARE_STRATEGIES]
+    options = [strategy for strategy in strategy_ids if strategy not in SHARE_STRATEGIES]
+    room = 4 - len(shares[:4])
+    if len(options) <= 2 and room >= 2 * len(options):
+        option_slots = [(strategy, horizon) for horizon in (near, "swing") for strategy in options]
+    else:
+        option_slots = [(strategy, near if index % 2 == 0 else "swing") for index, strategy in enumerate(options)]
+    return [*shares, *option_slots][:4]
 
 
 def price_plan(snapshot: QuoteSnapshot, request: TradeAdviceRequest) -> tuple[StrategyCandidate | None, str]:
@@ -1929,8 +2176,7 @@ def price_plan(snapshot: QuoteSnapshot, request: TradeAdviceRequest) -> tuple[St
     if expiry is None:
         return None, "Plan option legs must share one expiry (calendar spreads are not modeled)."
     regular_close = _regular_close_after(as_of)
-    same_day = regular_close is not None and expiry <= regular_close + _LATE_CLOSE_ALLOWANCE
-    horizon = "intraday" if request.horizon == "intraday" or (request.horizon == "both" and same_day) else "swing"
+    horizon = "intraday" if request.horizon == "intraday" else horizon_for_expiry(expiry, as_of, regular_close)
     horizon_at = expiry
     if horizon == "intraday":
         if regular_close is None:
@@ -1957,13 +2203,14 @@ def build_candidates(snapshot: QuoteSnapshot, request: TradeAdviceRequest) -> li
     plan, _reason = price_plan(snapshot, request)
     if plan is not None:
         return [plan, *build_candidates(snapshot, request.model_copy(update={"plan_legs": []}))[:3]]
-    as_of, groups = _valid_quote_groups(snapshot, request)
-    if as_of is None or not groups:
-        return []
     strategy_ids = _normalise_requested_strategies(request)
     if not strategy_ids:
         return []
-    regular_close = _regular_close_after(as_of)
+    as_of, groups = _valid_quote_groups(snapshot, request)
+    share_as_of = _utc(snapshot.quoted_at)
+    if share_as_of is None:
+        return []
+    regular_close = _regular_close_after(share_as_of)
     if request.horizon == "intraday" and regular_close is None:
         return []
     ordered_expiries = list(groups)
@@ -1972,13 +2219,17 @@ def build_candidates(snapshot: QuoteSnapshot, request: TradeAdviceRequest) -> li
     for strategy, horizon_label in _horizon_slots(strategy_ids, request.horizon, regular_close is not None):
         if horizon_label == "intraday" and regular_close is None:
             continue
-        if horizon_label == "intraday":
-            expiry_choices = ordered_expiries
-        else:
-            # A late-close (16:15) same-day expiry is still today's contract, not a swing.
-            later = [expiry for expiry in ordered_expiries
-                     if regular_close is not None and expiry > regular_close + _LATE_CLOSE_ALLOWANCE]
-            expiry_choices = later or ordered_expiries
+        if strategy in SHARE_STRATEGIES:
+            # Shares need no option chain: only the stock's quote and its recent range.
+            share = _share_candidate(strategy, horizon_label, snapshot, request, share_as_of)
+            if share is not None:
+                candidates.append(share)
+            if len(candidates) >= 4:
+                break
+            continue
+        if as_of is None or not groups:
+            continue
+        expiry_choices = _expiry_choices(horizon_label, ordered_expiries, as_of, regular_close)
         built: StrategyCandidate | None = None
         for expiry in expiry_choices:
             if horizon_label == "intraday":

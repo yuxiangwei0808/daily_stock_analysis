@@ -10,7 +10,7 @@ import type { AdviceFormState } from './deskFormat';
 
 // Strategy families, in the order the picker lists them.
 const FAMILIES: Array<[string, string]> = [
-  ['directional', 'Directional'], ['income', 'Credit spreads'], ['stock_income', 'Shares or cash'],
+  ['shares', 'Shares'], ['directional', 'Directional'], ['income', 'Credit spreads'], ['stock_income', 'Shares or cash'],
   ['volatility', 'Volatility'], ['defined_risk', 'Range-bound'], ['naked', 'Uncovered'],
 ];
 
@@ -99,7 +99,8 @@ export function AdviceForm({
             <label className={`flex cursor-pointer items-start gap-2 rounded-xl border p-2 ${form.dataMode === 'replay' ? 'border-cyan/40 bg-cyan/5' : 'border-border/50'}`}><input type="radio" name="trade-desk-mode" className="mt-1" checked={form.dataMode === 'replay'} onChange={() => update('dataMode', 'replay')} /><span><strong className="block text-foreground">{t('tradeDesk.replay')}</strong><span className="block text-xs text-secondary-text">{t('tradeDesk.replaySynthetic')}</span></span></label>
           </div></fieldset>
           <label><span className={caption}>{t('tradeDesk.direction')}</span><select aria-label={t('tradeDesk.direction')} value={form.direction} onChange={(event) => update('direction', event.target.value as AdviceFormState['direction'])} className={field}><option value="auto">{t('tradeDesk.direction.auto')}</option><option value="bullish">{t('tradeDesk.direction.bullish')}</option><option value="bearish">{t('tradeDesk.direction.bearish')}</option><option value="neutral">{t('tradeDesk.direction.neutral')}</option><option value="volatile">{t('tradeDesk.direction.volatile')}</option></select></label>
-          <label><span className={caption}>{t('tradeDesk.horizon')}</span><select aria-label={t('tradeDesk.horizon')} value={form.horizon} onChange={(event) => update('horizon', event.target.value as AdviceFormState['horizon'])} className={field}><option value="both">{t('tradeDesk.horizon.both')}</option><option value="intraday">{t('tradeDesk.horizon.intraday')}</option><option value="swing">{t('tradeDesk.horizon.swing')}</option></select></label>
+          <label><span className={caption}>{t('tradeDesk.horizon')}</span><select aria-label={t('tradeDesk.horizon')} value={form.horizon} onChange={(event) => update('horizon', event.target.value as AdviceFormState['horizon'])} className={field}><option value="auto">{t('tradeDesk.horizon.auto')}</option><option value="intraday">{t('tradeDesk.horizon.intraday')}</option><option value="interday">{t('tradeDesk.horizon.interday')}</option><option value="swing">{t('tradeDesk.horizon.swing')}</option><option value="position">{t('tradeDesk.horizon.position')}</option></select></label>
+          <label><span className={caption}>{t('tradeDesk.instrument')}</span><select aria-label={t('tradeDesk.instrument')} value={form.instrument} onChange={(event) => update('instrument', event.target.value as AdviceFormState['instrument'])} className={field}><option value="auto">{t('tradeDesk.instrument.auto')}</option><option value="stock">{t('tradeDesk.instrument.stock')}</option><option value="options">{t('tradeDesk.instrument.options')}</option></select></label>
         </div>
         {liveUnavailable ? <InlineAlert variant="warning" title={t('tradeDesk.liveUnavailable')} message={health?.live.message || t('tradeDesk.staleData')} /> : null}
         {form.dataMode === 'replay' ? <InlineAlert variant="info" message={t('tradeDesk.replaySynthetic')} /> : null}

@@ -119,10 +119,12 @@ async def reprice_advice(advice_id: str, request: Request):
 
 @router.get("/catalog")
 async def catalog():
-    """Every strategy, and the ones compared automatically for each market view (no strategy picked)."""
-    from src.services.trade_desk.analytics import AUTO_DIRECTIONS, default_strategies, strategy_catalog
+    """Every strategy, and the ones compared automatically (no strategy picked) by view and what to trade."""
+    from src.services.trade_desk.analytics import AUTO_DIRECTIONS, INSTRUMENTS, default_strategies, strategy_catalog
     return {"items": strategy_catalog(),
-            "defaults": {direction: default_strategies(direction) for direction in AUTO_DIRECTIONS}}
+            "defaults": {direction: default_strategies(direction) for direction in AUTO_DIRECTIONS},
+            "defaults_by_instrument": {instrument: {direction: default_strategies(direction, instrument)
+                                                    for direction in AUTO_DIRECTIONS} for instrument in INSTRUMENTS}}
 
 
 @router.post("/advice", status_code=202)

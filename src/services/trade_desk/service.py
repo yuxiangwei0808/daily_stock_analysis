@@ -52,6 +52,38 @@ _NARRATIVE_FIELDS = ("evidence_confidence", "reasons", "entry_conditions", "inva
                      "exit_conditions", "warnings")
 
 
+_HORIZON_WORDS = {
+    "intraday": r"\b(intraday|day[- ]?trad\w*|scalp\w*|before (the )?close|same[- ]day|0dte)\b",
+    "interday": r"\b(interday|overnight|next (few|couple of) days|this week|1-5 days|over the weekend)\b",
+    "swing": r"\b(swing|(a |next )?few weeks|couple of weeks|1-6 weeks|this month)\b",
+    "position": r"\b(long[- ]term|longer[- ]term|position trade|few months|(3|6|three|six) months|leaps|hold for months)\b",
+}
+_INSTRUMENT_WORDS = {
+    "options": r"\b(options?|calls|puts|call options?|put options?|spreads?|straddles?|strangles?|condors?|butterfl\w+|leaps)\b",
+    "stock": r"\b(shares|stock|equity|buy the stock|short the stock|short sell\w*)\b",
+}
+
+
+def infer_from_question(request):
+    """A horizon or what to trade read from your question while the form says Auto; unchanged when unclear.
+
+    Only one horizon (or one kind of instrument) named plainly counts: "day trade" or "this week",
+    "options" or "shares". Two at once ("intraday or interday") stays Auto for the desk to mix.
+    """
+    import re
+    text = (request.message or "").lower()
+    updates = {}
+    if request.horizon == "auto":
+        named = [name for name, pattern in _HORIZON_WORDS.items() if re.search(pattern, text)]
+        if len(named) == 1:
+            updates["horizon"] = named[0]
+    if request.instrument == "auto" and not request.strategies:
+        kinds = [name for name, pattern in _INSTRUMENT_WORDS.items() if re.search(pattern, text)]
+        if len(kinds) == 1:
+            updates["instrument"] = kinds[0]
+    return request.model_copy(update=updates) if updates else request
+
+
 def _us_session(when):
     """The US session at the time the quotes were taken; "regular" (no claim) when unknown."""
     if when is None:
@@ -167,8 +199,9 @@ class TradeDeskService:
         provider = self.provider(request.data_mode)
         # A user's own plan legs are quoted alongside the calculated candidates.
         required = list(dict.fromkeys([*required_contracts, *request.plan_contracts()]))
-        snapshot = provider.snapshot(request.ticker, expiry=request.expiry,
-                                     required_contracts=required).model_copy(deep=True)
+        extra = self._horizon_expiries(provider, request)
+        snapshot = provider.snapshot(request.ticker, expiry=request.expiry, required_contracts=required,
+                                     **({"expiries": extra} if extra else {})).model_copy(deep=True)
         if snapshot.underlying != request.ticker or snapshot.mode != request.data_mode:
             raise ValueError("Provider snapshot does not match the requested stock and data mode")
         # Stored reports/news are context only; their dates remain visible.
@@ -290,6 +323,27 @@ class TradeDeskService:
             except ValueError:
                 continue
         return context, request
+
+    @staticmethod
+    def _horizon_expiries(provider, request):
+        """Option expiries a swing or position horizon needs beyond the nearest ones; [] when none."""
+        from .analytics import SHARE_STRATEGIES, _normalise_requested_strategies, target_expiries
+        if request.expiry is not None or request.horizon in {"intraday", "interday"}:
+            return []
+        if all(item in SHARE_STRATEGIES for item in _normalise_requested_strategies(request)):
+            return []  # shares need no option chain
+        dates_for = getattr(provider, "expiration_dates", None)
+        if not callable(dates_for):
+            return []
+        try:
+            dates = sorted(dates_for(request.ticker))
+        except Exception as exc:  # the nearest expiries are still quoted
+            logger.info("Trade Desk expiry list unavailable: %s", type(exc).__name__)
+            return []
+        from zoneinfo import ZoneInfo
+        today = utcnow().astimezone(ZoneInfo("America/New_York")).date()
+        nearest = set(dates[:2])
+        return [day for day in target_expiries(request.horizon, dates, today) if day not in nearest]
 
     @staticmethod
     def _view_without_strategies(request, snapshot, why: str) -> str:
@@ -466,6 +520,8 @@ class TradeDeskService:
         if not job:
             return
         request = TradeAdviceRequest.model_validate(job["request"])
+        if job.get("source") in {"manual", "discord"}:
+            request = infer_from_question(request)  # saved as run_request below
         try:
             position = None
             # Your own questions only: automatic follow-ups can reach Discord, which never gets sizes.
@@ -667,6 +723,12 @@ class TradeDeskService:
                                      "request a refreshed version before selecting a live-data plan")
                 candidate = match.model_dump(mode="json")
         defaults = {k: v for k, v in job.get("triggers", {}).get(candidate_id, {}).items() if v is not None}
+        if candidate["strategy"] in {"long_stock", "short_stock"}:
+            # A share trade is monitored on its own stop, target and time stop unless the model set others.
+            share_levels = {"invalidation_price": candidate.get("stop_price"), "target_price": candidate.get("target_price"),
+                            "exit_at": candidate.get("hold_until"),
+                            "trigger_direction": "above" if candidate["strategy"] == "long_stock" else "below"}
+            defaults = {**{k: v for k, v in share_levels.items() if v is not None}, **defaults}
         defaults.update(overrides)
         owned_shares = effective.get("existing_shares", 0) if any(
             leg["right"] == "stock" and leg.get("existing") for leg in candidate["legs"]) else None
@@ -705,7 +767,7 @@ class TradeDeskService:
         if quantity < 1 or intent not in {"open", "close"}:
             raise ValueError("Invalid paper order")
         legs = plan["candidate"]["legs"]
-        expiry = next(datetime.fromisoformat(leg["expiry"]).date() for leg in legs if leg.get("expiry"))
+        expiry = next((datetime.fromisoformat(leg["expiry"]).date() for leg in legs if leg.get("expiry")), None)
         snapshot = self.snapshot(TradeAdviceRequest(ticker=plan["candidate"]["underlying"],
                               data_mode=plan["data_mode"], expiry=expiry), required_contracts=[
                                   leg["contract_id"] for leg in legs if leg["right"] != "stock"])

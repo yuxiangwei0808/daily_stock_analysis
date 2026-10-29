@@ -1,6 +1,10 @@
 export type TradeDeskDataMode = 'live' | 'replay';
-export type TradeDeskHorizon = 'intraday' | 'swing';
-export type TradeAdviceHorizon = TradeDeskHorizon | 'both';
+/** How long a trade is held: out by the close, 1-5 days, 1-6 weeks, 1-6 months. */
+export type TradeDeskHorizon = 'intraday' | 'interday' | 'swing' | 'position';
+/** "auto" lets the desk mix a near and a longer horizon ("both" is its older name). */
+export type TradeAdviceHorizon = TradeDeskHorizon | 'auto' | 'both';
+/** What to compare when no strategy is picked. */
+export type TradeAdviceInstrument = 'auto' | 'stock' | 'options';
 export type TradeAdviceDirection = 'auto' | 'bullish' | 'bearish' | 'neutral' | 'volatile';
 export type TradeAdviceStatus = 'queued' | 'running' | 'completed' | 'stale' | 'failed' | 'cancelled' | string;
 export type TradeLedger = 'paper' | 'manual_live';
@@ -105,6 +109,11 @@ export interface StrategyCandidate {
   entryConditions: string[];
   invalidation: string;
   exitConditions: string[];
+  /** Share trades: the volatility rule's stop and target on the stock, and the time stop. */
+  stopPrice?: number | null;
+  targetPrice?: number | null;
+  holdUntil?: string | null;
+  levelsBasis?: string;
   calculationVersion: string;
 }
 
@@ -121,6 +130,7 @@ export interface TradeAdviceRequest {
   allocation?: number;
   direction: TradeAdviceDirection;
   horizon: TradeAdviceHorizon;
+  instrument?: TradeAdviceInstrument;
   dataMode: TradeDeskDataMode;
   expiry?: string;
   strategies: string[];

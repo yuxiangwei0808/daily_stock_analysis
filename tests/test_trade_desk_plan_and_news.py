@@ -30,7 +30,7 @@ def test_the_users_exact_contracts_are_priced_first():
     snap = snapshot()
     request = TradeAdviceRequest(ticker="TEST", plan_legs=f"buy 1 call 100 {_expiry(snap)}")
     plan, reason = price_plan(snap, request)
-    assert reason == "" and plan.strategy == "custom" and plan.title == "Your plan (swing)"
+    assert reason == "" and plan.strategy == "custom" and plan.title == "Your plan (1-5 days)"
     assert plan.legs[0].contract_id == "TEST_CALL" and plan.legs[0].entry_price == 2.1  # bought at the ask
     assert build_candidates(snap, request)[0].strategy == "custom"
 

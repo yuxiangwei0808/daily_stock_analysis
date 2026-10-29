@@ -61,6 +61,43 @@ export const popText = (candidate: StrategyCandidate): string => (
   candidate.probability.available ? formatPercent(candidate.probability.probabilityOfProfit) : 'n/a'
 );
 
+const HORIZON_LABELS: Record<string, string> = { intraday: 'intraday', interday: '1–5 days', swing: '1–6 weeks', position: '1–6 months' };
+
+/** "1–6 weeks" for a candidate's horizon. */
+export const horizonLabel = (horizon: string): string => HORIZON_LABELS[horizon] ?? horizon;
+
+/** The title without its horizon suffix ("Buy shares (1-6 weeks)" -> "Buy shares"). */
+export const baseTitle = (title: string): string => title.replace(/ \((intraday|swing|1-5 days|1-6 weeks|1-6 months)\)$/, '');
+
+/** A share trade (buy or short shares) rather than an option structure. */
+export const isShares = (candidate: StrategyCandidate): boolean => candidate.strategy === 'long_stock' || candidate.strategy === 'short_stock';
+
+const shareCount = (candidate: StrategyCandidate): number => candidate.legs.find((leg) => leg.right === 'stock')?.quantity ?? 0;
+const shareEntry = (candidate: StrategyCandidate): number => candidate.legs.find((leg) => leg.right === 'stock')?.entryPrice ?? 0;
+
+/** Dollars lost at the stop, or gained at the target, for a share trade. */
+export const shareAt = (candidate: StrategyCandidate, level?: number | null): number | null => {
+  if (level == null) return null;
+  const sign = candidate.strategy === 'short_stock' ? -1 : 1;
+  return (level - shareEntry(candidate)) * sign * shareCount(candidate);
+};
+
+/** The stop, target and their dollar outcomes, and the target-before-stop chance, for a share trade. */
+export const formatShareLevels = (candidate: StrategyCandidate): Array<{ label: string; tone: string }> => {
+  const items: Array<{ label: string; tone: string }> = [];
+  if (candidate.stopPrice != null) {
+    items.push({ label: `Stop ${candidate.stopPrice.toFixed(2)} (${money(shareAt(candidate, candidate.stopPrice))})`, tone: 'bg-danger/10 text-danger' });
+  }
+  if (candidate.targetPrice != null) {
+    items.push({ label: `Target ${candidate.targetPrice.toFixed(2)} (+${money(shareAt(candidate, candidate.targetPrice))})`, tone: 'bg-success/10 text-success' });
+  }
+  const first = candidate.probability.assumptions?.targetBeforeStop;
+  if (typeof first === 'number') {
+    items.push({ label: `Target before stop ≈ ${(first * 100).toFixed(0)}% (no-drift model)`, tone: 'bg-elevated text-secondary-text' });
+  }
+  return items;
+};
+
 export const expiryOf = (candidate: StrategyCandidate): string | null => (
   candidate.legs.map((leg) => leg.expiry).filter((value): value is string => Boolean(value)).sort()[0] ?? null
 );
@@ -84,6 +121,9 @@ const LABELS: Record<string, string> = {
   anticipatedCloseFees: 'Closing fees assumed',
   closeFeesIncluded: 'Closing fees included',
   pricingModel: 'Pricing',
+  volatility: 'Volatility',
+  volatilitySource: 'Volatility from',
+  targetBeforeStop: 'Target before stop (no-drift model)',
 };
 
 /** "meanIv" -> "Implied volatility"; unknown keys are split into words. */
@@ -97,7 +137,7 @@ export const humanValue = (key: string, value: unknown): string => {
     const days = value * 365;
     return days < 1 ? `${(days * 24).toFixed(1)} hours` : `${days.toFixed(1)} days`;
   }
-  if (/iv$|Iv$|Rate$|Yield$/.test(key)) {
+  if (/iv$|Iv$|Rate$|Yield$|^volatility$|BeforeStop$/.test(key)) {
     const values = Array.isArray(value) ? value : [value];
     return values.map((item) => (typeof item === 'number' ? formatPercent(item) : String(item))).join(' / ');
   }

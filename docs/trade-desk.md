@@ -61,11 +61,35 @@ like a dropdown (it opens by itself when there is no history, when a link brings
 ticker, or from the sidebar's **Ask**, which opens this tab while the desk is on; the
 original stock chat stays at `/chat` and still opens from a report's AI follow-up button); its quick row is the ticker (suggestions: what you hold, then what you asked
 recently), your question (Ctrl/Cmd+Enter sends) and **Ask**; under it, the ticker's latest active report
-verdict (action, score, stop/target, date and the reason; from the AI-signal store), with data mode, direction
-and horizon beside it and everything else under **More options**. Strategies default to
-**Auto**: the desk compares the four that fit the chosen direction (the panel names them;
-`GET /catalog` returns them as `defaults`), plus covered calls or a protective put on shares
-you hold; **Pick my own** lists every strategy grouped by family. Sending folds the
+verdict (action, score, stop/target, date and the reason; from the AI-signal store), with data mode, direction,
+horizon and **Trade** beside it and everything else under **More options**. Strategies default to
+**Auto**: the desk compares the four that fit the chosen direction and what to trade (the panel names
+them; `GET /catalog` returns them as `defaults`, and per Trade choice as `defaults_by_instrument`),
+plus covered calls or a protective put on shares you hold; **Pick my own** lists every strategy
+grouped by family, shares first.
+
+**Trade** is Auto (shares and options), Shares or Options. Auto puts the share trade that fits
+the view first — buy shares for a bullish view, short shares for a bearish one, both when there is
+no view — then option structures, four in all; neutral and volatility views are option structures
+only. **Horizon** is optional: Auto (default), Intraday (out by the close), Interday (1–5 trading
+days), Swing (1–6 weeks) or Position (1–6 months). Left on Auto, a horizon or what to trade named
+plainly in your question is used ("day trade", "this week", "a few weeks", "long-term", "LEAPS";
+"shares", "options", "calls"); two horizons at once stay Auto, and a choice on the form always wins.
+Under Auto, share trades are swings and option structures alternate between intraday and swing.
+
+A **share trade** (`long_stock` / `short_stock`) needs only the stock's quote and its recent
+range, so it is compared even when no option is quoted (before the open, or a stock without
+options). Its stop is a number of daily ranges from the entry by horizon (0.5 intraday, 1
+interday, 1.5 swing — the ideas' rule — and 3 position) and its target is twice that risk; the
+daily range is the ATR(14) of the snapshot's daily bars, else 1.2× the implied daily move from the
+at-the-money options, else 2% of the price. The time stop closes it after 1, 5, 20 or 63 sessions.
+It shows the shares (your allocation's worth, else 100), the capital (full cost; a short shows Reg T
+50% initial margin, borrow fees excluded), the dollars lost at the stop and made at the target,
+the chance of a profit at the time stop (lognormal, implied volatility when quoted, else realized)
+and the chance the target comes before the stop for a driftless walk (about a third for a 2R
+target). A short warns about margin, borrow and unbounded loss; a day trade about the
+pattern-day-trader rule. A plan from a share trade is monitored on its stop, target and time stop
+unless the model set others, and paper fills buy or short the shares at the ask or bid. Sending folds the
 panel so the answer is in view. **Your questions** lists your requests grouped by
 stock (newest group first, a filter once there are more than three); the answer to the
 selected one sits beside it: your position if attached, the desk's verdict and any second
@@ -225,7 +249,12 @@ connection's live ORDER_BOOK subscription is then treated as observed at request
 time and the snapshot carries `order_book_time_unreported_observed_on_live_subscription`.
 Option contracts use no QUOTE subscriptions (only order books), which keeps quota
 use low. Same-day contracts of late-close ETFs (16:15 ET cutoff) are valid for
-intraday comparisons; swing candidates always use a later expiry. Credit spreads
+intraday comparisons; longer horizons always use a later expiry. Options pick the expiry that
+fits the horizon: the nearest for intraday, the one nearest 3 days within 10 for interday, nearest
+30 days within 14–60 for swing and nearest 90 days within 45–200 for position (else the nearest
+beyond the window, else the closest quoted). Swing and position expiries are usually beyond the
+nearest four the snapshot fetches, so the desk asks OpenD for that expiry's chain as well and
+splits the quote budget between the two nearest expiries and it. Credit spreads
 sell the out-of-the-money strike. Monitoring runs in
 a separate worker and continues independently of the model. Follow-up calculations use the existing Codex owned-process runner, with cancellation and deadline cleanup; advice stores the actual tool calls and effective per-candidate requests.
 
