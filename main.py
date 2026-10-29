@@ -1341,7 +1341,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     # the "api.app:app" import string. With the string, uvicorn imports the app
     # lazily inside the server thread, and that import (litellm + the full app
     # tree, ~10s+ on constrained hosts) runs inside the startup probe window
-    # below, tripping the 3.0s timeout and causing a restart loop on slower
+    # below, tripping its timeout and causing a restart loop on slower
     # machines. Importing first keeps the heavy work out of the probe window;
     # genuine import failures still surface immediately to the caller.
     from api.app import app as fastapi_app
@@ -1383,7 +1383,10 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     global _API_SERVER
     _API_SERVER = (uvicorn_server, thread)
 
-    timeout_seconds = 3.0
+    # The app's own startup (lazy imports of the scheduler and Trade Desk, the database) can take
+    # several seconds on a busy shared file system; a real startup error or a dead server thread is
+    # still reported at once below, so only a slow-but-healthy start waits longer.
+    timeout_seconds = 60.0
     wait_deadline = time.time() + timeout_seconds
     while time.time() < wait_deadline:
         if startup_error:

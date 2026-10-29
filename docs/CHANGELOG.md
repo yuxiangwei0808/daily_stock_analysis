@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] `--serve-only` 启动探测窗口由 3 秒放宽到 60 秒：应用启动（调度器与交易台的延迟导入、数据库）在繁忙的共享文件系统上需 5 秒左右，原 3 秒窗口会让服务启动即退出；真实的启动错误或服务线程退出仍立即报错
 - [新功能] 交易台加入股票交易：新增「Buy shares / Short shares」候选（按时间范围以日波幅设止损：盘中 0.5、隔日 1、波段 1.5、中长线 3 个 ATR，目标为 2 倍风险，并设时间止损；显示股数、资金、触及止损/目标的盈亏、到期盈利概率与先到目标的概率），无期权报价时（如盘前）也可比较；表单新增「Trade」（自动/股票/期权），自动时把符合方向的股票交易放在期权结构之前
 - [改进] 交易台时间范围改为可选并扩展为 自动 / 盘中 / 隔日（1–5 天）/ 波段（1–6 周）/ 中长线（1–6 个月）：期权按时间范围选择到期日（波段约 30 天、中长线约 90 天，并向 OpenD 额外拉取该到期日的期权链），股票按时间范围设时间止损；表单为自动时会从问题中读取明确的时间范围或交易品种（如“day trade”“this week”“long-term”“shares”“options”）
 - [改进] `GENERATION_FALLBACK_BACKEND` 支持按顺序尝试的多个后端（如 `codex_cli,litellm`）；本地 CLI 返回额度/速率上限（如 Claude Code 周额度 429）后，在其提示的重置时间前直接跳过、请求立即走 fallback，不再每次白等一次拒绝；新增 `CODEX_CLI_MODEL`/`CODEX_CLI_EFFORT`（及 `TARGETED_*`）覆盖 Codex CLI 的模型与推理强度；交易台的每日想法、新闻评级、提醒解析、常规复核与 YouTube 选股等常规调用也走该 fallback 链（此前直接失败）
