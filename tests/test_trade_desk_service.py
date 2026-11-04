@@ -1,6 +1,6 @@
 """Trade Desk persistence and fill accounting acceptance checks."""
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import threading
 
@@ -1275,8 +1275,16 @@ def test_the_watchdog_keeps_running_while_the_monitor_is_stuck(repo, monkeypatch
         svc.stop()
 
 
-def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo, monkeypatch):
-    empty = snapshot().model_copy(update={"options": []})
+@pytest.mark.parametrize('now,reason', [
+    (datetime(2026, 10, 14, 16, 0, tzinfo=timezone.utc), "no quotable TEST options"),  # a Wednesday, 12:00 PM ET
+    (datetime(2026, 10, 14, 21, 0, tzinfo=timezone.utc),  # the same day, 5:00 PM ET
+     "after the 4:00 PM ET close the broker has no TEST option bid/ask"),
+], ids=['in_session', 'after_close'])
+def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo, monkeypatch, now, reason):
+    from src.services.trade_desk import quality
+    # The wording follows the session at the quote's time, and a live quote must be fresh by the clock.
+    monkeypatch.setattr(quality, 'utcnow', lambda: now)
+    empty = snapshot().model_copy(update={"options": [], "quoted_at": now})
     svc = service(repo, snap=empty)
     prompts = []
 
@@ -1290,7 +1298,7 @@ def test_your_question_is_answered_in_words_when_no_strategy_can_be_priced(repo,
     svc._run_advice(job['id'], threading.Event())
     answered = repo.advice(job['id'])
     assert answered['status'] == 'completed' and answered['llm_status'] == 'view_only'
-    assert "no quotable TEST options" in answered['explanation']
+    assert reason in answered['explanation']
     assert "The desk's view (no priced strategies): Tech is pulling back" in answered['explanation']
     assert "Thoughts on this tech selloff?" in prompts[0]
     # Automatic follow-ups and model failures keep the plain reason.

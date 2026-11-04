@@ -102,11 +102,45 @@ def _blocking_thread_runner(config, args, stock_codes):
 
 
 def _blocking_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
-    time.sleep(10)
+    time.sleep(60)  # outlasts a stop on a loaded host: running this out exits 0, a stopped worker does not
 
 
 def _successful_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     result_queue.put({"success": True, "error": None})
+
+
+# How long a spawned worker may take to report on a loaded host on NFS (0.6s when idle).
+# Only a hang waits this long: _wait_for_run_to_end returns as soon as the run has ended.
+_SPAWNED_RUN_TIMEOUT_SECONDS = 600
+
+
+def _wait_for_run_to_end(service):
+    """The run's final status: the watchdog records the outcome before it releases the run lock."""
+    deadline = time.monotonic() + _SPAWNED_RUN_TIMEOUT_SECONDS + 60  # the watchdog stops the worker first
+    while service.status()["running"]:
+        if time.monotonic() > deadline:
+            raise AssertionError("the watchdog never released the run")
+        time.sleep(0.05)
+    return service.status()
+
+
+def _wait_during_run(service, condition):
+    """Wait for something the run must do, giving up as soon as the run has ended without it."""
+    deadline = time.monotonic() + _SPAWNED_RUN_TIMEOUT_SECONDS
+    while service.status()["running"] and time.monotonic() < deadline and not condition():
+        time.sleep(0.05)
+
+
+def _wait_for_process_to_disappear(pid):
+    """Whether pid went away. Signalled is not gone: it answers until the process has died and been reaped."""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def _partial_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
@@ -132,8 +166,9 @@ def _large_failure_spawn_runner(result_queue, stock_codes, schedule_args_overrid
 
 def _exit_with_live_descendant_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     os.setsid()
+    # Outlasts the test's wait, so the descendant can only be gone because the watchdog ended it.
     child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", "import time; time.sleep(300)"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -143,15 +178,16 @@ def _exit_with_live_descendant_spawn_runner(result_queue, stock_codes, schedule_
 
 def _block_with_isolated_descendant_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     os.setsid()
+    # Both outlast the test's waits, so a descendant can only be gone because stop() ended it.
     child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", "import time; time.sleep(300)"],
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     pid_file = Path(os.environ["DSA_TEST_DESCENDANT_PID_FILE"])
     pid_file.write_text(f"{os.getpid()} {child.pid}", encoding="utf-8")
-    time.sleep(30)
+    time.sleep(300)
 
 
 class RuntimeSchedulerServiceTestCase(unittest.TestCase):
@@ -356,11 +392,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         result = service.run_now()
 
         self.assertTrue(result["accepted"])
-        deadline = time.monotonic() + 4
-        while service.status()["last_success_at"] is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        status = service.status()
-        self.assertFalse(status["running"])
+        status = _wait_for_run_to_end(service)
         self.assertIsNotNone(status["last_run_at"])
         self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])
@@ -378,7 +410,18 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service._reload_config = lambda: config
         service._analysis_process_target = _blocking_spawn_runner
-        service._analysis_timeout_seconds = lambda: 1
+        # From 18:00 to 19:00 on the host's clock this "18:00" slot would count as missed
+        # while the server was down, and a catch-up run would compete with the runs below.
+        service._interrupted_slot = lambda times, launch=True: False
+        callback_returned = threading.Event()
+
+        def timeout_after_callback_returned() -> int:
+            # A run reads its timeout before starting its worker, so a callback that waited for
+            # the run could not return: a blocking callback fails at any host speed, a slow host never.
+            callback_returned.wait(timeout=60)
+            return 1
+
+        service._analysis_timeout_seconds = timeout_after_callback_returned
 
         with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
@@ -386,7 +429,6 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         ):
             service.reconcile_from_config()
 
-        callback_returned = threading.Event()
         trigger = threading.Thread(
             target=lambda: (fake_schedule.run_pending(), callback_returned.set()),
             daemon=True,
@@ -394,31 +436,23 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         _BLOCKING_THREAD_RELEASE.clear()
         trigger.start()
         try:
-            # Generous waits: spawning and terminating a child is slow on a loaded machine.
             self.assertTrue(
-                callback_returned.wait(timeout=3),
+                callback_returned.wait(timeout=60),
                 "the scheduler callback remained blocked by analysis",
             )
 
-            deadline = time.monotonic() + 20
-            while service.status()["last_error"] is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-
-            status = service.status()
-            self.assertFalse(status["running"])
+            status = _wait_for_run_to_end(service)
             self.assertIn("timed out after 1s", status["last_error"])
 
+            # Only the blocked run is meant to time out. With 1s here the worker must start and
+            # report within it, and on a loaded host it is killed and no success ever comes.
             service._analysis_process_target = _successful_spawn_runner
+            service._analysis_timeout_seconds = lambda: _SPAWNED_RUN_TIMEOUT_SECONDS
             self.assertTrue(service.run_now()["accepted"])
 
-            deadline = time.monotonic() + 60  # a spawned worker can take tens of seconds on a loaded host
-            while service.status()["last_success_at"] is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-
-            status = service.status()
-            self.assertFalse(status["running"])
-            self.assertIsNotNone(status["last_success_at"])
+            status = _wait_for_run_to_end(service)
             self.assertIsNone(status["last_error"])
+            self.assertIsNotNone(status["last_success_at"])
         finally:
             _BLOCKING_THREAD_RELEASE.set()
             trigger.join(timeout=5)
@@ -433,17 +467,15 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         service._analysis_process_target = _blocking_spawn_runner
 
         self.assertTrue(service.run_now()["accepted"])
-        deadline = time.monotonic() + 5
-        while service.status()["last_run_at"] is None and time.monotonic() < deadline:
-            time.sleep(0.05)
+        _wait_during_run(service, lambda: service.status()["last_run_at"] is not None)
         self.assertIsNotNone(service.status()["last_run_at"])
+        worker = service._analysis_process
 
         service.stop()
+        _wait_for_run_to_end(service)
 
-        deadline = time.monotonic() + 5
-        while service.status()["running"] and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertFalse(service.status()["running"])
+        # The run also ends when the worker's own sleep runs out, and that exit is 0.
+        self.assertNotEqual(worker.exitcode, 0, "stop() left the worker running")
 
     def test_stop_does_not_record_expected_worker_termination_as_error(self) -> None:
         config = SimpleNamespace(
@@ -455,19 +487,12 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         service._analysis_process_target = _blocking_spawn_runner
 
         self.assertTrue(service.run_now()["accepted"])
-        deadline = time.monotonic() + 5
-        while service.status()["last_run_at"] is None and time.monotonic() < deadline:
-            time.sleep(0.05)
+        _wait_during_run(service, lambda: service.status()["last_run_at"] is not None)
         self.assertIsNotNone(service.status()["last_run_at"])
 
         service.stop()
 
-        deadline = time.monotonic() + 5
-        while service.status()["running"] and time.monotonic() < deadline:
-            time.sleep(0.05)
-        status = service.status()
-        self.assertFalse(status["running"])
-        self.assertIsNone(status["last_error"])
+        self.assertIsNone(_wait_for_run_to_end(service)["last_error"])
 
     def test_stale_scheduled_callback_cannot_start_after_stop(self) -> None:
         fake_schedule = _FakeScheduleModule()
@@ -503,14 +528,12 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service = RuntimeSchedulerService(config_provider=lambda: config)
         service._analysis_process_target = _large_failure_spawn_runner
-        service._analysis_timeout_seconds = lambda: 2
+        # A watchdog that joined before reading would deadlock with the worker until this runs out.
+        service._analysis_timeout_seconds = lambda: _SPAWNED_RUN_TIMEOUT_SECONDS
 
         self.assertTrue(service.run_now()["accepted"])
-        deadline = time.monotonic() + 5
-        while service.status()["last_error"] is None and time.monotonic() < deadline:
-            time.sleep(0.05)
 
-        self.assertTrue(service.status()["last_error"].startswith("x"))
+        self.assertTrue(_wait_for_run_to_end(service)["last_error"].startswith("x"))
 
     @unittest.skipUnless(os.name == "posix", "POSIX process-group regression")
     def test_worker_exit_without_result_terminates_remaining_process_group(self) -> None:
@@ -532,21 +555,17 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
                     {"DSA_TEST_DESCENDANT_PID_FILE": str(pid_file)},
                 ):
                     self.assertTrue(service.run_now()["accepted"])
-                    deadline = time.monotonic() + 5
-                    while not pid_file.exists() and time.monotonic() < deadline:
-                        time.sleep(0.05)
+                    # The file exists before its content does.
+                    _wait_during_run(service, lambda: pid_file.exists() and pid_file.read_text(encoding="utf-8"))
                     self.assertTrue(pid_file.exists())
                     process_group_id, child_pid = [
                         int(value) for value in pid_file.read_text(encoding="utf-8").split()
                     ]
 
-                    while service.status()["running"] and time.monotonic() < deadline:
-                        time.sleep(0.05)
+                    status = _wait_for_run_to_end(service)
 
-                self.assertFalse(service.status()["running"])
-                self.assertIn("exited without a result", service.status()["last_error"])
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                self.assertIn("exited without a result", status["last_error"])
+                self.assertTrue(_wait_for_process_to_disappear(child_pid), "the watchdog left the descendant running")
             finally:
                 if process_group_id is not None:
                     try:
@@ -574,21 +593,17 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
                     {"DSA_TEST_DESCENDANT_PID_FILE": str(pid_file)},
                 ):
                     self.assertTrue(service.run_now()["accepted"])
-                    deadline = time.monotonic() + 5
-                    while not pid_file.exists() and time.monotonic() < deadline:
-                        time.sleep(0.05)
+                    # The file exists before its content does.
+                    _wait_during_run(service, lambda: pid_file.exists() and pid_file.read_text(encoding="utf-8"))
                     self.assertTrue(pid_file.exists())
                     process_group_id, child_pid = [
                         int(value) for value in pid_file.read_text(encoding="utf-8").split()
                     ]
 
                     service.stop()
-                    while service.status()["running"] and time.monotonic() < deadline:
-                        time.sleep(0.05)
+                    _wait_for_run_to_end(service)
 
-                self.assertFalse(service.status()["running"])
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                self.assertTrue(_wait_for_process_to_disappear(child_pid), "stop() left the descendant running")
             finally:
                 for group_id in (child_pid, process_group_id):
                     if group_id is None:
