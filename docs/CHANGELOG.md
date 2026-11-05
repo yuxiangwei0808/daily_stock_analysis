@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 箱体交易回测 `scripts/backtest_boxes.py`：用 moomoo 15 分钟 K 线（缓存于 `reports/backtests/bars_15m`，每只新下载的股票占用一个 30 天历史 K 线额度）回测交易视频中的箱体交易（突破回踩、箱体反抽），与同样以限价入场的随机时点“孪生”交易对比，含打乱 K 线对照、整理箱变体与周度价值区确认；规则在 `src/services/trade_desk/boxes.py`，供计划中的实时图表共用。2020-11 → 2026-11、49 只股票与 ETF：两种交易均未跑赢随机时点（见 docs/strategy-backtest.md）
+- [文档] 新增 docs/trading-methodology.md（交易想法的研究流程：先冻结规则、孪生对照、随机数据检验、两段时期与成本、影子模式前向评分，以及已测试想法登记表）与 docs/live-chart-plan.md（基于 KLineChart 的实时图表计划）
 - [修复] OpenD 未运行（如记住的登录过期）时，交易台的 moomoo 行情/交易上下文构造会同步重试且不返回、一直占着提供者锁，所有行情调用卡住，OpenD 恢复后也不会自愈，只能重启服务；现在创建上下文前先探测 OpenD 端口（2 秒），未监听时立即报 connection_unavailable，下一次调用再重新连接
 - [修复] `--serve-only` 启动探测窗口由 3 秒放宽到 60 秒：应用启动（调度器与交易台的延迟导入、数据库）在繁忙的共享文件系统上需 5 秒左右，原 3 秒窗口会让服务启动即退出；真实的启动错误或服务线程退出仍立即报错
 - [新功能] 交易台加入股票交易：新增「Buy shares / Short shares」候选（按时间范围以日波幅设止损：盘中 0.5、隔日 1、波段 1.5、中长线 3 个 ATR，目标为 2 倍风险，并设时间止损；显示股数、资金、触及止损/目标的盈亏、到期盈利概率与先到目标的概率），无期权报价时（如盘前）也可比较；表单新增「Trade」（自动/股票/期权），自动时把符合方向的股票交易放在期权结构之前

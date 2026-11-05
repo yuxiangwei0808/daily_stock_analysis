@@ -1,6 +1,7 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: plan, not built. Owner decision 2026-11-05: build it on the dashboard with KLineChart.
+Status: phase 1 done (boxes module, `scripts/backtest_boxes.py`); later phases not built.
+Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
 ## What it is for

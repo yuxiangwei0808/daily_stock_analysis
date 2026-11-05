@@ -186,10 +186,10 @@ backtest in `scripts/`.
 | Model review of trade ideas | Forward, 2026-09 → 11 | No measurable value (\|t\| ≤ 1) | 2026-11-03 reflection (not yet in docs) |
 | Printed stop and target on ideas | Forward, same | Better than no stop (−2.5% vs −6.4% per idea) | Same |
 | Video zones: entries at a zone vs in the middle | Own option fills, 37 days | No edge shown: middle −12% vs zone +5%, n = 14–18, medians not significant | 2026-11-05 review |
-| Video box trades: break and retest toward the base | moomoo 15-min, 49 stocks, 2020-11 → 2026-11, 1,851 trades | Rejected: −0.06 / −0.03 R per trade after costs, 0.09–0.10 R worse than random timing (t −2.2 / −2.9) | 2026-11-05 run |
-| Video box trades: fade at a fresh box | Same, 6,515 trades | No edge shown: −0.07 / +0.01 R, 0.03 R worse than random timing (t −1.8 / −0.9) | Same |
+| Video box trades: break and retest toward the base | moomoo 15-min, 49 stocks, 2020-11 → 2026-11, 1,851 trades | Rejected: −0.06 / −0.03 R per trade after costs, 0.09–0.10 R worse than random timing (t −2.2 / −2.9) | [strategy-backtest.md](strategy-backtest.md) |
+| Video box trades: fade at a fresh box | Same, 6,515 trades | No edge shown: −0.07 / +0.01 R, 0.03 R worse than random timing (t −1.8 / −0.9) | Same; `scripts/backtest_boxes.py` |
 | Video boxes confirmed by a weekly value-area edge | Same trades; VAH/VAL of the 2 prior weeks within the box | No edge shown in all 8 variants: about half of all boxes line up by chance, and those did no better | Same |
-| Tidier boxes (small, no drift) | Same, with and without the value-area filter | No edge shown | Same |
+| Tidier boxes (small, no drift) | Same, with and without the value-area filter | No edge shown at 1.0 T; rejected at 0.6 T (loses in both periods) | Same |
 
 ## 12. Don't
 

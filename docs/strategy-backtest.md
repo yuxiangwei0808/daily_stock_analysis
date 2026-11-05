@@ -140,3 +140,64 @@ control above; the path bias is smaller over a single session but was not measur
 - Intraday momentum on two years of hourly bars (≈90k trades): gross effect 0.00%.
 - Sixty days are one regime; these numbers cannot confirm a rule, only reject the
   ones that already lose on costs.
+
+## Box trades from a trading video (`scripts/backtest_boxes.py`)
+
+```bash
+python scripts/backtest_boxes.py --out reports/backtests            # downloads missing stocks from OpenD
+python scripts/backtest_boxes.py --tickers SPY,QQQ --offline          # cached bars only
+```
+
+The rules are in `src/services/trade_desk/boxes.py`, which the planned live chart
+([live-chart-plan.md](live-chart-plan.md)) will share. Fills, twins and the controls are in
+`src/services/trade_desk/backtest/boxes.py`. Bars are moomoo 15-minute bars (forward-adjusted,
+regular session, back to 2018-10), cached in `reports/backtests/bars_15m`. Each newly downloaded
+stock uses one moomoo history allowance for 30 days; cached stocks use none. The rules were fixed
+before any result, following [trading-methodology.md](trading-methodology.md).
+
+| Trade | Entry | Stop | Target |
+|---|---|---|---|
+| `break_retest` (the video's worked example) | After a close outside the range box on the side away from the impulse: a limit at the box's near edge, against the impulse | Past the range's extreme wick, impulse bar included | The base box's near edge |
+| `fade` | The first return to a box from outside: a limit at its edge | Past the box's own extreme wick | 2 × the stop distance |
+
+- **Impulse:** one 15-minute bar, opening gap included, of at least 1.0 × T (main) or 0.6 × T.
+  T is the median session range over the 10 prior sessions.
+- **Boxes:** the bodies of the 8 bars after the impulse (range box) and before it (base box). A
+  box counts when it is at most 0.75 × the impulse. The tidy variant requires at most 0.5 ×
+  with no drift. A setup lives for 5 sessions.
+- **Exits:** stop or target. Both in one bar count as the stop; in the entry bar only the stop
+  counts. A gap past the stop fills at the open. Otherwise the trade closes after 5 sessions.
+- **Cost:** 0.05% per round trip. That is half the 5 bps a side used above; more cost only
+  makes the result worse.
+- **Twins:** 20 per trade, on the same stock with the same direction, stop and target. Each
+  enters by a limit at the same distance from the previous close as the real entry, on random
+  bars of the same session (or the five sessions either side). Twins entered at the bar open
+  instead faked +0.03 to +0.24 R on shuffled bars. Seeds are fixed, so a rerun gives the same
+  numbers.
+- **Value-area check:** a trade is confirmed when the value-area high or low of either of the
+  two prior weeks falls within the traded box (wicks included, ± 0.1 T). The weekly volume
+  profile is approximated from the 15-minute bars. The chance control moves those levels by
+  1–3 T, 200 times.
+
+### Findings (run of 2026-11-05; 49 stocks and ETFs, 2020-11 → 2026-11, period B from 2023-11)
+
+The universe was the four index ETFs, 20 large caps across sectors, and the user's traded and
+held tickers. R is per trade after costs; "edge" is R minus the twins' R; t is clustered by
+month. All variants are shown.
+
+| Trade, impulse | Period A: trades, R, edge (t) | Period B: trades, R, edge (t) | Verdict |
+|---|---|---|---|
+| `break_retest`, 1.0 T | 610, −0.062, −0.101 (−2.24) | 1,241, −0.030, −0.091 (−2.90) | Rejected |
+| `fade`, 1.0 T | 2,244, −0.066, −0.029 (−1.78) | 4,271, +0.005, −0.031 (−0.90) | No edge shown |
+| `break_retest`, 0.6 T | 1,251, −0.046, −0.134 (−4.60) | 1,933, −0.034, −0.104 (−3.57) | Rejected |
+| `fade`, 0.6 T | 6,901, −0.062, −0.035 (−2.35) | 10,247, −0.046, −0.029 (−1.10) | Rejected (loses in both) |
+| Tidy boxes, 1.0 T (`break_retest` / `fade`) | 142 / 848, R +0.013 / −0.117, edge −0.081 / −0.057 | 218 / 1,602, R −0.023 / +0.018, edge −0.051 / +0.012 | No edge shown |
+| Tidy boxes, 0.6 T (`break_retest` / `fade`) | 231 / 2,180, R −0.041 / −0.087, edge −0.065 / −0.009 | 334 / 3,302, R −0.067 / −0.076, edge −0.072 / −0.019 | Rejected (lose in both) |
+
+- Win rates were 32–38%. On shuffled bars `break_retest` gains +0.07 R on its twins (t 1.96),
+  so its real shortfall is, if anything, understated.
+- **Value area:** 41–54% of trades line up with a weekly value-area edge by chance alone. The
+  confirmed-minus-unconfirmed gap changes sign between the periods in every variant, and no
+  variant passes.
+- **Not tested:** order flow (the video's footprint and delta need tick history), the trader's
+  own choice of which boxes to trade, DAX futures, and options (with options the costs are higher).
