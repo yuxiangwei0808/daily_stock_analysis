@@ -1,5 +1,6 @@
 """Scoped US market breadth, sector ETF proxies and outside-watchlist movers."""
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 from src.services.screening.snapshot_us import fetch_us_snapshot, fetch_us_universe
 from data_provider.us_session import session_window
@@ -11,6 +12,8 @@ SECTOR_ETFS = {
     "XLY": "Consumer Discretionary", "XLP": "Consumer Staples", "XLI": "Industrials",
     "XLB": "Materials", "XLU": "Utilities", "XLRE": "Real Estate", "XLC": "Communication Services",
 }
+BREADTH_MA_DAYS = 20
+BREADTH_MIN_STOCKS = 200  # fewer than this says too little about the market as a whole
 
 
 def collect_us_market_scan(watchlist=(), *, now=None):
@@ -94,6 +97,39 @@ def collect_us_market_scan(watchlist=(), *, now=None):
     except Exception as exc:
         logger.warning("US market scan unavailable: %s", exc)
         result["warnings"] = [f"US scan unavailable: {type(exc).__name__}. No current breadth or movers inferred."]
+    return result
+
+
+def collect_us_breadth():
+    """Share of the configured universe above its 20-day average, from daily bars; feeds the market light.
+
+    Slower-moving than today's advancers, so the light (and the Buy guard behind it) does not flip with
+    each day's tape. ``available`` stays False on a failed download or too small a universe.
+    """
+    import os
+    result = {"available": False, "ma_days": BREADTH_MA_DAYS}
+    try:
+        from src.services.trade_desk.trend import download_bars
+        universe = [code.replace("-", ".") for code in fetch_us_universe(os.getenv("SCREENING_US_UNIVERSE", "auto"))]
+        history = call_with_timeout(
+            download_bars, universe, period="3mo",
+            timeout_sec=parse_source_timeout_seconds("SCREENING_SNAPSHOT_CALL_TIMEOUT_SEC", default=60),
+            label="US market breadth",
+        )
+        rows = [bars for bars in history.values() if len(bars) >= BREADTH_MA_DAYS]
+        # The date most stocks have: a halted stock's old close says nothing, and before the open
+        # a few stocks already carrying today's bar must not decide which day is "current".
+        latest = Counter(bars[-1]["date"] for bars in rows).most_common(1)[0][0] if rows else None
+        current = [bars for bars in rows if bars[-1]["date"] == latest]
+        above = sum(1 for bars in current
+                    if bars[-1]["close"] > sum(bar["close"] for bar in bars[-BREADTH_MA_DAYS:]) / BREADTH_MA_DAYS)
+        result.update(count=len(current), as_of=latest)
+        if len(current) >= BREADTH_MIN_STOCKS:
+            result.update(available=True, above=above, above_ma_pct=round(above / len(current) * 100, 1))
+        else:
+            logger.warning("US breadth unavailable: %d stocks with current bars", len(current))
+    except Exception as exc:
+        logger.warning("US breadth unavailable: %s", type(exc).__name__)
     return result
 
 

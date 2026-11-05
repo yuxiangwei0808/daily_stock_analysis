@@ -417,6 +417,14 @@ class TradeDeskRepository:
             if row is not None:
                 row.payload, row.status = encoded(payload), status
 
+    def update_tracked_ideas(self, updates):
+        """New payloads for ``(record_id, payload)`` pairs in one transaction; statuses stay as they are."""
+        with self.db.session_scope() as session:
+            for record_id, payload in updates:
+                row = session.get(TrackedIdeaRecord, record_id)
+                if row is not None:
+                    row.payload = encoded(payload)
+
     def lease(self, owner, seconds=45):
         now = utcnow()
         expiry = (now + timedelta(seconds=seconds)).isoformat()

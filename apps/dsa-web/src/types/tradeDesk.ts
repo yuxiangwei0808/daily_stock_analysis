@@ -399,6 +399,8 @@ export interface TrackRecordGroup {
   avgReturnPct?: number | null;
   avgR?: number | null;
   avgVsSpyPct?: number | null;
+  avgVsPeersPct?: number | null;
+  runningAvgPct?: number | null;
 }
 
 export interface TrackRecordNxGroup {
@@ -415,6 +417,7 @@ export interface TrackRecordVerdictCell {
   avg5dPct?: number | null;
   avg10dPct?: number | null;
   avg10dVsSpyPct?: number | null;
+  avg10dVsPeersPct?: number | null;
 }
 
 export interface TrackRecord {
@@ -426,9 +429,14 @@ export interface TrackRecord {
   verdicts?: Record<string, { label: string; byNx: Record<string, TrackRecordVerdictCell> }>;
   recent: Array<{ ticker: string; direction: string; verdict: string; signalDay: string; status: string;
     reason?: string | null; returnPct?: number | null; kind?: string; nxAlignment?: string | null }>;
-  /** Every tracked source vs SPY in the call's direction, with a cautious verdict. */
+  /** Every tracked source vs same-day stocks in the call's direction, with a cautious verdict. */
   scoreboard?: Array<{ key: string; label: string; horizon: string; closed: number; open: number;
-    avgVsSpyPct?: number | null; t?: number | null; verdict: 'too_early' | 'ahead' | 'behind' | 'no_difference' | string }>;
+    avgVsPeersPct?: number | null; avgVsSpyPct?: number | null; t?: number | null; verdict: 'too_early' | 'ahead' | 'behind' | 'no_difference' | string }>;
+  /** Approved minus rejected finished ideas of the same day and direction. */
+  reviewValue?: { days: number; gapPct?: number | null; t?: number | null; verdict: 'too_early' | 'helps' | 'hurts' | 'no_difference' | string };
+  /** The model's own call before any guard, 10 sessions later vs the rest of the watchlist. */
+  modelCalls?: Record<string, { label: string; closed: number; open: number; shown: number; avg10dPct?: number | null;
+    avg10dVsWatchlistPct?: number | null; t?: number | null }>;
 }
 
 export type HoldingRuleKind = 'price_below' | 'price_above' | 'days_to_expiry' | 'pnl_below' | 'pnl_above';

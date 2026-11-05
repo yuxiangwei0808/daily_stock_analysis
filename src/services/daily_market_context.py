@@ -72,6 +72,7 @@ class DailyMarketContext:
     history_id: Optional[int] = None
     query_id: Optional[str] = None
     full_report: Optional[str] = None
+    market_light: Optional[Dict[str, Any]] = None
 
     def to_safe_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -83,6 +84,8 @@ class DailyMarketContext:
         }
         if self.position_cap:
             payload["position_cap"] = self.position_cap
+        if self.market_light:
+            payload["market_light"] = dict(self.market_light)
         return payload
 
 
@@ -611,7 +614,11 @@ class DailyMarketContextService:
         summary = _extract_summary(scoped_payload, fallback_summary)
         if not summary:
             return None
-        risk_signal_text = _join_text_parts(summary, _extract_market_light_signal_text(scoped_payload))
+        market_light = _market_light_brief(scoped_payload)
+        # A structured light is the signal: words in the model's summary ("watch", "cautious") do not override it.
+        risk_signal_text = _extract_market_light_signal_text(scoped_payload)
+        if market_light is None:
+            risk_signal_text = _join_text_parts(summary, risk_signal_text)
         risk_tags = _extract_risk_tags(risk_signal_text)
         position_cap = _extract_position_cap(risk_signal_text)
         full_report = _extract_full_market_report(
@@ -629,6 +636,7 @@ class DailyMarketContextService:
             history_id=history_id if isinstance(history_id, int) else None,
             query_id=query_id if isinstance(query_id, str) and query_id else None,
             full_report=full_report,
+            market_light=market_light,
         )
 
 
@@ -892,6 +900,20 @@ def _extract_summary(payload: Mapping[str, Any], fallback_summary: Optional[str]
         if text:
             return _truncate(text, 500)
     return ""
+
+
+def _market_light_brief(payload: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """The structured light behind a context: its colour, score and whether real breadth went into it."""
+    market_light = payload.get("market_light")
+    if not isinstance(market_light, Mapping):
+        return None
+    status = str(market_light.get("status") or "").strip().lower()
+    if status not in ("green", "yellow", "red"):
+        return None
+    dimensions = market_light.get("dimensions")
+    breadth = dimensions.get("breadth") if isinstance(dimensions, Mapping) else None
+    return {"status": status, "score": market_light.get("score"),
+            "breadth_available": bool(isinstance(breadth, Mapping) and breadth.get("available"))}
 
 
 def _extract_market_light_signal_text(payload: Mapping[str, Any]) -> str:

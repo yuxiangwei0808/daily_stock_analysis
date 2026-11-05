@@ -299,3 +299,57 @@ def test_conservative_market_context_does_not_soften_do_not_buy_in_english() -> 
     assert adjustments == []
     assert result.decision_type == "buy"
     assert result.operation_advice == "Do not buy now; sell into strength."
+
+
+def test_a_green_light_leaves_a_buy_alone_whatever_the_summary_says() -> None:
+    result = _result()
+    adjustments = apply_daily_market_context_guardrail(
+        result,
+        daily_market_context={
+            "region": "us",
+            "summary": "Breadth improved; watch CPI and stay cautious into the print.",
+            "risk_tags": [],
+            "market_light": {"status": "green", "score": 66, "breadth_available": True},
+        },
+        report_language="en",
+    )
+    assert adjustments == []
+    assert result.decision_type == "buy" and result.sentiment_score == 82
+    assert "market_guard" not in result.dashboard
+
+
+def test_a_softened_buy_keeps_the_models_call_the_reason_and_a_consistent_signal() -> None:
+    result = _result()
+    result.dashboard["core_conclusion"]["signal_type"] = "🟢 Buy Signal"
+    apply_daily_market_context_guardrail(
+        result,
+        daily_market_context={
+            "region": "us",
+            "summary": "Mixed session.",
+            "risk_tags": ["conservative"],
+            "market_light": {"status": "yellow", "score": 52, "breadth_available": True},
+        },
+        report_language="en",
+    )
+    assert result.decision_type == "hold" and result.sentiment_score == 52
+    assert result.dashboard["core_conclusion"]["signal_type"] == "🟡 Hold / Watch"
+    guard = result.dashboard["market_guard"]
+    assert guard["model_call"] == {"decision_type": "buy", "sentiment_score": 82, "operation_advice": "立即买入并积极加仓"}
+    assert guard["market_light"]["status"] == "yellow" and guard["risk_tags"] == ["conservative"]
+    assert any("market light yellow, score 52" in item for item in result.dashboard["phase_decision"]["data_limitations"])
+
+
+def test_a_light_that_had_no_breadth_says_so_when_it_softens_a_buy() -> None:
+    result = _result()
+    apply_daily_market_context_guardrail(
+        result,
+        daily_market_context={
+            "region": "us",
+            "summary": "Mixed session.",
+            "risk_tags": ["conservative"],
+            "market_light": {"status": "yellow", "score": 50, "breadth_available": False},
+        },
+        report_language="en",
+    )
+    assert result.decision_type == "hold"
+    assert any("score 50, breadth unavailable" in item for item in result.dashboard["phase_decision"]["data_limitations"])

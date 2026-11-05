@@ -1,5 +1,5 @@
 """US session data contracts, covering provider failures without live network calls."""
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -289,14 +289,78 @@ def test_us_overview_does_not_call_cn_sector_providers():
     analyzer.profile = US_PROFILE
     analyzer.config = SimpleNamespace(screening_enabled=True, stock_list=["AAPL"])
     scan = {"available": True, "sectors": [{"name": "Technology (XLK ETF)", "change_pct": 2}]}
+    breadth = {"available": True, "above_ma_pct": 61.0, "ma_days": 20}
     with patch.object(analyzer, "_get_main_indices", return_value=[]), \
             patch.object(analyzer, "_get_sector_rankings") as cn_sectors, \
+            patch("src.services.us_market_scan.collect_us_breadth", return_value=breadth), \
             patch("src.services.us_market_scan.collect_us_market_scan", return_value=scan) as collect:
         overview = analyzer.get_market_overview()
     cn_sectors.assert_not_called()
     collect.assert_called_once_with(["AAPL"])
     assert overview.top_sectors[0]["name"] == "Technology (XLK ETF)"
     assert overview.us_session_scan is scan
+    assert overview.us_breadth is breadth
+
+
+def _daily_bars(closes, last_day="2026-10-30"):
+    end = date.fromisoformat(last_day)
+    return [{"date": (end - timedelta(days=len(closes) - 1 - i)).isoformat(), "close": close}
+            for i, close in enumerate(closes)]
+
+
+def test_us_breadth_is_the_universe_share_above_its_20_day_average():
+    from src.services import us_market_scan as scan
+    universe = [f"S{i}" for i in range(300)] + ["BRK-B", "STALE", "NEW"]
+    history = {f"S{i}": _daily_bars([100.0] * 19 + [110.0 if i < 225 else 90.0]) for i in range(300)}
+    history["BRK.B"] = _daily_bars([100.0] * 19 + [110.0])
+    history["STALE"] = _daily_bars([100.0] * 19 + [110.0], last_day="2026-10-01")  # stopped trading: not counted
+    history["NEW"] = _daily_bars([100.0] * 5)  # too short to have an average
+    with patch("src.services.us_market_scan.fetch_us_universe", return_value=universe), \
+            patch("src.services.trade_desk.trend.download_bars", return_value=history) as download:
+        result = scan.collect_us_breadth()
+    assert download.call_args.kwargs["period"] == "3mo"
+    assert result["available"] is True and result["count"] == 301 and result["above"] == 226
+    assert result["above_ma_pct"] == pytest.approx(75.1) and result["as_of"] == "2026-10-30" and result["ma_days"] == 20
+    # Before the open a stock already carrying today's bar does not make every other stock stale.
+    history["EARLY"] = _daily_bars([100.0] * 19 + [110.0], last_day="2026-10-31")
+    with patch("src.services.us_market_scan.fetch_us_universe", return_value=universe), \
+            patch("src.services.trade_desk.trend.download_bars", return_value=history):
+        assert scan.collect_us_breadth()["as_of"] == "2026-10-30"
+
+
+def test_us_breadth_is_unavailable_rather_than_guessed():
+    from src.services import us_market_scan as scan
+    few = {f"S{i}": _daily_bars([100.0] * 20) for i in range(50)}
+    with patch("src.services.us_market_scan.fetch_us_universe", return_value=list(few)), \
+            patch("src.services.trade_desk.trend.download_bars", return_value=few):
+        result = scan.collect_us_breadth()
+    assert result["available"] is False and result["count"] == 50 and "above_ma_pct" not in result
+    with patch("src.services.us_market_scan.fetch_us_universe", side_effect=RuntimeError("wiki down")):
+        assert scan.collect_us_breadth()["available"] is False
+
+
+def test_the_us_market_light_follows_real_breadth():
+    from src.core.market_profile import US_PROFILE
+    from src.market_analyzer import MarketAnalyzer, MarketIndex, MarketOverview
+    analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+    analyzer.region = "us"
+    analyzer.profile = US_PROFILE
+    analyzer.config = SimpleNamespace(report_language="en")
+    analyzer.market_review_language = "en"
+
+    def light(breadth, change=0.0):
+        overview = MarketOverview(date="2026-10-30", indices=[MarketIndex(code="SPX", name="S&P 500", change_pct=change)],
+                                  us_breadth=breadth)
+        return analyzer.build_market_light_snapshot(overview)
+    known = lambda pct: {"available": True, "above_ma_pct": pct, "ma_days": 20}  # noqa: E731
+    assert light(known(80.0))["status"] == "green" and light(known(80.0))["dimensions"]["breadth"] == {"score": 80, "available": True}
+    assert light(known(55.0))["status"] == "yellow"
+    assert light(known(15.0))["status"] == "red"
+    assert "80% of stocks above their 20-day average" in light(known(80.0))["reasons"][0]
+    # Without breadth the score only follows the day's index move: the light says so instead of inventing a number.
+    for breadth in (None, {"available": False, "ma_days": 20}):
+        unknown = light(breadth)
+        assert unknown["status"] == "yellow" and unknown["dimensions"]["breadth"]["available"] is False
 
 
 def test_quote_service_and_api_preserve_provider_freshness():

@@ -765,14 +765,16 @@ def _trading_day(day: date) -> bool:
     return trading(day)
 
 
-def channel_stats(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Per channel: picks, closed picks, and the average 5/10/20-session return in the call's direction vs SPY."""
+def channel_stats(records: List[Dict[str, Any]], peers: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    """Per channel: picks, closed picks, and the average 5/10/20-session return in the call's direction
+    vs SPY and vs same-day stocks (``peers``, see ``idea_tracker.peer_baseline``)."""
+    peers = peers or {}
     def average(values):
         values = [value for value in values if value is not None]
         return sum(values) / len(values) if values else None
     out: Dict[str, Dict[str, Any]] = {}
     for row in records:
-        stats = out.setdefault(row.get("channel") or "?", {"picks": 0, "bullish": 0, "bearish": 0, "edges": {}})
+        stats = out.setdefault(row.get("channel") or "?", {"picks": 0, "bullish": 0, "bearish": 0, "edges": {}, "peer_edges": {}})
         stats["picks"] += 1
         stats[row["group"]] = stats.get(row["group"], 0) + 1
         sign = 1 if row.get("direction") == "long" else -1
@@ -780,9 +782,13 @@ def channel_stats(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             stock, spy = row.get(f"benchmark_return_{horizon}d_pct"), row.get(f"spy_{horizon}d_pct")
             if stock is not None and spy is not None:
                 stats["edges"].setdefault(horizon, []).append(sign * (stock - spy))
+            peer = (peers.get(str(row.get("signal_day"))[:10]) or {}).get(f"h{horizon}")
+            if stock is not None and peer is not None:
+                stats["peer_edges"].setdefault(horizon, []).append(sign * (stock - peer))
     for stats in out.values():
         stats["closed"] = len(stats["edges"].get(20, []))
         stats["vs_spy"] = {horizon: average(stats["edges"].get(horizon, [])) for horizon in (5, 10, 20)}
+        stats["vs_peers"] = {horizon: average(stats["peer_edges"].get(horizon, [])) for horizon in (5, 10, 20)}
         stats["counted"] = {horizon: len(stats["edges"].get(horizon, [])) for horizon in (5, 10, 20)}
-        del stats["edges"]
+        del stats["edges"], stats["peer_edges"]
     return out

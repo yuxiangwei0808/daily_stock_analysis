@@ -34,10 +34,22 @@ report history itself, so older reports are picked up too.
 (``src/services/social_scan.py``, ``src/services/youtube_picks.py``). They enter at
 the close of their signal day (read from the bars; no look-ahead) and settle like
 the report calls, 5, 10 and 20 sessions later against SPY.
+
+The summary grades fairly (``_split_ideas``, ``peer_baseline``). A scan relists a live idea every slot,
+so each idea counts once; and it counts only with all ``MAX_DAYS`` sessions behind it, because a stop
+closes within days while a winner can take weeks. The yardstick is the average universe stock entered
+the same day, same direction, same stop/target rule (or over the same sessions for report calls and
+picks), not SPY: in a rotation the index and the average stock can move in opposite directions.
+Report calls also keep ``model_call``, the model's own call before any guard, so a guard's effect can
+be measured instead of assumed.
 """
 from __future__ import annotations
 
+import bisect
 import logging
+import math
+import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -62,6 +74,14 @@ NX_SLOW_STATES = ("above", "inside", "below")
 NX_GROUPS = (("agree", "NX agrees"), ("neutral", "NX neutral"), ("against", "NX against"))
 GROUPS = (("high", "Approved · high"), ("medium", "Approved · medium"), ("rejected", "Rejected by the review"),
           ("breakout", "Breakout alerts"))
+APPROVED = {"high", "medium"}
+PEERS_SETTING = "idea_peer_baselines"  # signal day -> what the average universe stock did from that day
+PEER_HORIZONS = (5, 10, 20)
+PEER_MIN_STOCKS = 200  # fewer than this is not "the average stock"
+PEER_PERIOD = "1y"
+PEER_LOOKBACK_DAYS = 300  # older signal days fall outside that download (with the ATR's history before them)
+REVIEW_MIN_DAYS = 10  # days with both approved and rejected finished ideas before the review is judged
+_MODEL_DECISION = re.compile(r'"decision_type"\s*:\s*"(buy|hold|sell)"', re.I)
 
 
 def _day(now: Optional[datetime] = None) -> date:
@@ -119,7 +139,14 @@ def verdict_record(report: Any) -> Optional[tuple]:
     return f"verdict:{day}:{code}", {
         "kind": "verdict", "verdict": action, "group": group, "ticker": code, "direction": direction,
         "signal_day": day, "entry": round(price, 4), "score": getattr(report, "sentiment_score", None),
-        "report_id": getattr(report, "id", None)}
+        "report_id": getattr(report, "id", None), **_report_fields(raw)}
+
+
+def _report_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """The model's own call before any guard (from its stored answer) and whether the ticker is a geared fund."""
+    from .opportunities import geared_fund
+    found = _MODEL_DECISION.search(str(raw.get("raw_response") or ""))
+    return {"model_call": found.group(1).lower() if found else None, "geared": geared_fund(str(raw.get("name") or ""))}
 
 
 def recent_reports(db: Any, days: int = VERDICT_DAYS, known: Optional[set] = None) -> List[Any]:
@@ -165,6 +192,32 @@ def sync_verdicts(repo: Any, reports: List[Any]) -> int:
         if made and repo.track_idea(*made):
             added += 1
     return added
+
+
+def fill_model_calls(repo: Any) -> int:
+    """Report calls tracked before ``model_call`` existed read it from their stored report, once."""
+    import json
+
+    from sqlalchemy import select
+
+    from src.storage import AnalysisHistory
+    missing = [r for r in repo.tracked_ideas(limit=1_000_000) if r.get("kind") == "verdict" and "model_call" not in r]
+    ids = [r["report_id"] for r in missing if r.get("report_id")]
+    answers: Dict[Any, Dict[str, Any]] = {}
+    if ids:
+        with repo.db.get_session() as session:
+            for start in range(0, len(ids), 500):
+                for row in session.execute(select(AnalysisHistory.id, AnalysisHistory.raw_result)
+                                           .where(AnalysisHistory.id.in_(ids[start:start + 500]))).all():
+                    try:
+                        answers[row.id] = json.loads(row.raw_result or "{}")
+                    except (TypeError, ValueError):
+                        continue
+    updates = [(r["id"], {**{key: value for key, value in r.items() if key not in {"id", "status", "created_at"}},
+                          **_report_fields(answers.get(r.get("report_id")) or {})}) for r in missing]
+    if updates:
+        repo.update_tracked_ideas(updates)
+    return len(updates)
 
 
 def _aligned_returns(bars, market, start_day, end_day):
@@ -348,6 +401,151 @@ def settle_open(repo: Any, today: date,
     return closed
 
 
+def _session_days(first: str, today: date) -> List[str]:
+    """Trading days from ``first`` through ``today``, as ISO dates."""
+    cursor, days = date.fromisoformat(first), []
+    while cursor <= today:
+        if _trading_day(cursor):
+            days.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return days
+
+
+def peer_baseline(day: str, histories: List[Dict[str, Any]], today: date) -> Dict[str, Any]:
+    """What the average universe stock did from ``day``'s close: ``long`` / ``short`` under the ideas' rule
+    (the 1.5 / 3 ATR stop and target, the session limit, the same settlement and costs) once every session
+    is in, and ``h5`` ... ``h20`` close to close. ``histories`` holds {"bars", "dates"} per stock."""
+    from . import levels
+    from .backtest.swing import STOP_ATR, TARGET_ATR
+    trades: Dict[str, List[float]] = {"long": [], "short": []}
+    moves: Dict[int, List[float]] = {horizon: [] for horizon in PEER_HORIZONS}
+    for item in histories:
+        bars, position = item["bars"], bisect.bisect_right(item["dates"], day)
+        if position - 2 < levels.ATR_PERIOD or (date.fromisoformat(day) - date.fromisoformat(item["dates"][position - 1])).days > 5:
+            continue  # too little history, or a stock not trading then
+        close = float(bars[position - 1]["close"])
+        path = [bar for bar in bars[position:position + max(MAX_DAYS, *PEER_HORIZONS)] if bar["date"] <= today.isoformat()]
+        if close <= 0:
+            continue
+        for horizon in PEER_HORIZONS:
+            if len(path) >= horizon:
+                moves[horizon].append((path[horizon - 1]["close"] / close - 1) * 100)
+        atr = levels.atr(bars, position - 2)  # bars before the signal day, like the live levels
+        if len(path) < MAX_DAYS or atr <= 0:
+            continue
+        for direction, sign in (("long", 1), ("short", -1)):
+            record = {"signal_day": day, "direction": direction, "entry": close,
+                      "stop": close - sign * STOP_ATR * atr, "target": close + sign * TARGET_ATR * atr}
+            settled = settle(record, path[:MAX_DAYS], [], today)
+            if settled and settled.get("status") == "closed":
+                trades[direction].append(settled["return_pct"])
+    out: Dict[str, Any] = {}
+    for key, values in [*trades.items(), *((f"h{horizon}", values) for horizon, values in moves.items())]:
+        if len(values) >= PEER_MIN_STOCKS:
+            out[key] = round(sum(values) / len(values), 3)
+    return out
+
+
+def update_peer_baselines(repo: Any, today: date, bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]],
+                          universe: Callable[[], List[str]]) -> int:
+    """Measure every tracked signal day that has reached a new horizon; returns how many days changed."""
+    stored = dict(repo.setting(PEERS_SETTING, {}) or {})
+    days = sorted({str(r["signal_day"])[:10] for r in repo.tracked_ideas(limit=1_000_000) if r.get("signal_day")})
+    if not days:
+        return 0
+    sessions = _session_days(days[0], today)
+
+    def outstanding(day: str) -> bool:
+        passed = len(sessions) - bisect.bisect_right(sessions, day)
+        keys = [f"h{horizon}" for horizon in PEER_HORIZONS if passed >= horizon]
+        keys += ["long", "short"] if passed >= MAX_DAYS else []
+        return any(key not in stored.get(day, {}) for key in keys)
+
+    oldest = (today - timedelta(days=PEER_LOOKBACK_DAYS)).isoformat()
+    wanted = [day for day in days if day >= oldest and outstanding(day)]
+    tickers = universe() if wanted else []
+    if not tickers:
+        return 0
+    download = bars(tickers)
+    rows = [download.get(str(ticker).replace("-", ".")) for ticker in tickers]
+    histories = [{"bars": row, "dates": [bar["date"] for bar in row]} for row in rows if row]
+    changed = 0
+    for day in wanted:
+        measured = peer_baseline(day, histories, today)
+        if any(stored.get(day, {}).get(key) != value for key, value in measured.items()):
+            stored[day] = {**stored.get(day, {}), **measured}
+            changed += 1
+    if changed:
+        repo.set_setting(PEERS_SETTING, stored)
+    return changed
+
+
+def _us_universe() -> List[str]:
+    from src.services.screening.snapshot_us import fetch_us_universe
+    return fetch_us_universe(os.getenv("SCREENING_US_UNIVERSE", "auto"))
+
+
+def _split_ideas(rows: List[Dict[str, Any]], today: date) -> tuple:
+    """(finished, running) trade records: each idea once, finished only with all its sessions behind it.
+
+    A repeat of the same ticker, direction and family (approved / rejected / breakout) within MAX_DAYS
+    sessions of the idea's first record is the same idea. A record closed without a result is dropped.
+    """
+    rows = [r for r in rows if r.get("signal_day")]
+    if not rows:
+        return [], []
+    ordered = sorted(rows, key=lambda r: (str(r.get("signal_day")), str(r.get("slot") or ""), str(r.get("created_at") or "")))
+    sessions = _session_days(str(ordered[0]["signal_day"])[:10], today)
+    first_seen: Dict[tuple, int] = {}
+    finished, running = [], []
+    for record in ordered:
+        position = bisect.bisect_right(sessions, str(record["signal_day"])[:10])
+        family = "approved" if record.get("verdict") in APPROVED else record.get("verdict")
+        key = (record.get("ticker"), record.get("direction"), family)
+        if key in first_seen and position - first_seen[key] <= MAX_DAYS:
+            continue
+        first_seen[key] = position
+        if record["status"] == "closed" and record.get("return_pct") is None:
+            continue
+        done = record["status"] == "closed" and len(sessions) - position >= MAX_DAYS
+        (finished if done else running).append(record)
+    return finished, running
+
+
+def _stock_calls(everything: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Report calls on stocks: a geared fund's move is not comparable to the average stock's or the watchlist's."""
+    return [r for r in everything if r.get("kind") == "verdict" and not r.get("geared")]
+
+
+def _trade_vs_peers(record: Dict[str, Any], peers: Dict[str, Any]) -> Optional[float]:
+    """A trade's result minus the average stock entered the same day, same direction and rule."""
+    peer = (peers.get(str(record.get("signal_day"))[:10]) or {}).get(record.get("direction"))
+    value = record.get("return_pct")
+    return value - peer if value is not None and peer is not None else None
+
+
+def _horizon_vs_peers(record: Dict[str, Any], peers: Dict[str, Any], horizon: int) -> Optional[float]:
+    """The stock's close-to-close move minus the average stock's over the same sessions."""
+    peer = (peers.get(str(record.get("signal_day"))[:10]) or {}).get(f"h{horizon}")
+    stock = record.get(f"benchmark_return_{horizon}d_pct")
+    return stock - peer if stock is not None and peer is not None else None
+
+
+def _month_t(values: List[tuple]) -> tuple:
+    """(mean, month-clustered t, months) of (signal_day, value) pairs."""
+    by_month: Dict[str, List[float]] = {}
+    for day, value in values:
+        by_month.setdefault(str(day)[:7], []).append(value)
+    means = [sum(v) / len(v) for v in by_month.values()]
+    mean = sum(value for _, value in values) / len(values) if values else None
+    t = None
+    if len(means) >= 2:
+        centre = sum(means) / len(means)
+        spread = math.sqrt(sum((m - centre) ** 2 for m in means) / (len(means) - 1))
+        t = centre / (spread / math.sqrt(len(means))) if spread > 0 else None
+    return mean, t, len(means)
+
+
 def _halted(bars: List[Dict[str, Any]], market: List[Dict[str, Any]], signal_day: str, today: date) -> bool:
     """The ticker's prices stopped (a halt, a delisting) while SPY's went on for HALTED_SESSIONS sessions."""
     if not bars or not market or bars[-1]["date"] <= signal_day:
@@ -381,40 +579,71 @@ def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = W
     # created_at is stored in UTC ISO text; compare like with like.
     since = ((now or datetime.now(_NEW_YORK)) - timedelta(days=window_days)).astimezone(timezone.utc).isoformat()
     everything = repo.tracked_ideas(since=since, limit=1_000_000)
-    verdicts = [r for r in everything if r.get("kind") == "verdict"]
+    peers = repo.setting(PEERS_SETTING, {}) or {}
+    today = _day(now)
+    verdicts = _stock_calls(everything)
     records = [r for r in everything if r.get("kind") in (None, "idea", "breakout")]
+    finished, running = _split_ideas(records, today)
+
+    def average(values):
+        values = [value for value in values if value is not None]
+        return sum(values) / len(values) if values else None
+
     groups = {}
     for key, label in GROUPS:
-        rows = [r for r in records if r.get("verdict") == key]
-        closed = [r for r in rows if r["status"] == "closed" and r.get("return_pct") is not None]
-        returns = [r["return_pct"] for r in closed]
-        excess = [value for r in closed if (value := _excess(r, "return_pct", "spy_return_pct")) is not None]
+        done = [r for r in finished if r.get("verdict") == key]
+        live = [r for r in running if r.get("verdict") == key]
+        returns = [r["return_pct"] for r in done]
         groups[key] = {
-            "label": label, "open": sum(1 for r in rows if r["status"] == "open"), "closed": len(closed),
+            "label": label, "open": len(live), "closed": len(done),
             "win_rate": sum(1 for x in returns if x > 0) / len(returns) * 100 if returns else None,
-            "avg_return_pct": sum(returns) / len(returns) if returns else None,
-            "avg_r": (sum(r["r"] for r in closed if r.get("r") is not None) / len(closed)) if closed else None,
-            "avg_vs_spy_pct": sum(excess) / len(excess) if excess else None,
-            "long": sum(1 for r in rows if r["direction"] == "long"), "short": sum(1 for r in rows if r["direction"] == "short"),
+            "avg_return_pct": average(returns),
+            "avg_r": (sum(r["r"] for r in done if r.get("r") is not None) / len(done)) if done else None,
+            "avg_vs_spy_pct": average([_excess(r, "return_pct", "spy_return_pct") for r in done]),
+            "avg_vs_peers_pct": average([_trade_vs_peers(r, peers) for r in done]),
+            "running_avg_pct": average([r.get("return_pct") for r in live]),
+            "long": sum(1 for r in [*done, *live] if r["direction"] == "long"),
+            "short": sum(1 for r in [*done, *live] if r["direction"] == "short"),
         }
     by_nx = {}
-    closed_all = [r for r in records if r["status"] == "closed" and r.get("return_pct") is not None]
     for key, label in NX_GROUPS:
-        rows = [r for r in closed_all if (r.get("nx") or {}).get("alignment") == key]
+        rows = [r for r in finished if (r.get("nx") or {}).get("alignment") == key]
         returns = [r["return_pct"] for r in rows]
         by_nx[key] = {"label": label, "closed": len(rows),
-                      "open": sum(1 for r in records if r["status"] == "open" and (r.get("nx") or {}).get("alignment") == key),
+                      "open": sum(1 for r in running if (r.get("nx") or {}).get("alignment") == key),
                       "win_rate": sum(1 for x in returns if x > 0) / len(returns) * 100 if returns else None,
-                      "avg_return_pct": sum(returns) / len(returns) if returns else None}
+                      "avg_return_pct": average(returns)}
     recent = [{**{key: r.get(key) for key in ("ticker", "direction", "verdict", "signal_day", "status", "reason",
                                               "return_pct", "r", "spy_return_pct", "days", "kind")},
                "nx_alignment": (r.get("nx") or {}).get("alignment")} for r in records[:60]]
     from src.services.youtube_picks import channel_stats
     return {"window_days": window_days, "groups": groups, "by_nx": by_nx, "recent": recent,
-            "verdicts": verdict_stats(verdicts),
-            "social": social_stats([r for r in everything if r.get("kind") == "social"]),
-            "scoreboard": scoreboard(everything),
-            "influencers": channel_stats([r for r in everything if r.get("kind") == "influencer"])}
+            "review_value": review_value(finished),
+            "verdicts": verdict_stats(verdicts, peers),
+            "model_calls": model_call_stats(verdicts),
+            "social": social_stats([r for r in everything if r.get("kind") == "social"], peers),
+            "scoreboard": scoreboard(everything, peers, today),
+            "influencers": channel_stats([r for r in everything if r.get("kind") == "influencer"], peers)}
+
+
+def review_value(finished: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Approved minus rejected finished ideas of the same signal day and direction, month-clustered; the
+    comparison that tells whether the review adds anything, free of which days each group happened to fall on."""
+    days: Dict[tuple, Dict[str, List[float]]] = {}
+    for record in finished:
+        side = "approved" if record.get("verdict") in APPROVED else "rejected" if record.get("verdict") == "rejected" else None
+        if side:
+            cell = days.setdefault((str(record["signal_day"])[:10], record.get("direction")), {"approved": [], "rejected": []})
+            cell[side].append(record["return_pct"])
+    gaps = [(day, sum(cell["approved"]) / len(cell["approved"]) - sum(cell["rejected"]) / len(cell["rejected"]))
+            for (day, _direction), cell in days.items() if cell["approved"] and cell["rejected"]]
+    mean, t, months = _month_t(gaps)
+    needed = t_needed(months)
+    verdict = ("too_early" if len(gaps) < REVIEW_MIN_DAYS else
+               "helps" if t is not None and needed and t >= needed and (mean or 0) > 0 else
+               "hurts" if t is not None and needed and t <= -needed and (mean or 0) < 0 else "no_difference")
+    return {"days": len(gaps), "gap_pct": round(mean, 3) if mean is not None else None,
+            "t": round(t, 2) if t is not None else None, "t_needed": needed, "months": months, "verdict": verdict}
 
 
 SCOREBOARD_MIN = 30  # closed records before a source gets a verdict
@@ -440,65 +669,68 @@ def _excess(record: Dict[str, Any], stock_key: str, spy_key: str) -> Optional[fl
     return (stock - spy) * (-1 if record.get("direction") == "short" else 1)
 
 
-def scoreboard(everything: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Every tracked source side by side: closed count, average result vs SPY in the call's direction,
-    a month-clustered t, and a verdict ("too_early" under SCOREBOARD_MIN closed, else "ahead" /
+def scoreboard(everything: List[Dict[str, Any]], peers: Optional[Dict[str, Any]] = None,
+               today: Optional[date] = None) -> List[Dict[str, Any]]:
+    """Every tracked source side by side: finished count, average result vs same-day stocks in the call's
+    direction, a month-clustered t, and a verdict ("too_early" under SCOREBOARD_MIN finished, else "ahead" /
     "behind" when |t| reaches the 5% critical value for that many months, else "no_difference")."""
-    import math
-
-    def closed(rows):
-        return [r for r in rows if r["status"] == "closed"]
-
+    peers = peers or {}
+    today = today or _day()
     sources = []
 
-    def add(key: str, label: str, rows: List[Dict[str, Any]], stock_key: str, spy_key: str, horizon: str):
-        done = [(r, _excess(r, stock_key, spy_key)) for r in closed(rows)]
-        values = [(r, x) for r, x in done if x is not None]
-        by_month: Dict[str, List[float]] = {}
-        for record, value in values:
-            by_month.setdefault(str(record.get("signal_day", ""))[:7], []).append(value)
-        means = [sum(v) / len(v) for v in by_month.values()]
-        mean = sum(x for _, x in values) / len(values) if values else None
-        t = None
-        if len(means) >= 2:
-            centre = sum(means) / len(means)
-            spread = math.sqrt(sum((m - centre) ** 2 for m in means) / (len(means) - 1))
-            t = centre / (spread / math.sqrt(len(means))) if spread > 0 else None
-        needed = t_needed(len(means))
-        verdict = ("too_early" if len(values) < SCOREBOARD_MIN else
+    def add(key: str, label: str, done: List[Dict[str, Any]], still_open: int, compare: Callable[[Dict[str, Any]], Optional[float]],
+            stock_key: str, spy_key: str, horizon: str):
+        values = [(r, x) for r in done if (x := compare(r)) is not None]
+        mean, t, months = _month_t([(r.get("signal_day", ""), x) for r, x in values])
+        needed = t_needed(months)
+        verdict = ("too_early" if len(values) < SCOREBOARD_MIN or needed is None else
                    "ahead" if t is not None and t >= needed and (mean or 0) > 0 else
                    "behind" if t is not None and t <= -needed and (mean or 0) < 0 else "no_difference")
-        sources.append({"key": key, "label": label, "horizon": horizon, "closed": len(values),
-                        "open": sum(1 for r in rows if r["status"] == "open"),
-                        "avg_vs_spy_pct": round(mean, 3) if mean is not None else None,
-                        "t": round(t, 2) if t is not None else None, "t_needed": needed, "months": len(means),
+        vs_spy = [x for r, _ in values if (x := _excess(r, stock_key, spy_key)) is not None]
+        sources.append({"key": key, "label": label, "horizon": horizon, "closed": len(values), "open": still_open,
+                        "avg_vs_peers_pct": round(mean, 3) if mean is not None else None,
+                        "avg_vs_spy_pct": round(sum(vs_spy) / len(vs_spy), 3) if vs_spy else None,
+                        "t": round(t, 2) if t is not None else None, "t_needed": needed, "months": months,
                         "verdict": verdict})
-    ideas = [r for r in everything if r.get("kind") in (None, "idea")]
+
+    trades = [r for r in everything if r.get("kind") in (None, "idea", "breakout")]
+    finished, running = _split_ideas(trades, today)  # split once: an idea relisted at another conviction stays one idea
+
+    def add_trades(key: str, label: str, chosen: Callable[[Dict[str, Any]], bool]):
+        add(key, label, [r for r in finished if chosen(r)], sum(1 for r in running if chosen(r)),
+            lambda r: _trade_vs_peers(r, peers), "return_pct", "spy_return_pct", f"to stop or target, ≤{MAX_DAYS} sessions")
+
+    def add_horizon(key: str, label: str, rows: List[Dict[str, Any]], horizon: int, sign: Optional[int] = None):
+        def compare(record):
+            value = _horizon_vs_peers(record, peers, horizon)
+            side = sign if sign is not None else (-1 if record.get("direction") == "short" else 1)
+            return None if value is None else side * value
+        add(key, label, [r for r in rows if r["status"] == "closed"], sum(1 for r in rows if r["status"] == "open"),
+            compare, f"return_{horizon}d_pct", f"spy_{horizon}d_pct", f"{horizon} sessions")
+
     for verdict, label in (("high", "Trade ideas · high conviction"), ("medium", "Trade ideas · medium conviction"),
                            ("rejected", "Candidates the review rejected")):
-        add(f"idea:{verdict}", label, [r for r in ideas if r.get("verdict") == verdict],
-            "return_pct", "spy_return_pct", "close to close through exit day, ≤15 sessions")
-    add("breakout", "Breakout alerts", [r for r in everything if r.get("kind") == "breakout"],
-        "return_pct", "spy_return_pct", "close to close through exit day, ≤15 sessions")
-    trades = [r for r in everything if r.get("kind") in (None, "idea", "breakout")]
+        add_trades(f"idea:{verdict}", label, lambda r, v=verdict: r.get("verdict") == v and r.get("kind") in (None, "idea"))
+    add_trades("breakout", "Breakout alerts", lambda r: r.get("kind") == "breakout")
     for alignment, label in (("agree", "Ideas & breakouts · NX agrees"), ("against", "Ideas & breakouts · NX against")):
-        add(f"nx:{alignment}", label, [r for r in trades if (r.get("nx") or {}).get("alignment") == alignment],
-            "return_pct", "spy_return_pct", "close to close through exit day, ≤15 sessions")
-    verdicts = [r for r in everything if r.get("kind") == "verdict"]
+        add_trades(f"nx:{alignment}", label, lambda r, a=alignment: (r.get("nx") or {}).get("alignment") == a)
+    verdicts = _stock_calls(everything)
     for group, label in (("bullish", "Report calls · bullish"), ("bearish", "Report calls · bearish")):
-        add(f"verdict:{group}", label, [r for r in verdicts if r.get("group") == group],
-            "return_10d_pct", "spy_10d_pct", "10 sessions")
-    add("social", "Most discussed on social media", [r for r in everything if r.get("kind") == "social"],
-        "return_20d_pct", "spy_20d_pct", "20 sessions")
+        add_horizon(f"verdict:{group}", label, [r for r in verdicts if r.get("group") == group], 10)
+    buys = [r for r in verdicts if r.get("model_call") == "buy"]
+    add_horizon("model:buy_shown", "Model's Buy calls · shown as Buy", [r for r in buys if r.get("verdict") in ("buy", "add")], 10, 1)
+    add_horizon("model:buy_softened", "Model's Buy calls · softened by a guard", [r for r in buys if r.get("verdict") not in ("buy", "add")], 10, 1)
+    add_horizon("model:sell", "Model's Sell calls", [r for r in verdicts if r.get("model_call") == "sell"], 10, -1)
+    add_horizon("social", "Most discussed on social media", [r for r in everything if r.get("kind") == "social"], 20)
     influencer = [r for r in everything if r.get("kind") == "influencer"]
     for channel in sorted({r.get("channel") or "?" for r in influencer}):
-        add(f"youtube:{channel}", f"YouTube · {channel}", [r for r in influencer if (r.get("channel") or "?") == channel],
-            "return_20d_pct", "spy_20d_pct", "20 sessions")
+        add_horizon(f"youtube:{channel}", f"YouTube · {channel}", [r for r in influencer if (r.get("channel") or "?") == channel], 20)
     return [item for item in sources if item["closed"] or item["open"]]
 
 
-def social_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The social scan's names: how many, and their average return and return vs SPY after 5/10/20 sessions."""
+def social_stats(rows: List[Dict[str, Any]], peers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The social scan's names: how many, and their average return, vs SPY and vs same-day stocks after 5/10/20 sessions."""
+    peers = peers or {}
     def average(values):
         values = [v for v in values if v is not None]
         return sum(values) / len(values) if values else None
@@ -507,12 +739,14 @@ def social_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     for horizon in (5, 10, 20):
         done = [r for r in rows if r.get(f"benchmark_return_{horizon}d_pct") is not None and r.get(f"spy_{horizon}d_pct") is not None]
         out[f"{horizon}d"] = {"count": len(done), "avg_pct": average([r[f"return_{horizon}d_pct"] for r in done]),
-                              "vs_spy_pct": average([r[f"benchmark_return_{horizon}d_pct"] - r[f"spy_{horizon}d_pct"] for r in done])}
+                              "vs_spy_pct": average([r[f"benchmark_return_{horizon}d_pct"] - r[f"spy_{horizon}d_pct"] for r in done]),
+                              "vs_peers_pct": average([_horizon_vs_peers(r, peers, horizon) for r in done])}
     return out
 
 
-def verdict_stats(verdicts: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Report calls by group and NX slow-tunnel state: closed count, 5- and 10-session return, 10-session vs SPY."""
+def verdict_stats(verdicts: List[Dict[str, Any]], peers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Report calls by group and NX slow-tunnel state: closed count, 5- and 10-session return, 10-session vs SPY and same-day stocks."""
+    peers = peers or {}
     def average(values):
         values = [v for v in values if v is not None]
         return sum(values) / len(values) if values else None
@@ -529,8 +763,29 @@ def verdict_stats(verdicts: List[Dict[str, Any]]) -> Dict[str, Any]:
                             "avg_10d_pct": average([r.get("return_10d_pct") for r in closed]),
                             "avg_10d_vs_spy_pct": average([r["benchmark_return_10d_pct"] - r["spy_10d_pct"] for r in closed
                                                            if r.get("benchmark_return_10d_pct") is not None
-                                                           and r.get("spy_10d_pct") is not None])}
+                                                           and r.get("spy_10d_pct") is not None]),
+                            "avg_10d_vs_peers_pct": average([_horizon_vs_peers(r, peers, 10) for r in closed])}
         out[group] = {"label": label, "by_nx": cells}
+    return out
+
+
+def model_call_stats(verdicts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The model's own call before any guard, 10 sessions later against the rest of the watchlist that day:
+    the test of whether the call says anything about the stock, apart from how the watchlist as a whole did."""
+    counted = [r for r in verdicts if r["status"] == "closed" and r.get("return_10d_pct") is not None]
+    by_day: Dict[str, List[float]] = {}
+    for record in counted:
+        by_day.setdefault(record["signal_day"], []).append(record["return_10d_pct"])
+    out: Dict[str, Any] = {}
+    for call, label in (("buy", "Buy"), ("hold", "Hold"), ("sell", "Sell")):
+        rows = [r for r in counted if r.get("model_call") == call]
+        mean, t, months = _month_t([(r["signal_day"], r["return_10d_pct"] - sum(by_day[r["signal_day"]]) / len(by_day[r["signal_day"]]))
+                                    for r in rows])
+        out[call] = {"label": label, "closed": len(rows),
+                     "open": sum(1 for r in verdicts if r["status"] == "open" and r.get("model_call") == call),
+                     "shown": sum(1 for r in rows if r.get("verdict") in ("buy", "add")),
+                     "avg_10d_pct": sum(r["return_10d_pct"] for r in rows) / len(rows) if rows else None,
+                     "avg_10d_vs_watchlist_pct": mean, "t": round(t, 2) if t is not None else None, "months": months}
     return out
 
 
@@ -542,65 +797,71 @@ def _pct(value: Optional[float], sign: bool = True) -> str:
 
 def format_track_record(stats: Dict[str, Any]) -> str:
     lines = [f"📒 **Idea track record** · last {stats['window_days']} days (research only; entry at the alert price, "
-             f"{MAX_DAYS}-session limit, printed stop/target)"]
+             f"{MAX_DAYS}-session limit, printed stop/target; each idea counts once, after all {MAX_DAYS} sessions)"]
     for key, _label in GROUPS:
         group = stats["groups"][key]
         if not group["closed"] and not group["open"]:
             continue
-        lines.append(f"• {group['label']}: {group['closed']} closed · win {_pct(group['win_rate'], False)} · "
-                     f"avg {_pct(group['avg_return_pct'])} · vs SPY {_pct(group['avg_vs_spy_pct'])} · "
-                     f"{group['open']} open")
-    approved = [stats["groups"][k] for k in ("high", "medium") if stats["groups"][k]["closed"]]
-    rejected = stats["groups"]["rejected"]
-    if approved and rejected["closed"] >= 10 and sum(g["closed"] for g in approved) >= 10:
-        mean = sum(g["avg_return_pct"] * g["closed"] for g in approved) / sum(g["closed"] for g in approved)
-        lines.append(f"Review value so far: approved {mean:+.2f}% vs rejected {rejected['avg_return_pct']:+.2f}% per idea.")
-    else:
+        lines.append(f"• {group['label']}: {group['closed']} finished · win {_pct(group['win_rate'], False)} · "
+                     f"avg {_pct(group['avg_return_pct'])} · vs same-day stocks {_pct(group['avg_vs_peers_pct'])} · "
+                     f"{group['open']} running ({_pct(group['running_avg_pct'])} so far)")
+    review = stats.get("review_value") or {}
+    if review.get("verdict") in (None, "too_early"):
         lines.append("Too few closed ideas yet to judge the review; this fills in over the coming weeks.")
+    else:
+        outcome = {"helps": "the review helps", "hurts": "the review hurts"}.get(review["verdict"], "not a clear difference yet")
+        lines.append(f"Review value: on {review['days']} same-day comparisons, approved minus rejected is "
+                     f"{review['gap_pct']:+.2f} points per idea: {outcome}.")
     by_nx = stats.get("by_nx") or {}
     if any(group["closed"] for group in by_nx.values()):
         parts = [f"{group['label']} {group['closed']} · avg {_pct(group['avg_return_pct'])}"
                  for key, group in by_nx.items() if group["closed"]]
-        lines.append("By your NX slow tunnel (closed ideas and breakouts): " + " | ".join(parts)
+        lines.append("By your NX slow tunnel (finished ideas and breakouts): " + " | ".join(parts)
                      + ("" if sum(group["closed"] for group in by_nx.values()) >= 20 else " — too few to judge yet"))
     verdicts = stats.get("verdicts") or {}
     closed_verdicts = sum(group["by_nx"]["all"]["closed"] for group in verdicts.values())
     if closed_verdicts:
-        lines.append("Report calls, 10 sessions later vs SPY, by where the price sat against your NX slow tunnel:")
+        lines.append("Report calls, 10 sessions later vs same-day stocks, by where the price sat against your NX slow tunnel:")
         for group in verdicts.values():
             cells = group["by_nx"]
-            parts = [f"{state} {cells[state]['closed']} · {_pct(cells[state]['avg_10d_vs_spy_pct'])}"
+            parts = [f"{state} {cells[state]['closed']} · {_pct(cells[state]['avg_10d_vs_peers_pct'])}"
                      for state in NX_SLOW_STATES if cells[state]["closed"]]
             if parts:
                 lines.append(f"• {group['label']}: " + " | ".join(parts))
         if closed_verdicts < 60:
             lines.append("Few closed calls so far; read this as a first look.")
+    calls = stats.get("model_calls") or {}
+    if any(row["closed"] for row in calls.values()):
+        parts = [f"{row['label']} {row['closed']} · {_pct(row['avg_10d_vs_watchlist_pct'])}" for row in calls.values() if row["closed"]]
+        lines.append("The model's own calls before any guard, 10 sessions later vs the rest of the watchlist: " + " | ".join(parts)
+                     + f" ({calls['buy']['shown']} of {calls['buy']['closed']} Buys were shown as Buy)")
     board = stats.get("scoreboard") or []
     if board:
         judged = [item for item in board if item["verdict"] in ("ahead", "behind")]
         if judged:
             lines.append("What's working so far: " + "; ".join(
-                f"{item['label']} {'ahead of' if item['verdict'] == 'ahead' else 'behind'} SPY "
-                f"({item['avg_vs_spy_pct']:+.2f}%, {item['closed']} closed)" for item in judged))
+                f"{item['label']} {'ahead of' if item['verdict'] == 'ahead' else 'behind'} same-day stocks "
+                f"({item['avg_vs_peers_pct']:+.2f}%, {item['closed']} finished)" for item in judged))
         else:
-            lines.append(f"What's working: no source has {SCOREBOARD_MIN} closed records with a clear difference from SPY yet.")
+            lines.append(f"What's working: no source has {SCOREBOARD_MIN} finished records with a clear difference from same-day stocks yet.")
     social = stats.get("social") or {}
     if social.get("5d", {}).get("count"):
-        parts = [f"{h} sessions {social[f'{h}d']['count']} · vs SPY {_pct(social[f'{h}d']['vs_spy_pct'])}"
+        parts = [f"{h} sessions {social[f'{h}d']['count']} · vs same-day stocks {_pct(social[f'{h}d']['vs_peers_pct'])}"
                  for h in (5, 10, 20) if social[f"{h}d"]["count"]]
         lines.append("Most-discussed names on social media (from the close they were listed): " + " | ".join(parts)
                      + ("" if social["5d"]["count"] >= 50 else " — too few to judge yet"))
     influencers = stats.get("influencers") or {}
     counted = [(name, row) for name, row in influencers.items() if row["counted"][5]]
     if counted:
-        lines.append("YouTube picks, in the call's direction vs SPY (5 / 10 / 20 sessions):")
+        lines.append("YouTube picks, in the call's direction vs same-day stocks (5 / 10 / 20 sessions):")
         for name, row in sorted(counted, key=lambda item: -item[1]["picks"]):
             lines.append(f"• {name}: {row['picks']} picks ({row['bullish']} bullish, {row['bearish']} bearish) · "
-                         + " / ".join(_pct(row["vs_spy"][h]) for h in (5, 10, 20))
+                         + " / ".join(_pct(row["vs_peers"][h]) for h in (5, 10, 20))
                          + f" · {row['closed']} closed")
         if sum(row["closed"] for _name, row in counted) < 30:
             lines.append("Few closed picks so far; read this as a first look.")
-    lines.append("Vs SPY uses matching closing-price windows; simulated trade returns use alert entry/exit prices.")
+    lines.append("Same-day stocks: the average S&P stock from that day's close, same direction, stop, target and limit "
+                 "(same sessions for report calls and picks).")
     return "\n".join(lines)
 
 
@@ -612,13 +873,18 @@ class TrackerJob:
     def __init__(self, repo: Any, emit: Callable[[str, Dict[str, Any], str], Any], *,
                  bars: Callable[[List[str]], Dict[str, List[Dict[str, Any]]]] = trend.download_bars,
                  nx_bars: Optional[Callable[[List[str]], Dict[str, List[Dict[str, Any]]]]] = None,
-                 reports: Optional[Callable[[], List[Any]]] = None):
+                 reports: Optional[Callable[[], List[Any]]] = None,
+                 universe: Optional[Callable[[], List[str]]] = None):
         from concurrent.futures import ThreadPoolExecutor
         self.repo = repo
         self._emit = emit
         self._bars = bars
         self._nx_bars = nx_bars
         self._reports = reports or (lambda: recent_reports(repo.db, VERDICT_DAYS, repo.tracked_idea_ids("verdict:")))
+        # Live: the screening universe with a year of bars; an injected ``bars`` (tests) measures nothing unless given one.
+        live = bars is trend.download_bars
+        self._peer_bars = (lambda tickers: trend.download_bars(tickers, period=PEER_PERIOD)) if live else bars
+        self._universe = universe or (_us_universe if live else list)
         self._retry_after: Optional[datetime] = None
         self._done_day: Optional[date] = None
         self.last_error: Optional[str] = None
@@ -643,11 +909,17 @@ class TrackerJob:
         try:
             try:
                 added = sync_verdicts(self.repo, self._reports())
-                logger.info("Idea tracker: %d report calls added", added)
+                filled = fill_model_calls(self.repo)
+                logger.info("Idea tracker: %d report calls added, %d older calls filled in", added, filled)
             except Exception as exc:  # the report calls are picked up tomorrow
                 logger.warning("Idea tracker could not read report calls: %s", type(exc).__name__)
             closed = settle_open(self.repo, day, self._bars, self._nx_bars)
             logger.info("Idea tracker: %d records closed", closed)
+            try:
+                measured = update_peer_baselines(self.repo, day, self._peer_bars, self._universe)
+                logger.info("Idea tracker: same-day stocks measured for %d signal days", measured)
+            except Exception as exc:  # the summary uses the days already measured; the rest wait for the next run
+                logger.warning("Idea tracker could not measure same-day stocks: %s", type(exc).__name__)
             if _last_trading_day_of_week(day):
                 stats = track_record(self.repo, now)
                 verdicts = (stats.get("verdicts") or {}).values()

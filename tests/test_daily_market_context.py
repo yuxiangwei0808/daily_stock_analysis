@@ -1121,6 +1121,27 @@ def test_region_scoped_market_light_risk_signals_survive_neutral_summary() -> No
     assert safe_payload["position_cap"] == "20%"
 
 
+def test_a_structured_light_decides_and_words_in_the_summary_do_not() -> None:
+    def build(light):
+        payload = {"summary": "Stocks mixed; watch CPI and stay cautious. Position cap 30% for some funds."}
+        if light:
+            payload["market_light"] = light
+        return DailyMarketContextService(
+            db_manager=MagicMock(), today_fn=lambda: date(2026, 6, 6),
+        )._build_context_from_payload(region="us", trade_date=date(2026, 6, 6), payload=payload, source="analysis_history")
+
+    green = build({"status": "green", "score": 66, "guidance": "Risk appetite is acceptable; focus on leading themes.",
+                   "dimensions": {"breadth": {"score": 70, "available": True}}})
+    assert green.risk_tags == [] and green.position_cap is None
+    assert green.to_safe_dict()["market_light"] == {"status": "green", "score": 66, "breadth_available": True}
+    yellow = build({"status": "yellow", "score": 52, "dimensions": {"breadth": {"score": 50, "available": False}}})
+    assert yellow.risk_tags == ["conservative"]
+    assert yellow.market_light == {"status": "yellow", "score": 52, "breadth_available": False}
+    # No structured light (other regions, older history): the summary's words are all there is.
+    unlit = build(None)
+    assert "conservative" in unlit.risk_tags and unlit.market_light is None and "market_light" not in unlit.to_safe_dict()
+
+
 def test_yellow_market_light_status_marks_context_conservative() -> None:
     context = DailyMarketContextService(
         db_manager=MagicMock(),

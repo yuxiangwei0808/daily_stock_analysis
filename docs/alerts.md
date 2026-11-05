@@ -371,7 +371,7 @@ scope/type 校验是双向约束：`target_scope=market` 只能使用两类 Mark
 
 | dimension | `available=true` 条件 | fallback score |
 | --- | --- | --- |
-| `breadth` | `has_market_stats && (up_count + down_count) > 0` | `50` |
+| `breadth` | `has_market_stats && (up_count + down_count) > 0`；美股无全市场涨跌家数，改用 `us_breadth.available`（`SCREENING_ENABLED=true` 时由 `collect_us_breadth()` 计算：股票池内站上 20 日均线的占比，不少于 200 只） | `50` |
 | `index` | `indices` 非空且至少一个 `change_pct != None` | `50` |
 | `limit` | `has_market_stats && (limit_up_count + limit_down_count) > 0` | `50` |
 

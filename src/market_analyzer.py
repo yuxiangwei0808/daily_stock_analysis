@@ -131,6 +131,7 @@ class MarketOverview:
     top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
     bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
     us_session_scan: Optional[Dict[str, Any]] = None  # Scoped breadth and extended-session movers
+    us_breadth: Optional[Dict[str, Any]] = None  # Universe share above its 20-day average (market light)
 
 
 @dataclass
@@ -587,8 +588,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         overview.indices = self._get_main_indices()
 
         if self.region == "us" and getattr(self.config, "screening_enabled", False):
-            from src.services.us_market_scan import collect_us_market_scan
+            from src.services.us_market_scan import collect_us_breadth, collect_us_market_scan
             overview.us_session_scan = collect_us_market_scan(getattr(self.config, "stock_list", []))
+            overview.us_breadth = collect_us_breadth()
             scan = overview.us_session_scan
             if scan.get("as_of"):
                 overview.date = scan["as_of"][:10]
@@ -1136,6 +1138,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if overview.us_session_scan is not None:
             payload["us_session_scan"] = overview.us_session_scan
 
+        if overview.us_breadth is not None:
+            payload["us_breadth"] = overview.us_breadth
+
         if light is not None:
             payload["market_light"] = light
 
@@ -1389,6 +1394,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else None
         reasons: List[str] = []
+        if (overview.us_breadth or {}).get("available"):
+            reasons.append(f"{overview.us_breadth['above_ma_pct']:.0f}% 的股票位于 {overview.us_breadth['ma_days']} 日均线上方")
         if up_ratio is not None:
             if up_ratio >= 0.6:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，赚钱效应扩散")
@@ -1412,6 +1419,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else None
         reasons: List[str] = []
+        if (overview.us_breadth or {}).get("available"):
+            reasons.append(f"{overview.us_breadth['above_ma_pct']:.0f}% of stocks above their {overview.us_breadth['ma_days']}-day average")
         if up_ratio is not None:
             if up_ratio >= 0.6:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is expanding")
@@ -1612,6 +1621,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         breadth_score = 50
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
+        elif (overview.us_breadth or {}).get("available"):
+            # The US has no exchange-wide counts; the universe above its 20-day average stands in.
+            # Without it the score only follows the day's index move and stays yellow.
+            breadth_available = True
+            breadth_score = int(overview.us_breadth["above_ma_pct"])
 
         index_changes = _directional_index_changes(overview.indices)
         index_available = bool(overview.indices and index_changes)

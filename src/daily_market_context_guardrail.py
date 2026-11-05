@@ -74,6 +74,11 @@ def apply_daily_market_context_guardrail(
     if not _has_aggressive_buy_signal(result, language=language):
         return []
 
+    model_call = {
+        "decision_type": str(getattr(result, "decision_type", "") or "").lower(),
+        "sentiment_score": getattr(result, "sentiment_score", None),
+        "operation_advice": str(getattr(result, "operation_advice", "") or ""),
+    }
     adjustments: List[str] = []
     if str(getattr(result, "decision_type", "") or "").lower() == "buy":
         result.decision_type = "hold"
@@ -107,7 +112,14 @@ def apply_daily_market_context_guardrail(
     if not isinstance(phase_decision, dict):
         phase_decision = {}
         dashboard["phase_decision"] = phase_decision
-    _append_softening_limitation(phase_decision, language=language)
+    _append_softening_limitation(phase_decision, language=language, context=daily_market_context)
+    # What the model said and why it changed: the softened fields above no longer show it.
+    dashboard["market_guard"] = {
+        "model_call": model_call,
+        "market_light": daily_market_context.get("market_light"),
+        "risk_tags": list(daily_market_context.get("risk_tags") or []),
+        "position_cap": daily_market_context.get("position_cap"),
+    }
 
     return adjustments
 
@@ -126,6 +138,7 @@ def _sync_softened_dashboard_fields(
 
     core = dashboard.get("core_conclusion")
     if isinstance(core, dict):
+        core["signal_type"] = "🟡持有观望" if language == "zh" else "🟡 Hold / Watch"
         core["one_sentence"] = softened_advice
         core["position_advice"] = _softened_position_advice(language)
 
@@ -172,16 +185,29 @@ def _softened_position_strategy(language: str) -> dict[str, str]:
     }
 
 
-def _append_softening_limitation(phase_decision: dict[str, Any], *, language: str) -> None:
+def _light_note(context: Any) -> str:
+    """The light behind the softening, e.g. "yellow, score 52", plus a note when it had no breadth to read."""
+    light = context.get("market_light") if isinstance(context, Mapping) else None
+    if not isinstance(light, Mapping):
+        return ""
+    note = f"{light.get('status')}, score {light.get('score')}"
+    return note if light.get("breadth_available") else f"{note}, breadth unavailable"
+
+
+def _append_softening_limitation(phase_decision: dict[str, Any], *, language: str, context: Any = None) -> None:
     limitations = phase_decision.get("data_limitations")
     if not isinstance(limitations, list):
         limitations = []
+    note = _light_note(context)
     if language == "en":
-        limitation = "Daily market context is conservative/high risk; aggressive buy advice was softened."
+        detail = f" (market light {note})" if note else ""
+        limitation = f"Daily market context is conservative/high risk{detail}; aggressive buy advice was softened."
     elif language == "ko":
-        limitation = "대시장 환경이 보수적/고위험이라 공격적 매수 권고를 완화했습니다."
+        detail = f" (market light {note})" if note else ""
+        limitation = f"대시장 환경이 보수적/고위험이라{detail} 공격적 매수 권고를 완화했습니다."
     else:
-        limitation = "大盘环境偏谨慎/高风险，已软化激进买入建议。"
+        detail = f"（market light {note}）" if note else ""
+        limitation = f"大盘环境偏谨慎/高风险{detail}，已软化激进买入建议。"
     if limitation not in limitations:
         limitations.append(limitation)
     phase_decision["data_limitations"] = limitations
@@ -206,6 +232,8 @@ def _is_conservative_context(context: Any) -> bool:
         return True
     if str(context.get("position_cap") or "").strip():
         return True
+    if isinstance(context.get("market_light"), Mapping):
+        return False  # the structured light set the tags above; free text does not override it
     summary = str(context.get("summary") or "")
     lowered = summary.lower()
     return (

@@ -74,7 +74,7 @@ def test_scans_and_breakouts_are_recorded_once_and_summarised(repo):
     assert stats["groups"]["medium"]["closed"] == 1 and stats["groups"]["rejected"]["closed"] == 1
     assert stats["groups"]["breakout"]["open"] == 1
     text = it.format_track_record(stats)
-    assert text.startswith("📒 **Idea track record**") and "Rejected by the review: 1 closed" in text
+    assert text.startswith("📒 **Idea track record**") and "Rejected by the review: 1 finished" in text
     assert "Too few closed ideas yet" in text and "$" not in text
 
 
@@ -223,13 +223,15 @@ def test_verdicts_settle_on_fixed_horizons_and_split_by_nx(repo):
     assert aaa["status"] == "closed" and aaa["return_10d_pct"] == pytest.approx(10.0) and aaa["spy_10d_pct"] == pytest.approx(5.0)
     assert aaa["nx"]["slow"] == "above" and aaa["nx"]["alignment"] == "against"  # a bearish call above the tunnel
     assert bbb["nx"]["alignment"] is None  # watch takes no side
+    repo.set_setting(it.PEERS_SETTING, {signal_day: {"h10": 4.0}})
     stats = it.track_record(repo, now=datetime.now(timezone.utc))
     assert stats["recent"] == [] and not any(g["closed"] for g in stats["groups"].values())  # kept apart from ideas
     cell = stats["verdicts"]["bearish"]["by_nx"]["above"]
     assert cell["closed"] == 1 and cell["avg_10d_vs_spy_pct"] == pytest.approx(5.0)
+    assert cell["avg_10d_vs_peers_pct"] == pytest.approx(6.0)
     assert stats["verdicts"]["watch"]["by_nx"]["all"]["closed"] == 1
     text = it.format_track_record(stats)
-    assert "Report calls, 10 sessions later vs SPY" in text and "• Bearish calls: above 1 · +5.00%" in text
+    assert "Report calls, 10 sessions later vs same-day stocks" in text and "• Bearish calls: above 1 · +6.00%" in text
 
 
 def test_tracker_job_reads_report_calls_before_settling(repo, monkeypatch):
@@ -317,26 +319,28 @@ def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict()
         rows = []
         for i in range(n):
             month = 7 + i % 3
-            row = {"kind": kind, "status": "closed", "signal_day": f"2026-{month:02d}-{10 + i % 15:02d}", **extra}
+            row = {"kind": kind, "status": "closed", "ticker": f"{kind}{i}", "signal_day": f"2026-{month:02d}-{10 + i % 15:02d}", **extra}
             if kind in ("idea", "breakout"):
-                row.update(benchmark_return_pct=(excess + 1.0 + (i % 5) * 0.1) * (1 if extra.get("direction") == "long" else -1), spy_return_pct=1.0 if extra.get("direction") == "long" else -1.0)
+                row.update(return_pct=excess + 1.0 + (i % 5) * 0.1)  # the same-day long and short both made +1.0
             elif kind == "verdict":
-                row.update(benchmark_return_10d_pct=excess + 0.5 + (i % 5) * 0.1, spy_10d_pct=0.5)
+                row.update(benchmark_return_10d_pct=excess + 0.5 + (i % 5) * 0.1)
             else:
-                row.update(benchmark_return_20d_pct=excess + 2.0 + (i % 5) * 0.1, spy_20d_pct=2.0)
+                row.update(benchmark_return_20d_pct=excess + 2.0 + (i % 5) * 0.1)
             rows.append(row)
         return rows
+    peers = {f"2026-{month:02d}-{day:02d}": {"long": 1.0, "short": 1.0, "h10": 0.5, "h20": 2.0}
+             for month in (7, 8, 9) for day in range(10, 25)}
     everything = (closed("idea", 36, 1.2, verdict="high", direction="long")
                   + closed("idea", 12, -0.5, verdict="rejected", direction="short")
                   + closed("verdict", 40, -1.0, group="bearish", direction="short")
                   + closed("influencer", 5, 3.0, channel="Meet Kevin", direction="long")
                   + [{"kind": "social", "status": "open", "signal_day": "2026-09-29"}])
-    board = {item["key"]: item for item in it.scoreboard(everything)}
+    board = {item["key"]: item for item in it.scoreboard(everything, peers, date(2026, 12, 1))}
     assert board["idea:high"]["verdict"] == "ahead" and board["idea:high"]["closed"] == 36
-    assert board["idea:high"]["avg_vs_spy_pct"] == pytest.approx(1.4, abs=0.01)
+    assert board["idea:high"]["avg_vs_peers_pct"] == pytest.approx(1.4, abs=0.01)
     assert board["idea:rejected"]["verdict"] == "too_early"
-    # A bearish report call on a stock that lagged SPY by 1% (plus noise) is 1% in the call's favour.
-    assert board["verdict:bearish"]["avg_vs_spy_pct"] == pytest.approx(0.8, abs=0.01)
+    # A bearish report call on a stock that lagged the same-day stocks by 1% (plus noise) is 1% in the call's favour.
+    assert board["verdict:bearish"]["avg_vs_peers_pct"] == pytest.approx(0.8, abs=0.01)
     assert board["verdict:bearish"]["verdict"] == "ahead"
     assert board["youtube:Meet Kevin"]["verdict"] == "too_early" and board["social"]["open"] == 1
     assert "breakout" not in board  # nothing tracked, nothing listed
@@ -344,11 +348,13 @@ def test_the_scoreboard_puts_every_source_side_by_side_with_a_cautious_verdict()
 
 def test_a_few_months_need_a_larger_t_before_a_source_is_called_ahead():
     def month_rows(month, excess, n=12):
-        return [{"kind": "idea", "verdict": "high", "direction": "long", "status": "closed",
-                 "signal_day": f"2026-{month:02d}-{10 + i:02d}", "benchmark_return_pct": 1.0 + excess, "spy_return_pct": 1.0}
+        return [{"kind": "idea", "verdict": "high", "ticker": f"T{month}{i}", "direction": "long", "status": "closed",
+                 "signal_day": f"2026-{month:02d}-{10 + i:02d}", "return_pct": 1.0 + excess}
                 for i in range(n)]
+    peers = {f"2026-{month:02d}-{10 + i:02d}": {"long": 1.0} for month in (7, 8, 9) for i in range(12)}
     # Monthly means 1.0, 0.2 and 0.6: t = 2.6, past 2 but short of the 4.30 three months need.
-    board = {item["key"]: item for item in it.scoreboard(month_rows(7, 1.0) + month_rows(8, 0.2) + month_rows(9, 0.6))}
+    board = {item["key"]: item for item in it.scoreboard(month_rows(7, 1.0) + month_rows(8, 0.2) + month_rows(9, 0.6),
+                                                         peers, date(2026, 12, 1))}
     assert board["idea:high"]["t"] == pytest.approx(2.6, abs=0.01)
     assert board["idea:high"]["t_needed"] == pytest.approx(4.30) and board["idea:high"]["verdict"] == "no_difference"
     assert it.t_needed(1) is None and it.t_needed(2) == pytest.approx(12.71) and it.t_needed(40) == pytest.approx(1.96)
@@ -437,3 +443,186 @@ def test_closed_legacy_benchmarks_are_rebuilt_without_changing_trade_results(rep
     [saved] = repo.tracked_ideas()
     assert saved["return_pct"] == 9.9 and saved["r"] == 3.3 and saved["exit"] == 110
     assert saved["benchmark_return_pct"] == 0 and it._excess(saved, "return_pct", "spy_return_pct") == 0
+
+
+def _finished_idea(ticker, signal_day, ret, verdict="medium", direction="long", **extra):
+    return {"id": f"idea:{signal_day}:{ticker}:{verdict}", "kind": "idea", "verdict": verdict, "ticker": ticker,
+            "direction": direction, "signal_day": signal_day, "status": "closed", "return_pct": ret,
+            "created_at": signal_day, **extra}
+
+
+def test_an_idea_counts_once_and_only_with_all_its_sessions_behind_it():
+    today = date(2026, 10, 30)
+    rows = [
+        _finished_idea("AAA", "2026-09-01", -3.0),  # first listing
+        _finished_idea("AAA", "2026-09-02", 9.0),  # relisted the next day: the same idea
+        _finished_idea("AAA", "2026-09-03", 9.0, verdict="high"),  # relisted at another conviction: still the same idea
+        _finished_idea("AAA", "2026-09-04", 9.0, verdict="rejected"),  # the review's other answer is its own record
+        _finished_idea("AAA", "2026-09-03", 9.0, direction="short"),  # the other side is another idea
+        _finished_idea("AAA", "2026-10-15", -5.0),  # stopped out early: not all sessions behind it yet
+        {**_finished_idea("BBB", "2026-09-01", None), "status": "open", "return_pct": 2.0},  # no exit yet
+        {**_finished_idea("GONE", "2026-09-01", None), "reason": "no_data"},  # closed without a result
+    ]
+    finished, running = it._split_ideas(rows, today)
+    assert [(r["ticker"], r["signal_day"], r["direction"], r["verdict"]) for r in finished] == [
+        ("AAA", "2026-09-01", "long", "medium"), ("AAA", "2026-09-03", "short", "medium"),
+        ("AAA", "2026-09-04", "long", "rejected")]
+    assert [(r["ticker"], r["signal_day"]) for r in running] == [("BBB", "2026-09-01"), ("AAA", "2026-10-15")]
+    # A record outside MAX_DAYS sessions of the first is a new idea.
+    finished, _ = it._split_ideas([_finished_idea("AAA", "2026-08-03", 1.0), _finished_idea("AAA", "2026-09-01", 2.0)], today)
+    assert len(finished) == 2
+
+
+def test_the_summary_grades_finished_ideas_against_same_day_stocks(repo):
+    for record in [_finished_idea("AAA", "2026-09-01", -3.0, spy_return_pct=1.0, benchmark_return_pct=-2.0),
+                   _finished_idea("AAA", "2026-09-02", 9.0, spy_return_pct=1.0, benchmark_return_pct=8.0)]:
+        repo.track_idea(record["id"], {k: v for k, v in record.items() if k not in {"id", "status", "created_at"}})
+        repo.update_tracked_idea(record["id"], {k: v for k, v in record.items() if k not in {"id", "status", "created_at"}}, "closed")
+    repo.set_setting(it.PEERS_SETTING, {"2026-09-01": {"long": 2.0}})
+    stats = it.track_record(repo, now=datetime(2026, 10, 30, 21, tzinfo=timezone.utc), window_days=3650)
+    medium = stats["groups"]["medium"]
+    assert medium["closed"] == 1 and medium["avg_return_pct"] == -3.0 and medium["win_rate"] == 0
+    assert medium["avg_vs_peers_pct"] == pytest.approx(-5.0) and medium["avg_vs_spy_pct"] == pytest.approx(-3.0)
+    assert "vs same-day stocks -5.00%" in it.format_track_record(stats)
+    # Not measured yet: left out, not compared against something else.
+    repo.set_setting(it.PEERS_SETTING, {})
+    assert it.track_record(repo, now=datetime(2026, 10, 30, 21, tzinfo=timezone.utc), window_days=3650)["groups"]["medium"]["avg_vs_peers_pct"] is None
+
+
+def test_the_review_is_judged_on_same_day_same_direction_pairs():
+    days = [f"2026-{month:02d}-{day:02d}" for month in (7, 8) for day in (6, 7, 8, 9, 10, 13)]
+    finished = [row for i, day in enumerate(days) for row in (
+        _finished_idea(f"A{i}", day, 1.5 if day < "2026-08" else 1.51), _finished_idea(f"R{i}", day, 0.5, verdict="rejected"))]
+    finished.append(_finished_idea("LONE", "2026-09-01", 50.0))  # no rejected idea that day: not a pair
+    finished.append(_finished_idea("SIDE", "2026-07-06", -50.0, verdict="rejected", direction="short"))  # other direction
+    value = it.review_value(finished)
+    assert value["days"] == 12 and value["gap_pct"] == pytest.approx(1.005) and value["months"] == 2
+    assert value["t_needed"] == pytest.approx(12.71) and value["verdict"] == "helps"
+    assert it.review_value(finished[:6])["verdict"] == "too_early"
+    # Months that disagree are not a verdict, however large the average gap looks.
+    mixed = [{**row, "return_pct": row["return_pct"] + (3.0 if row["signal_day"] < "2026-08" and row["verdict"] == "medium" else 0.0)}
+             for row in finished[:24]]
+    assert it.review_value(mixed)["verdict"] == "no_difference"
+
+
+def _stock_bars(close=100.0, step=0.0, sessions=60, high=None, low=None):
+    days = it._session_days("2026-07-01", date(2026, 10, 30))[:sessions]
+    return [{"date": day, "open": close + i * step, "high": (high or close + i * step + 1), "low": (low or close + i * step - 1),
+             "close": close + i * step, "volume": 1} for i, day in enumerate(days)]
+
+
+def test_same_day_stocks_use_the_ideas_rule_and_each_horizon(monkeypatch):
+    monkeypatch.setattr(it, "PEER_MIN_STOCKS", 2)
+    flat, rising = _stock_bars(), _stock_bars(step=1.0)
+    histories = [{"bars": bars, "dates": [bar["date"] for bar in bars]} for bars in (flat, rising)]
+    day = flat[20]["date"]
+    measured = it.peer_baseline(day, histories, date(2026, 10, 30))
+    entry = rising[20]["close"]
+    assert measured["h5"] == pytest.approx((rising[25]["close"] / entry - 1) * 100 / 2, abs=0.001)
+    assert measured["h20"] == pytest.approx((rising[40]["close"] / entry - 1) * 100 / 2, abs=0.001)
+    # Flat stock: no exit, closes at the limit for the costs; rising stock: 3 ATR target long, 1.5 ATR stop short.
+    assert measured["long"] > 0 and measured["short"] < 0
+    # Only the sessions that have happened count: no trade result before the limit is reached.
+    early = it.peer_baseline(day, histories, date.fromisoformat(flat[26]["date"]))
+    assert "h5" in early and "h10" not in early and "long" not in early
+    # Too few stocks is not "the average stock".
+    assert it.peer_baseline(day, histories[:1], date(2026, 10, 30)) == {}
+
+
+def test_peer_baselines_download_only_for_a_new_horizon(repo, monkeypatch):
+    monkeypatch.setattr(it, "PEER_MIN_STOCKS", 1)
+    bars = _stock_bars(step=0.5)
+    day = bars[20]["date"]
+    repo.track_idea("idea:x:AAA", _record(signal_day=day))
+    calls = []
+
+    def download(tickers):
+        calls.append(list(tickers))
+        return {"BRK.B": bars}
+    measured_on = date.fromisoformat(bars[26]["date"])  # 6 sessions on: only the 5-session horizon is reachable
+    assert it.update_peer_baselines(repo, measured_on, download, lambda: ["BRK-B"]) == 1
+    assert set(repo.setting(it.PEERS_SETTING)[day]) == {"h5"}
+    assert it.update_peer_baselines(repo, measured_on, download, lambda: ["BRK-B"]) == 0 and len(calls) == 1
+    later = date.fromisoformat(bars[45]["date"])
+    assert it.update_peer_baselines(repo, later, download, lambda: ["BRK-B"]) == 1
+    assert set(repo.setting(it.PEERS_SETTING)[day]) == {"h5", "h10", "h20", "long", "short"}
+    assert len(calls) == 2
+    assert it.update_peer_baselines(repo, later, lambda tickers: 1 / 0, lambda: ["BRK-B"]) == 0  # complete: no download
+    # A signal day older than the download reaches is not fetched again every day.
+    repo.track_idea("idea:x:OLD", _record(ticker="OLD", signal_day="2025-01-02"))
+    assert it.update_peer_baselines(repo, later, lambda tickers: 1 / 0, lambda: ["BRK-B"]) == 0
+
+
+def test_a_failed_peer_download_does_not_stop_settling_or_the_summary(repo, monkeypatch):
+    monkeypatch.setattr(it, "_trading_day", lambda day: day.weekday() < 5)
+    monkeypatch.setattr(it, "_last_trading_day_of_week", lambda day: True)
+    it.record_breakout(repo, "CCC", "long", 20.0, 19.0, 22.0, date(2026, 9, 1))
+    sent = []
+
+    def broken():
+        raise RuntimeError("no universe")
+    job = it.TrackerJob(repo, lambda *a: sent.append(a), bars=lambda tickers: {"SPY": []}, nx_bars=lambda tickers: {},
+                        reports=lambda: [], universe=broken)
+    job._run(date(2026, 10, 2), datetime(2026, 10, 2, 20, 45, tzinfo=timezone.utc))
+    job.stop()
+    assert job.last_error is None and sent and sent[0][0] == "track_record"
+
+
+def _stored_report(report_id, code, created, answer, action="watch", name=""):
+    import json
+    from src.storage import AnalysisHistory
+    raw = {"action": action, "name": name, "current_price": 100.0, "raw_response": answer}
+    return AnalysisHistory(id=report_id, query_id=str(report_id), code=code, name=name, report_type="simple",
+                           raw_result=json.dumps(raw), created_at=created)
+
+
+def test_report_calls_keep_the_models_own_call_before_any_guard(repo):
+    answer = '```json\n{"sentiment_score": 78, "decision_type": "buy", "operation_advice": "Buy"}\n```'
+    created = datetime(2026, 9, 29, 9, 45)
+    [record] = [it.verdict_record(SimpleNamespace(id=7, code="NVDA", report_type="simple", sentiment_score=52, created_at=created,
+                                                  raw_result='{"action": "watch", "current_price": 180.0, "raw_response": %s}' % __import__("json").dumps(answer)))]
+    assert record[1]["group"] == "watch" and record[1]["model_call"] == "buy" and record[1]["geared"] is False
+    geared = it.verdict_record(SimpleNamespace(id=8, code="SOXL", report_type="simple", sentiment_score=52, created_at=created,
+                                               raw_result='{"action": "watch", "name": "Direxion Daily Semiconductor Bull 3X", "current_price": 20.0}'))
+    assert geared[1]["model_call"] is None and geared[1]["geared"] is True
+
+
+def test_older_report_calls_are_filled_in_once_from_their_stored_report(repo):
+    from src.storage import AnalysisHistory
+    AnalysisHistory.__table__.create(repo.db._engine)
+    with repo.db.session_scope() as session:
+        session.add(_stored_report(1, "AAA", datetime(2026, 9, 1, 9, 45), '{"decision_type": "sell"}'))
+        session.add(_stored_report(2, "SOXL", datetime(2026, 9, 1, 9, 45), '{"decision_type": "buy"}',
+                                   name="Direxion Daily Semiconductor Bull 3X"))
+    base = {"kind": "verdict", "verdict": "watch", "group": "watch", "direction": "none", "signal_day": "2026-09-01", "entry": 10.0}
+    repo.track_idea("verdict:2026-09-01:AAA", {**base, "ticker": "AAA", "report_id": 1})
+    repo.track_idea("verdict:2026-09-01:SOXL", {**base, "ticker": "SOXL", "report_id": 2})
+    repo.track_idea("verdict:2026-09-01:OLD", {**base, "ticker": "OLD", "report_id": 99})  # its report is gone
+    assert it.fill_model_calls(repo) == 3
+    records = {r["ticker"]: r for r in repo.tracked_ideas()}
+    assert records["AAA"]["model_call"] == "sell" and records["AAA"]["status"] == "open"
+    assert records["SOXL"]["model_call"] == "buy" and records["SOXL"]["geared"] is True
+    assert records["OLD"]["model_call"] is None
+    assert it.fill_model_calls(repo) == 0
+
+
+def test_model_calls_are_measured_against_the_rest_of_the_watchlist():
+    def call(ticker, model_call, ret, verdict="watch", **extra):
+        return {"kind": "verdict", "ticker": ticker, "model_call": model_call, "verdict": verdict, "group": "watch",
+                "direction": "none", "signal_day": "2026-09-01", "status": "closed", "return_10d_pct": ret,
+                "benchmark_return_10d_pct": ret, **extra}
+    rows = [call("A", "buy", 2.0, verdict="buy"), call("B", "buy", 0.0), call("C", "hold", -2.0), call("D", "sell", -8.0),
+            call("LEV", "buy", 90.0, geared=True)]
+    stats = it.model_call_stats(it._stock_calls(rows))
+    assert stats["buy"]["closed"] == 2 and stats["buy"]["shown"] == 1
+    assert stats["buy"]["avg_10d_vs_watchlist_pct"] == pytest.approx(3.0)  # 1.0 against a watchlist average of -2.0
+    assert stats["sell"]["avg_10d_vs_watchlist_pct"] == pytest.approx(-6.0)
+    text = it.format_track_record({"window_days": 90, "groups": {key: {"closed": 0, "open": 0} for key, _ in it.GROUPS},
+                                   "model_calls": stats})
+    assert "Buy 2 · +3.00% | Hold 1 · +0.00% | Sell 1 · -6.00% (1 of 2 Buys were shown as Buy)" in text
+    # On the scoreboard a Sell gains when the stock lags, whatever the final call was.
+    peers = {"2026-09-01": {"h10": -2.0}}
+    board = {item["key"]: item for item in it.scoreboard(rows, peers, date(2026, 10, 30))}
+    assert board["model:sell"]["avg_vs_peers_pct"] == pytest.approx(6.0)
+    assert board["model:buy_shown"]["avg_vs_peers_pct"] == pytest.approx(4.0) and board["model:buy_shown"]["closed"] == 1
+    assert board["model:buy_softened"]["avg_vs_peers_pct"] == pytest.approx(2.0) and board["model:buy_softened"]["closed"] == 1

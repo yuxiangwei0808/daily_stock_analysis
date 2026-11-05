@@ -468,16 +468,34 @@ the close after 15 sessions; 5 bps per side), with SPY over matching closing-pri
 benchmark (shorts are compared with the market's move in their favour).
 
 After 16:30 New York time each trading day the worker settles open records; on the
-week's last trading day it posts "📒 Idea track record" (last 90 days per group,
-and approved vs rejected once each has 10 closed ideas). `GET /track-record?days=`
-and the Journal tab show the same. Nothing is traded.
+week's last trading day it posts "📒 Idea track record" (last 90 days per group).
+`GET /track-record?days=` and the Journal tab show the same. Nothing is traded.
+
+**How the summary grades.** A raw average of closed records misleads three ways, so:
+
+- *Each idea counts once.* A scan relists a live idea every slot; a repeat of the same ticker,
+  direction and family (approved / rejected / breakout) within 15 sessions of its first record is the
+  same idea, whatever conviction it was relisted at.
+- *Only finished ideas count.* An idea enters the averages with all 15 sessions behind it. Stops close
+  within days and winners take weeks, so counting closed records alone over-weights the losers. The
+  rest are shown as "running", with their average so far.
+- *Same-day stocks are the yardstick, not SPY.* In a rotation the index and the average stock can move
+  in opposite directions. After settling, the job measures what the average universe stock
+  (`SCREENING_US_UNIVERSE`) did from each tracked signal day's close: under the ideas' rule (1.5 ATR stop,
+  3 ATR target, 15 sessions, same settlement and costs) in both directions, and close to close over
+  5/10/20 sessions. This takes a year of daily bars, downloaded only when a signal day reaches a new
+  horizon, and is stored in the `idea_peer_baselines` setting. A day not measured yet (download
+  failed, fewer than 200 stocks) is left out, not compared with something else. `avg_vs_spy_pct` stays in the API.
+
+"Review value" compares approved with rejected finished ideas of the same day and direction, month-clustered,
+once there are 10 such comparisons.
 
 Each record also carries your NX tunnel state at the signal (`nx`), filled by the
 same after-close job (older open records get it on the next run): the tunnels come
 from the daily bars before the signal day, read at the alert price. The slow (89)
 tunnel sets the alignment: a long above it or a short below it *agrees*, the
 opposite is *against*, inside it is *neutral*. The weekly summary and the Journal
-card split closed ideas and breakouts by alignment; with under 20 closed records
+card split finished ideas and breakouts by alignment; with under 20 finished records
 they say it is too early to judge.
 
 A split or dividend adjusts the whole downloaded price history, so a price stored at the signal no
@@ -489,10 +507,16 @@ halt, a delisting) closes at its last price (`reason: halted`) instead of stayin
 The stock reports' own calls are tracked the same way (`kind: verdict`): one per US
 stock and day (the first report of the day, at its price), grouped as bullish
 (buy/add/hold), watch, or bearish (reduce/sell/avoid). They settle on the close 5 and
-10 sessions later against SPY and are split by the NX slow tunnel at the report
+10 sessions later and are split by the NX slow tunnel at the report
 (above / inside / below). The after-close job reads the last 45 days of report
 history, so reports made before this existed are included. The weekly summary adds
-"Report calls, 10 sessions later vs SPY" and the Journal card a table of the same.
+"Report calls, 10 sessions later vs same-day stocks" and the Journal card a table of the same.
+Geared funds are left out of these comparisons: a 3x fund's move is not comparable to a stock's.
+
+Each call also keeps `model_call`, the model's own buy/hold/sell before any guard, read from its stored
+answer (older records are filled in once). The summary shows those calls against the rest of the
+watchlist that day, which tests the call apart from how the watchlist did overall, and the scoreboard splits
+the model's Buys into those shown as Buy and those a guard softened, so the guard's effect can be measured.
 
 ## Social media scan and YouTube picks
 
@@ -517,7 +541,7 @@ X has no free API and Reddit's own JSON refuses this client, so neither is read 
 - After 16:20 New York time on trading days: "📣 Social scan" to Discord (the 10 most-discussed
   stocks, index funds excluded, plus the day's YouTube picks). The names are chosen after the
   close, so each is tracked from the next session's close (`kind: social`), 5/10/20 sessions
-  against SPY — only on days all three sources answered. Whether attention leads or lags is
+  against same-day stocks — only on days all three sources answered. Whether attention leads or lags is
   what the weekly track record tests.
 
 **YouTube picks** (`YOUTUBE_CHANNELS=Name=UC…,…`, channel ids, not handles, because a handle
@@ -568,9 +592,9 @@ picks from the database, so a restart does not lose them.
 - Each pick is tracked (`kind: influencer`, id `influencer:<video>:<ticker>`) from the first
   close after the video was published: during the session, that day's close; after 16:00 or
   on a non-trading day, the next session's close. It settles 5/10/20 sessions later against
-  SPY; bearish calls count in their own direction.
+  same-day stocks; bearish calls count in their own direction.
 - The weekly "📒 Idea track record" adds a line per channel: picks, bullish/bearish, average
-  result vs SPY at 5/10/20 sessions, closed count.
+  result vs same-day stocks at 5/10/20 sessions, closed count.
 - Reports ("YouTube picks, last 30 days") and Trade Desk answers show a ticker's calls from
   the last 30 days; trade ideas show calls from the last 14 days.
 
@@ -583,12 +607,15 @@ typically 3–8k tokens, so a low-cost LiteLLM model costs a fraction of a cent 
 The track record (Journal tab, `GET /track-record`, and the weekly Discord summary) opens with a
 scoreboard: every tracked source side by side — trade ideas by conviction, candidates the review
 rejected, breakout alerts, ideas where NX agrees or not, bullish and bearish report calls, the
-social scan's names and each YouTube channel — with closed and open counts and the average result
-against SPY in the direction of the call. A source gets a verdict only with at least 30 closed
-records: "ahead" or "behind" SPY when the month-by-month results are consistent (a month-clustered
-t past the two-sided 5% critical value for that many months: 12.7 with 2 months, 4.3 with 3, 3.2
-with 4, near 2 only with a year or more), otherwise "no clear difference". With a dozen sources,
-one of them can still clear that bar by chance. A source that stays behind is a candidate to switch off.
+social scan's names and each YouTube channel, plus the model's own Buy calls (shown / softened) and Sell
+calls — with finished and running counts and the average result against same-day stocks in the
+direction of the call. A source gets a verdict only with at least 30 finished records over at least
+2 months: "ahead" or "behind" same-day stocks when the month-by-month results are consistent (a
+month-clustered t past the two-sided 5% critical value for that many months: 12.7 with 2 months, 4.3
+with 3, 3.2 with 4, near 2 only with a year or more), otherwise "no clear difference". Months rather
+than weeks because a trade runs about three weeks, so weekly groups overlap and would overstate the
+confidence. With a dozen sources, one of them can still clear that bar by chance. A source that stays
+behind is a candidate to switch off.
 
 ## Broker holdings and your alerts
 

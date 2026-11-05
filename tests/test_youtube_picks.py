@@ -244,10 +244,12 @@ def test_the_weekly_record_lists_each_channel(repo):
     bars = [{"date": day, "open": 100, "high": 100, "low": 100, "close": 100.0 + i, "volume": 1} for i, day in enumerate(days)]
     spy = [{**bar, "close": 100.0} for bar in bars]
     it.settle_open(repo, date(2026, 9, 29), bars=lambda tickers: {"MU": bars, "SPY": spy}, nx_bars=lambda tickers: {})
+    repo.set_setting(it.PEERS_SETTING, {"2026-09-01": {"h5": 1.0, "h10": 1.0, "h20": 1.0}})
     stats = it.track_record(repo, now=NOW)
     assert stats["influencers"]["Meet Kevin"]["vs_spy"][5] == pytest.approx(5.0)
+    assert stats["influencers"]["Meet Kevin"]["vs_peers"][5] == pytest.approx(4.0)
     text = it.format_track_record(stats)
-    assert "• Meet Kevin: 1 picks (1 bullish, 0 bearish) · +5.00% / +10.00% / +20.00% · 1 closed" in text
+    assert "• Meet Kevin: 1 picks (1 bullish, 0 bearish) · +4.00% / +9.00% / +19.00% · 1 closed" in text
 
 
 def test_caption_downloads_are_spaced_and_capped_per_pass(repo, monkeypatch):
