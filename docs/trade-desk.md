@@ -705,6 +705,64 @@ unlocked and nothing is ordered. The snapshot is stored locally
   last 30 are kept (`trade_desk_settings` id `position_questions`) and never go to Discord.
   A holding's **Ask** opens this box on that position; **Compare option strategies** from
   there opens the Ask tab with the position attached, as before.
+- **Shadow exits** (`trade_desk/shadow_exits.py`, `shadow_watch.py`, `live_feed.py`, `GET /holdings/shadow`, the
+  Journal tab's card, refreshed every 15 seconds; `trade_desk_settings` ids `shadow_exits`, `shadow_levels`,
+  `shadow_feed`): what the system would have sold, when and at what quote. **Nothing is sent to moomoo:** there is
+  no order code in the app, a test fails if order calls appear, and trading is never unlocked.
+
+  *Live feed.* From 5 minutes before the open to 1 minute after the close on trading days, the server holding the
+  monitor lease keeps its own OpenD connections: quote push on every held code and underlying, order-book push on
+  held stocks and contracts, and this account's fill push. Each pushed quote wakes a check, at most every 0.1 s,
+  that uses only what is in memory, on its own thread, so a slow alert, a locked database or Discord cannot delay
+  it. A second thread reads the position list every 15 seconds and, after a fill is heard, at once and then every
+  4 seconds for 12 seconds (asking the broker; the limit is 10 such calls per 30 s). It also reads plans and alerts
+  every 10 seconds, takes a snapshot of every code every 30 seconds, and saves results at most every 2 seconds. A
+  position that vanishes with no closing fill heard since the last read must be gone on two reads in a row, the
+  second asking the broker. Just after the open, an option's book counts only once it has moved, for up to 2
+  minutes, because the first one seen may be yesterday's. SPY's last trade older than 30
+  seconds means the feed is frozen, and nothing is checked; if only pushes stop, checks continue on the snapshots,
+  and after 2 minutes the connections start over. Levels stay as they were set (the daily review, your alerts, or
+  the rule below): this watches in real time, it does not decide in real time.
+
+  *What it records.* Any change to a position's stop, target, P&L levels or action (so levels replaced before they
+  were hit can still be graded), and the first crossing of each exit while you hold the position: the plan's or your
+  own stop and target, P&L levels, the built-in option levels (−50 %, +50 %, +100 % on cost, or 75 % of a bounded
+  maximum), a held stock's break of its 20-day low, and a review saying trim, take profit or close. Each record says
+  how it was seen: pushed quote or snapshot, the quote's age on arrival and the wait for the check. After more than
+  60 seconds of not watching (a restart, a lost feed), a level found crossed has no trigger moment until that
+  holding has been priced once: it is counted as carried and not graded, as are levels crossed in shadow mode's first
+  5 minutes and 20-day lows that loaded over 60 seconds late. A holding whose first trigger was carried is not graded
+  on later ones either. Closing and reopening a position lets its levels trigger again; adding a contract on the same
+  expiry keeps the holding, and replacing all its contracts starts a new one.
+
+  *The would-be order.* It closes the whole position at a limit on the side you would be filled at (the bid to sell,
+  the ask to buy back). It waits while a quote is stale or too wide, a long option has no bid, or the position list
+  is over 60 seconds old; the wait is recorded. After 5 minutes it gives up, because a later price would not grade
+  this trigger, and closing the position first counts as no exit. Spreads are valued leg by leg and flagged, because
+  the first live version would skip them.
+
+  *A position opened during the session* gets its plan as soon as the list shows it and its daily bars load: the ATR
+  rule measured from the price then, not from the last close, which after a big move could already be crossed. The
+  plan is shared, so its Discord cards start then too. A position you reopen on the same key ignores the old plan and
+  the last review, which were about the earlier holding, and gets a new plan the same way. Until then only the
+  built-in levels and your alerts apply.
+
+  *Results.* One mark a day, updating through the last 10 minutes of the session so the last one stands, follows each
+  record for 10 sessions or to expiry, even after you close the position. On expiration day the mark is what the
+  contract settles at: its intrinsic value at the underlying's last price of the session. Results are P&L on cost: if
+  sold, if held 5 and 10 sessions (or to expiry), and what you did (your own closing fills since the trigger when each
+  leg has one, else the mid when the position was seen gone, else held). Each holding counts once, on its first trigger. The verdict
+  stays "too early" under 30 finished positions or 2 months, then uses a month-clustered t like the track record. The
+  card shows the feed's state and the day's measured delays, kept for 30 days: stock and option quotes (arrival minus
+  the trade's time, to the second, on real trades only), order books (arrival minus moomoo's receipt time) and your
+  fill to the position list; the host's clock and moomoo's are not compared, so read these as scale.
+
+  *Limits.* Fills at the bid or ask are assumed, commissions are ignored, partial trims are not seen, a stock's stop
+  is judged on its last trade, so one odd print can trigger it, and it only runs in regular hours (SPY and QQQ options
+  trade 15 minutes longer than the last mark). Sizes and amounts are never stored, and nothing goes to Discord except
+  the Status page's usual failure notice: the feed appears there as Shadow exits live feed. Your Discord holding alerts
+  keep their own timers (quotes each minute, positions each 10 minutes). Once the feed is listening, the moomoo SDK's
+  file log in the home folder drops from debug to info: at debug it writes two lines per push, over 1 GB a session.
 - **Everywhere else:** held tickers join the market pulse and breakout watch;
   trade ideas and breakout alerts on something you hold add a "You hold: …" line,
   worded by the side you hold (shares by sign, options by payoff shape: a bull

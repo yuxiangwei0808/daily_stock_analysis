@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   getAdvice: vi.fn(),
   repriceAdvice: vi.fn(),
   getTradeJournal: vi.fn(),
+  getShadowExits: vi.fn(),
   refreshTradeJournal: vi.fn(),
   cancelAdvice: vi.fn(),
   listPlans: vi.fn(),
@@ -114,6 +115,7 @@ function setDefaultResponses() {
   api.listPositions.mockResolvedValue({ items: [] });
   api.listJournal.mockResolvedValue({ items: [] });
   api.getTradeJournal.mockResolvedValue({ journal: null });
+  api.getShadowExits.mockResolvedValue({ enabled: false });
   api.getOutcomes.mockResolvedValue({
     paper: { closedTrades: 0, realizedPnl: 0, winRate: null },
     manualLive: { closedTrades: 0, realizedPnl: 0, winRate: null },

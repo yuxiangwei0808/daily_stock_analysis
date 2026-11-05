@@ -188,6 +188,9 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
             else:
                 add("holdings", "Broker holdings", **{**_part(worker, "holdings", now),
                                                       "detail": f"synced {_ago(synced, now)}"})
+        shadow_watch = getattr(worker, "_shadow_watch", None)
+        if shadow_watch is not None:
+            add("shadow_feed", "Shadow exits live feed", **shadow_watch.health(now))
         for key, label, attr in (("pulse", "Market pulse", "_pulse"), ("opportunities", "Trade opportunities", "_opportunities"),
                                  ("breakouts", "Breakout watch", "_breakouts")):
             part = getattr(worker, attr, None)

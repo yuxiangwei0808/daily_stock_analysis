@@ -22,7 +22,7 @@ in ``trade_desk_settings`` (id ``position_plans``).
 from __future__ import annotations
 
 from datetime import date, time as dtime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Collection, Dict, List, Optional
 
 from .models import utcnow
 from .position_plan import STOP_ATR, TARGET_ATR
@@ -60,8 +60,12 @@ def _sign(exposure: str) -> int:
 
 
 def ensure(plans: Dict[str, Dict[str, Any]], view: Dict[str, Any], levels: Dict[str, Dict[str, Any]], day: date,
-           geared: Callable[[str], bool]) -> Dict[str, Dict[str, Any]]:
-    """A plan for every open position (new ones from the ATR rule); closed positions' plans dropped."""
+           geared: Callable[[str], bool], *, at_price: bool = False) -> Dict[str, Dict[str, Any]]:
+    """A plan for every open position (new ones from the ATR rule); closed positions' plans dropped.
+
+    ``at_price``: the rule measures from the current price, not the last close. After a big move
+    today, a position opened now would otherwise start with its stop or target already crossed.
+    """
     out = {}
     for row in open_rows(view):
         key, ticker = row["key"], ticker_of(row)
@@ -73,19 +77,29 @@ def ensure(plans: Dict[str, Dict[str, Any]], view: Dict[str, Any], levels: Dict[
         exposure = exposure_of(row)
         if new:
             sign, atr = _sign(exposure), plan.get("atr")
-            anchor = found.get("last_close") or price_of(row)
+            anchor = (price_of(row) or found.get("last_close")) if at_price else (found.get("last_close") or price_of(row))
+            basis = "the price when it opened" if at_price else "the last close"
             plan = {"key": key, "ticker": ticker, "type": row["type"], "exposure": exposure, "action": "",
                     "stop": None, "target": None, "set_on": day.isoformat(), "trail_mark": anchor,
                     "atr": atr, "created_at": utcnow().isoformat()}
             if sign and atr and anchor:
                 plan.update(stop=round(anchor - sign * STOP_ATR * atr, 2), stop_source="rule",
-                            stop_basis=f"{STOP_ATR:g} ATR {'under' if sign > 0 else 'over'} the last close {anchor:.2f}")
+                            stop_basis=f"{STOP_ATR:g} ATR {'under' if sign > 0 else 'over'} {basis} {anchor:.2f}")
                 if not geared(ticker):
                     plan.update(target=round(anchor + sign * TARGET_ATR * atr, 2), target_source="rule",
-                                target_basis=f"{TARGET_ATR:g} ATR {'over' if sign > 0 else 'under'} the last close")
+                                target_basis=f"{TARGET_ATR:g} ATR {'over' if sign > 0 else 'under'} {basis}")
         plan["exposure"] = exposure  # a rolled or changed position can flip
         out[key] = plan
     return out
+
+
+def add_new(plans: Dict[str, Dict[str, Any]], rows: List[Dict[str, Any]], levels: Dict[str, Dict[str, Any]], day: date,
+            geared: Callable[[str], bool], replace: Collection[str] = ()) -> Dict[str, Dict[str, Any]]:
+    """Plans for positions opened during the session, added at once, and for those in ``replace``: reopened, with
+    the old holding's plan still on the same key. No other plan is dropped here: that waits for the close."""
+    fresh = [row for row in rows if row["key"] not in plans or row["key"] in replace]
+    view = {"stocks": [row for row in fresh if row["type"] == "stock"], "options": [row for row in fresh if row["type"] == "option"]}
+    return {**plans, **ensure({}, view, levels, day, geared, at_price=True)}
 
 
 def trail(plan: Dict[str, Any], closes: List[float]) -> bool:

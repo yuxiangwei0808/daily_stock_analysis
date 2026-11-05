@@ -43,6 +43,7 @@ _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,14}$")
 _MAX_REPLAY_EXPIRIES = 4
 _DEFAULT_MAX_CONTRACTS = 48
 _DEFAULT_CHAIN_CACHE_SECONDS = 300.0
+_SYNC_QUERY_CONNECT_SECONDS = 5
 # OpenD rejects an unsubscribe issued less than one minute after subscribing.
 _MIN_SUBSCRIPTION_SECONDS = 60.0
 # Subscriptions kept for the underlying: quote, book, and bar context.
@@ -1170,6 +1171,42 @@ class ReplayProvider:
         self._closed = True
 
 
+def _position_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Open US positions from ``position_list_query``."""
+    return [{"code": _text(row.get("code")), "name": _text(row.get("stock_name")),
+             "qty": _safe_float(row.get("qty")) or 0.0,
+             "side": _text(row.get("position_side")),
+             "average_cost": _safe_float(row.get("average_cost")),
+             "price": _safe_float(row.get("nominal_price")),
+             "market_value": _safe_float(row.get("market_val")),
+             "pl_pct": _safe_float(row.get("pl_ratio_avg_cost")),
+             "today_pl": _safe_float(row.get("today_pl_val"))}
+            for row in rows if (_safe_float(row.get("qty")) or 0) != 0
+            and _text(row.get("code")).startswith("US.")]
+
+
+def _bound_sync_queries(ctx: Any) -> None:
+    """A long-lived connection that lost OpenD must fail its queries, not wait for the reconnect forever."""
+    ctx.set_sync_query_connect_timeout(_SYNC_QUERY_CONNECT_SECONDS)
+
+
+class AccountWatch:
+    """Reads one account's positions over a kept-open connection. It holds no way to trade."""
+
+    def __init__(self, ctx: Any, acc_id: int, real_env: Any, ok: Any) -> None:
+        self._ctx, self._acc_id, self._real, self._ok = ctx, acc_id, real_env, ok
+
+    def positions(self, refresh: bool = False) -> list[dict[str, Any]]:
+        """``refresh`` asks the broker instead of OpenD's cache (10 such calls per 30 s per account)."""
+        ret, data = self._ctx.position_list_query(trd_env=self._real, acc_id=self._acc_id, refresh_cache=refresh)
+        if ret != self._ok:
+            raise ProviderError("broker_positions_unavailable", f"position_list_query: {_text(data)[:160]}")
+        return _position_rows(data.to_dict("records") if hasattr(data, "to_dict") else [])
+
+    def close(self) -> None:
+        self._ctx.close()
+
+
 class MoomooProvider:
     """Read-only moomoo/futu-compatible OpenD quote adapter."""
 
@@ -1216,6 +1253,7 @@ class MoomooProvider:
         self._lock = threading.RLock()
         self._closed = False
         self._reconnecting = False
+        self._listening = False
         self._last_error: Optional[ProviderError] = None
         # SDK-level warnings persist; _call_warnings is reset per snapshot/health call.
         self._warnings: list[str] = []
@@ -1405,6 +1443,10 @@ class MoomooProvider:
                 self._reconnecting = False
             return ctx
 
+    def _may_reconnect(self, error: ProviderError) -> bool:
+        """A new context would have no push handlers: once listening, the SDK's own reconnect keeps them and resubscribes."""
+        return not self._reconnecting and not self._listening and error.code == "connection_unavailable"
+
     def _call(
         self,
         method_name: str,
@@ -1426,7 +1468,7 @@ class MoomooProvider:
         except Exception as exc:
             error = self._translate_exception("provider_error", f"{method_name} failed", exc)
             self._last_error = error
-            if retry_connection and not self._reconnecting and error.code == "connection_unavailable":
+            if retry_connection and self._may_reconnect(error):
                 try:
                     self._reconnect()
                     return self._call(method_name, *args, retry_connection=False, **kwargs)
@@ -1441,7 +1483,7 @@ class MoomooProvider:
             if error.code == "request_timeout" and timeout_retries > 0:
                 return self._call(method_name, *args, retry_connection=retry_connection,
                                   timeout_retries=timeout_retries - 1, **kwargs)
-            if retry_connection and not self._reconnecting and error.code == "connection_unavailable":
+            if retry_connection and self._may_reconnect(error):
                 try:
                     self._reconnect()
                     return self._call(method_name, *args, retry_connection=False, **kwargs)
@@ -1543,6 +1585,14 @@ class MoomooProvider:
         ``account`` is the account id or its trailing digits. The context uses the same OpenD (and
         encryption) as quotes and is closed on exit; trading is never unlocked.
         """
+        opened = self._open_trade_account(account, security_firm)
+        try:
+            yield opened
+        finally:
+            opened[0].close()
+
+    def _open_trade_account(self, account: str, security_firm: str) -> tuple:
+        """``(ctx, acc_id, real_env, ok, account_row)``; the caller closes ``ctx``."""
         if not self.configured:
             raise ProviderError("opend_not_configured", "Trade Desk OpenD is not configured")
         sdk = self._load_sdk()
@@ -1568,9 +1618,72 @@ class MoomooProvider:
             if len(matches) != 1:
                 raise ProviderError("broker_account_unavailable",
                                     f"{len(matches)} real accounts end with {wanted[-4:]}")
-            yield ctx, int(matches[0]["acc_id"]), real, ok, matches[0]
-        finally:
+            return ctx, int(matches[0]["acc_id"]), real, ok, matches[0]
+        except Exception:
             ctx.close()
+            raise
+
+    def listen_quotes(self, on_quote: Callable[[dict], None], on_book: Callable[[dict], None]) -> None:
+        """Quote and order-book push on this provider's own connection.
+
+        The callbacks run on the SDK's callback thread, in order, so they must return quickly.
+        """
+        ctx = self._ensure_context()
+        sdk = self._sdk
+        ok = getattr(sdk, "RET_OK", 0)
+        _bound_sync_queries(ctx)
+        self._listening = True
+        # The SDK's file log defaults to debug: two lines per push, over 1 GB a session in the home folder, kept 20 days.
+        if hasattr(sdk, "logger"):
+            sdk.logger.file_level = logging.INFO
+
+        class Quotes(sdk.StockQuoteHandlerBase):
+            def on_recv_rsp(self, content):
+                # Not super(): at market rates its pandas table is most of the feed's CPU (2.6 ms a push against 0.4).
+                ret, rows = self.parse_rsp_pb(content)
+                if ret == ok:
+                    for row in rows:
+                        on_quote(row)
+                return ret, rows
+
+        class Books(sdk.OrderBookHandlerBase):
+            def on_recv_rsp(self, content):
+                ret, data = super().on_recv_rsp(content)
+                if ret == ok:
+                    on_book(data)
+                return ret, data
+
+        ctx.set_handler(Quotes())
+        ctx.set_handler(Books())
+
+    def subscribe_push(self, codes: Sequence[str], subtype_name: str) -> None:
+        """Pushed updates for bare US codes on this provider's own connection."""
+        self._subscribe([f"US.{code}" for code in codes], subtype_name, push=True)
+
+    def listen_account(self, account: str, security_firm: str, on_deal: Callable[[dict], None]) -> "AccountWatch":
+        """A trade connection kept open to hear this account's fills and read its positions; the caller closes it.
+
+        Fills arrive without unlocking trading, and trading is never unlocked here. Other
+        accounts on the same login push to this connection too: only this account's fills count.
+        """
+        ctx, acc_id, real, ok, _ = self._open_trade_account(account, security_firm)
+        try:
+            sdk = self._sdk
+            _bound_sync_queries(ctx)
+
+            class Deals(sdk.TradeDealHandlerBase):
+                def on_recv_rsp(self, content):
+                    ret, data = super().on_recv_rsp(content)
+                    if ret == ok and int(content.s2c.header.accID) == acc_id:
+                        for row in data.to_dict("records"):
+                            on_deal(row)
+                    return ret, data
+
+            ctx.set_handler(Deals())
+            return AccountWatch(ctx, acc_id, real, ok)
+        except Exception:
+            ctx.close()
+            raise
 
     def broker_positions(self, account: str, security_firm: str = "FUTUINC") -> dict[str, Any]:
         """Read-only positions and USD account value for one real account.
@@ -1590,16 +1703,7 @@ class MoomooProvider:
         rows = positions.to_dict("records") if hasattr(positions, "to_dict") else []
         return {"account": f"…{str(acc_id)[-4:]}", "account_type": _text(matches[0].get("acc_type")),
                 "total_assets": _safe_float(summary.get("total_assets")), "cash": _safe_float(summary.get("cash")),
-                "positions": [{"code": _text(row.get("code")), "name": _text(row.get("stock_name")),
-                               "qty": _safe_float(row.get("qty")) or 0.0,
-                               "side": _text(row.get("position_side")),
-                               "average_cost": _safe_float(row.get("average_cost")),
-                               "price": _safe_float(row.get("nominal_price")),
-                               "market_value": _safe_float(row.get("market_val")),
-                               "pl_pct": _safe_float(row.get("pl_ratio_avg_cost")),
-                               "today_pl": _safe_float(row.get("today_pl_val"))}
-                              for row in rows if (_safe_float(row.get("qty")) or 0) != 0
-                              and _text(row.get("code")).startswith("US.")],
+                "positions": _position_rows(rows),
                 # Positions closed today keep their day P&L on a zero-quantity row.
                 "closed_today_pl": sum(_safe_float(row.get("today_pl_val")) or 0 for row in rows
                                        if (_safe_float(row.get("qty")) or 0) == 0
@@ -1701,7 +1805,7 @@ class MoomooProvider:
     def _subscription_type(self, name: str) -> Any:
         return self._enum("SubType", name, name)
 
-    def _subscribe(self, codes: Sequence[str], subtype_name: str) -> set[tuple[str, str]]:
+    def _subscribe(self, codes: Sequence[str], subtype_name: str, *, push: bool = False) -> set[tuple[str, str]]:
         if not codes:
             return set()
         code_list = list(dict.fromkeys(codes))
@@ -1726,7 +1830,7 @@ class MoomooProvider:
             return set()
         subtype = self._subscription_type(subtype_name)
         variants = [
-            ((missing, [subtype]), {"is_first_push": True, "subscribe_push": False}),
+            ((missing, [subtype]), {"is_first_push": True, "subscribe_push": push}),
             ((missing, [subtype]), {"is_first_push": True}),
             ((missing, [subtype]), {}),
         ]

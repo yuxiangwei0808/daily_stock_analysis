@@ -93,6 +93,9 @@ class TradeDeskWorker:
             if social_scan.enabled() else None)
         from .status import StatusWatch
         self._status = StatusWatch(service, self._emit)
+        from .shadow_watch import ShadowWatch
+        self._shadow_watch = (ShadowWatch(service.holdings, self._holdings, leader=lambda: self._leader)
+                              if self._holdings is not None else None)
 
     def _watched(self):
         """The watchlist plus held stocks and option underlyings."""
@@ -195,6 +198,8 @@ class TradeDeskWorker:
         # connection forever) is then still reported to Discord.
         self._status_thread = threading.Thread(target=self._status_loop, name="trade-desk-status", daemon=True)
         self._status_thread.start()
+        if self._shadow_watch is not None:
+            self._shadow_watch.start()
 
     def status(self):
         return {"running": bool(self._thread and self._thread.is_alive()), "leader": self._leader,
@@ -209,7 +214,7 @@ class TradeDeskWorker:
             self._thread.join(timeout=5)
         if self._status_thread:
             self._status_thread.join(timeout=5)
-        for part in (self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker,
+        for part in (self._shadow_watch, self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker,
                      self._youtube, self._social):
             if part is not None:
                 part.stop()
@@ -261,6 +266,8 @@ class TradeDeskWorker:
         # One OpenD snapshot a minute serves the market pulse, breakouts and holdings.
         session = session_window(now)[0]
         quotes = self._shared_quotes(session)
+        # The checks below judge these quotes' age: a slow plan check must not make them look like they are from the future.
+        now = utcnow()
         parts = [("pulse", self._pulse, lambda: self._pulse.tick(now, quotes=quotes, shared=True)),
                  ("holdings", self._holdings, lambda: self._holdings.tick(now, session, quotes=quotes, shared=True)),
                  ("tracker", self._tracker, lambda: self._tracker.tick(now)),

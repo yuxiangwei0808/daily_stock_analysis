@@ -672,6 +672,85 @@ export interface TradeJournalTrip {
   how: string;
 }
 
+export interface ShadowExitRow {
+  label: string;
+  positions: number;
+  tickers: number;
+  finished: number;
+  running: number;
+  noExit: number;
+  ifSoldPct?: number | null;
+  ifHeld5Pct?: number | null;
+  ifHeld10Pct?: number | null;
+  yoursPct?: number | null;
+  soldMinusHeldPct?: number | null;
+  soldMinusHeldMedian?: number | null;
+  soldBetterPct?: number | null;
+}
+
+export interface ShadowExitRecent {
+  label: string;
+  ticker: string;
+  kind: string;
+  kindLabel: string;
+  level?: number | string | null;
+  source?: string;
+  at: string;
+  price?: number | null;
+  ended?: string | null;
+  skip?: string | null;
+  problems?: string[];
+  gaveUp?: boolean | null;
+  waitS?: number | null;
+  seen?: { source?: string | null; checkMs?: number | null; quoteAgeS?: number | null } | null;
+  ifSoldPct?: number | null;
+  ifHeld10Pct?: number | null;
+  yoursPct?: number | null;
+  finished?: boolean;
+}
+
+/** Median, 95th percentile and count of a measured delay. */
+export interface ShadowDelay {
+  median: number;
+  p95: number;
+  n: number;
+}
+
+export interface ShadowFeedDelays {
+  stockQuoteS?: ShadowDelay | null;
+  optionQuoteS?: ShadowDelay | null;
+  bookS?: ShadowDelay | null;
+  fillToPositionS?: ShadowDelay | null;
+}
+
+export interface ShadowFeed extends ShadowFeedDelays {
+  state: 'live' | 'snapshot' | 'down' | 'closed' | 'off';
+  lastQuoteS?: number | null;
+  positionsReadS?: number | null;
+  errors?: Record<string, string>;
+}
+
+export interface ShadowExits {
+  enabled: boolean;
+  note?: string;
+  recorded?: number;
+  carried?: number;
+  levelChanges?: number;
+  since?: string | null;
+  verdict?: 'too_early' | 'no_clear_difference' | 'selling_better' | 'holding_better';
+  finished?: number;
+  needed?: number;
+  months?: number;
+  t?: number | null;
+  tNeeded?: number | null;
+  rows?: ShadowExitRow[];
+  byTrigger?: ShadowExitRow[];
+  recent?: ShadowExitRecent[];
+  speed?: { fromPush?: number; fromSnapshot?: number; quoteAgeS?: ShadowDelay | null; checkMs?: ShadowDelay | null; exitWaitS?: ShadowDelay | null; gaveUp?: number };
+  feed?: ShadowFeed;
+  feedLastDay?: (ShadowFeedDelays & { day: string }) | null;
+}
+
 export interface TradeJournal {
   builtAt: string;
   fills: number;

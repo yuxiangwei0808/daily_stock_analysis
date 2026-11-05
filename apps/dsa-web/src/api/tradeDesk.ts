@@ -23,6 +23,7 @@ import type {
   TradePositionListResponse,
   PortfolioRisk,
   TradeJournal,
+  ShadowExits,
   SystemStatus,
   TradePreferences,
   TradePreferencesUpdate,
@@ -295,6 +296,11 @@ export const tradeDeskApi = {
   async getTradeJournal(): Promise<{ journal: TradeJournal | null }> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/journal`);
     return toCamelCase<{ journal: TradeJournal | null }>(response.data);
+  },
+
+  async getShadowExits(): Promise<ShadowExits> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/shadow`);
+    return toCamelCase<ShadowExits>(response.data);
   },
 
   async refreshTradeJournal(): Promise<{ journal: TradeJournal }> {

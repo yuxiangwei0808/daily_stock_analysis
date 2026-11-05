@@ -379,6 +379,15 @@ async def position_plans(request: Request):
     return await invoke(get_service(request).holdings.plans_view)
 
 
+@router.get("/holdings/shadow")
+async def shadow_exits(request: Request):
+    """Shadow mode: what the system would have sold and how that compares. Nothing is sent to the broker."""
+    from src.services.trade_desk import holdings
+    if not holdings.enabled():
+        return {"enabled": False}
+    return {"enabled": True, **await invoke(get_service(request).holdings.shadow)}
+
+
 @router.post("/holdings/plans/review", status_code=202)
 async def position_plans_review(request: Request):
     """Runs the daily review of every position now (about a minute); poll GET /holdings/plans."""

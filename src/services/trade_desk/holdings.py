@@ -31,7 +31,7 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from . import earnings, position_plan, position_plans, trend
+from . import earnings, position_plan, position_plans, shadow_exits, trend
 from .models import identity, utcnow
 
 logger = logging.getLogger(__name__)
@@ -407,6 +407,7 @@ class Holdings:
         self.service = service
         self.repo = service.repo
         self._lock = threading.Lock()
+        self.shadow_feed: Optional[Callable[[], Dict[str, Any]]] = None  # set by the worker's ShadowWatch
 
     def raw(self) -> Dict[str, Any]:
         return self.repo.setting("broker_holdings", {})
@@ -625,6 +626,15 @@ class Holdings:
         return self.plans()["review"]
 
     # questions about your positions ---------------------------------------------
+    # shadow mode: what the system would have sold; nothing is sent -------------------
+    def shadow(self) -> Dict[str, Any]:
+        """The results so far and the live feed's state (Journal tab, ``GET /holdings/shadow``)."""
+        days = self.repo.setting(shadow_exits.FEED_SETTING, {}) or {}
+        return {**shadow_exits.summary(self.repo.setting(shadow_exits.EXITS_SETTING, {}) or {},
+                                       self.repo.setting(shadow_exits.LEVELS_SETTING, {}) or {}),
+                "feed": self.shadow_feed() if self.shadow_feed else {"state": "off"},
+                "feed_last_day": ({"day": max(days), **days[max(days)]} if days else None)}
+
     def questions(self) -> List[Dict[str, Any]]:
         """Your questions about your positions and their answers, newest first."""
         from .position_questions import visible
@@ -835,6 +845,17 @@ class Holdings:
             self._save_rules(rules)
 
 
+def _levels_from(bars: Dict[str, List[Dict[str, Any]]], day: date) -> Dict[str, Dict[str, Any]]:
+    from .levels import breakout_levels
+    levels = {}
+    for ticker, rows in bars.items():
+        found = breakout_levels(rows, day)
+        if found:
+            history = [row for row in rows if row["date"] < day.isoformat()]
+            levels[ticker] = {**found, "last_close": history[-1]["close"]}
+    return levels
+
+
 def _prices(view: Dict[str, Any]) -> Dict[str, float]:
     prices = {row["ticker"]: row["price"] for row in view["stocks"] if row.get("price")}
     prices.update({row["underlying"]: row["underlying_price"] for row in view["options"] if row.get("underlying_price")})
@@ -882,6 +903,7 @@ class HoldingsMonitor:
         self._levels_for: Optional[date] = None
         self._levels_retry_at = 0.0
         self._levels: Dict[str, Dict[str, float]] = {}
+        self._levels_tried: Dict[str, float] = {}
         self._plans_day: Optional[date] = None  # the after-close plan update ran for this day
         self._review_day: Optional[date] = None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="holdings")
@@ -920,15 +942,9 @@ class HoldingsMonitor:
 
     def _load_levels(self, day: date) -> None:
         tickers = self.holdings.tickers()
-        levels = {}
         self._warm_earnings(day)
-        from .levels import breakout_levels
         rows_by_ticker = self._bars(tickers)
-        for ticker, rows in rows_by_ticker.items():
-            found = breakout_levels(rows, day)
-            if found:
-                history = [row for row in rows if row["date"] < day.isoformat()]
-                levels[ticker] = {**found, "last_close": history[-1]["close"]}
+        levels = _levels_from(rows_by_ticker, day)
         stock_tickers = [row["ticker"] for row in self.holdings.view(live=False)["stocks"]]
         if stock_tickers and not levels:
             raise RuntimeError("no daily bars for held stocks")  # retried in a few minutes
@@ -951,16 +967,36 @@ class HoldingsMonitor:
         self.holdings.mutate_plans(change)
 
     def _after_close_plans(self, day: date) -> None:
-        from .levels import breakout_levels
         tickers = self.holdings.tickers()
         bars = self._bars(tickers) if tickers else {}
-        levels = {}
-        for ticker, rows in bars.items():
-            found = breakout_levels(rows, day)
-            if found:
-                history = [row for row in rows if row["date"] < day.isoformat()]
-                levels[ticker] = {**found, "last_close": history[-1]["close"]}
-        self._refresh_plans(day, bars, levels, include_today=True)
+        self._refresh_plans(day, bars, _levels_from(bars, day), include_today=True)
+
+    def price_levels(self, day: date) -> Dict[str, Dict[str, float]]:
+        """Today's levels, or none until they have loaded: yesterday's never judge today."""
+        return self._levels if self._levels_day == day else {}
+
+    def plan_new_positions(self, view: Dict[str, Any], day: date, replace: List[str] = ()) -> None:
+        """Queued: a position opened during the session gets its plan now, not at the next open or close."""
+        self._run("new_plans", self._plan_new_positions, view, day, replace)
+
+    def _plan_new_positions(self, view: Dict[str, Any], day: date, replace: List[str] = ()) -> None:
+        from .opportunities import geared_fund
+        plans = self.holdings.plans()["plans"]
+        rows = [row for row in position_plans.open_rows(view)
+                if (row["key"] not in plans or row["key"] in replace) and position_plans.price_of(row)]
+        clock = self._clock()
+        tickers = sorted({position_plans.ticker_of(row) for row in rows} - set(self._levels))
+        tickers = [ticker for ticker in tickers if clock >= self._levels_tried.get(ticker, 0.0)]
+        if tickers:
+            self._levels_tried.update({ticker: clock + LEVELS_RETRY_SECONDS for ticker in tickers})
+            self._levels.update(_levels_from(self._bars(tickers), day))
+        # Without its ATR the rule has no levels, and a plan once made never gets them: this waits for the bars.
+        ready = [row for row in rows if (self._levels.get(position_plans.ticker_of(row)) or {}).get("atr")]
+        names = {row["ticker"]: row.get("name", "") for row in view.get("stocks") or []}  # not in the last sync yet
+        if ready:
+            self.holdings.mutate_plans(lambda stored: {**stored, "plans": position_plans.add_new(
+                stored["plans"], ready, self._levels, day, lambda ticker: self._geared(ticker) or geared_fund(names.get(ticker, "")),
+                replace=replace)})
 
     def _warm_earnings(self, day: date) -> None:
         tickers = [t for t in self.holdings.tickers() if not self._geared(t)]
