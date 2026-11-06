@@ -1488,6 +1488,7 @@ def test_the_minute_loop_judges_quotes_by_a_time_taken_after_they_arrive(monkeyp
     worker._check_plans = lambda now, regular: True
     worker._deliver_in_background = lambda: None
     worker._pulse = worker._tracker = worker._youtube = worker._social = worker._breakouts = worker._opportunities = None
+    worker._in_play = None
     stamps = []
 
     def quotes(session):
