@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 0DTE 报价数据读取与进度（`scripts/option_quotes_status.py`、`trade_desk/backtest/option_quotes.py`）：列出每个标的已记录的交易日数，满 60 个交易日后再按预先登记的问题检验（按记录的买卖价对比随机时点）
 - [新功能] 今日活跃股（`GET /api/v1/trade-desk/in-play`，`IN_PLAY_ENABLED`）：交易日 09:46 后按回测通过的选股规则（开盘缺口+首根 15 分钟振幅相对常态，前 5 名当日剩余时间的波动明显大于同日其他股票）列出今天最可能大幅波动的股票，交易助手可一键「Start on the top 3」；只选关注对象，不判断方向
 - [新功能] 交易助手点评与提问：价位突破、箱体信号、持仓变动、计划触发等事件发生时，模型按该股票的计算状态写简短点评（每只股票最多每 3 分钟一条，成交与计划止损/目标时立即）；点评可附带「未经检验的模型交易建议」，与你的计划一样被监控、提醒并对比随机时点评分（「Assistant calls」）；可直接提问。点评、建议与回答中的每个价格必须来自系统计算的数据，否则不显示；每日模型调用上限 `TRADE_ASSISTANT_DAILY_CALLS`
 - [新功能] 交易助手中的「你的计划」：用自己的话写下计划（如「5 分钟 K 线收在 VWAP 上方买 call，止损前日低点，目标 742，3:30 前离场」），模型解读为可监控的字段并列出缺失项，你确认后才开始监控；触发、作废、到期、止损、目标与时间止损都会提醒；收盘后按当日 1 分钟 K 线评分，并与同一交易在当日随机时点的结果对比（「Forward grades」新增「Your plans」）。模型调用优先走你的 Claude Code 订阅，其次 Codex，API 仅作兜底（`TRADE_ASSISTANT_*`）

@@ -1001,6 +1001,8 @@ database writes, on a moomoo connection and a thread of its own.
   within OpenD's 60 requests per 30 seconds.
 - **Status page:** "0DTE quote recorder" shows the underlyings, rows today and the last snapshot's
   age; a warning when a chain failed, an error when no snapshot came for over a minute in the session.
+- **Reading it back:** `python scripts/option_quotes_status.py` lists the sessions recorded per underlying
+  and when the 60 that tests wait for are in; `trade_desk/backtest/option_quotes.py` loads a day's quotes.
 
 ## Your trades (journal from moomoo fills)
 

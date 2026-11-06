@@ -6,7 +6,8 @@ alerts in the Chart tab; your typed plans, watched and graded; see
 [trade-desk.md](trade-desk.md#trading-assistant)). The in-play test of phase 5 passed as a range
 selector. Decision 5 (2026-11-06): model calls go through your Claude Code plan first, then Codex, and
 the API only as a fallback. Phase 4 (notes, calls and questions) and phase 5's live in-play list built
-the same day. Phase 6 waits for about 60 sessions of recorded quotes. It builds on the Chart tab
+the same day. Phase 6's reader and status script are in; its tests wait for about 60 sessions of
+recorded quotes. It builds on the Chart tab
 ([live-chart-plan.md](live-chart-plan.md)) and follows
 [trading-methodology.md](trading-methodology.md), which is the main source for how we trade and how
 we find stocks.
@@ -228,6 +229,12 @@ on the page. A background tab keeps alerting while it is open. Discord and moomo
   on NFS): about 100 MB a day at 12 underlyings in a first test, to be checked in the first week.
 - **Then:** after about 60 sessions, your setups and the assistant's calls get tested on real
   quotes.
+- **Built for that (phase 6):** `backtest/option_quotes.py` reads the files back (the bid or ask in force at
+  any moment, the contract nearest the money then) and `python scripts/option_quotes_status.py` says how
+  many sessions each underlying has and when 60 are in. The first questions, to be frozen in their own
+  file before any run: (1) priced on the recorded quotes (bought at the ask, sold at the bid, the contract
+  nearest the money at entry), do your plans and the assistant's calls beat the same trade at random
+  minutes of the session; (2) does the 3% flat option cost of section 7 match the spreads actually quoted.
 
 ## Phases
 
