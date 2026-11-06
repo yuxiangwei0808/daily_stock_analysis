@@ -148,8 +148,8 @@ python scripts/backtest_boxes.py --out reports/backtests            # downloads 
 python scripts/backtest_boxes.py --tickers SPY,QQQ --offline          # cached bars only
 ```
 
-The rules are in `src/services/trade_desk/boxes.py`, which the planned live chart
-([live-chart-plan.md](live-chart-plan.md)) will share. Fills, twins and the controls are in
+The rules are in `src/services/trade_desk/boxes.py`, which the live chart
+([live-chart-plan.md](live-chart-plan.md), `GET /chart/{ticker}`) shares. Fills, twins and the controls are in
 `src/services/trade_desk/backtest/boxes.py`. Bars are moomoo 15-minute bars (forward-adjusted,
 regular session, back to 2018-10), cached in `reports/backtests/bars_15m`. Each newly downloaded
 stock uses one moomoo history allowance for 30 days; cached stocks use none. The rules were fixed

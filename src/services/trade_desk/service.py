@@ -188,6 +188,8 @@ class TradeDeskService:
         self.enabled = os.getenv("TRADE_DESK_ENABLED", "true").lower() == "true"
         from .holdings import Holdings
         self.holdings = Holdings(self)
+        from .chart import Charts
+        self.charts = Charts(self)  # its own moomoo connection, opened on the first chart
 
     def provider(self, mode):
         with self._lock:
@@ -918,5 +920,6 @@ class TradeDeskService:
             for cancel, _ in self._jobs.values():
                 cancel.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self.charts.close()
         for provider in self.providers.values():
             provider.close()

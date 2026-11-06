@@ -18,8 +18,9 @@ exactly the rule that was tested:
 - Fade: the first return to a box from outside (previous close outside, this bar touching the edge); a
   limit at the edge, stop past the box's own extreme wick, target twice the stop distance.
 
-A decision uses only bars up to and including the bar it is made in. Research context, not signals:
-neither trade beat the same trades at random times.
+A decision uses only bars up to and including the bar it is made in; ``pending`` gives what the
+next bar could fill (the live chart's flags). Research context, not signals: neither trade beat the
+same trades at random times.
 """
 from __future__ import annotations
 
@@ -113,13 +114,14 @@ def _box(bl: np.ndarray, bh: np.ndarray, c: np.ndarray, part: slice, size: float
 
 
 def setups(bars: Bars, params: Params = Params()) -> Iterator[Setup]:
-    """Every impulse whose range bars are complete and hold no other impulse."""
+    """Every impulse whose range bars are complete and hold no other impulse (the live chart sees a
+    setup as soon as its last range bar closes)."""
     n = params.box_bars
     imp = np.abs(bars.chg) >= params.impulse_t * bars.T
     imp[np.isnan(bars.T)] = False
     bl, bh = np.minimum(bars.o, bars.c), np.maximum(bars.o, bars.c)
     for i in np.flatnonzero(imp):
-        if i - n < 0 or i + n + 1 >= len(bars) or imp[i + 1:i + 1 + n].any():
+        if i - n < 0 or i + n >= len(bars) or imp[i + 1:i + 1 + n].any():
             continue
         size = abs(bars.chg[i])
         after, before = slice(i + 1, i + 1 + n), slice(i - n, i)
@@ -132,7 +134,8 @@ def setups(bars: Bars, params: Params = Params()) -> Iterator[Setup]:
                     first=i + n + 1, last=bars.session_end(i, params.life_sessions))
 
 
-def break_retest(bars: Bars, s: Setup) -> Optional[Entry]:
+def _retest_levels(s: Setup) -> Optional[Tuple[int, float, float, float]]:
+    """Direction, entry edge, stop and target of a setup's break and retest; None when it has none."""
     if s.range_box is None or s.base_box is None:
         return None
     d = -1 if s.up else 1
@@ -141,6 +144,15 @@ def break_retest(bars: Bars, s: Setup) -> Optional[Entry]:
     stop = s.range_wick[1] if d < 0 else s.range_wick[0]
     if (target - edge) * d <= 0 or abs(target - edge) < abs(stop - edge):
         return None
+    return d, edge, stop, target
+
+
+def break_retest(bars: Bars, s: Setup) -> Optional[Entry]:
+    levels = _retest_levels(s)
+    if levels is None:
+        return None
+    d, edge, stop, target = levels
+    rlo, rhi = s.range_box
     broke = None
     for k in range(s.first, s.last + 1):
         if (d < 0 and bars.c[k] < rlo) or (d > 0 and bars.c[k] > rhi):
@@ -184,6 +196,52 @@ def entries(bars: Bars, s: Setup, params: Params = Params()) -> List[Entry]:
     """Both trades on one setup, break and retest first."""
     found = break_retest(bars, s)
     return ([found] if found else []) + fades(bars, s, params)
+
+
+def pending(bars: Bars, s: Setup, params: Params = Params(), *,
+            next_in_session: bool = True) -> List[Tuple[str, Entry]]:
+    """What the next bar could fill on a setup, by the rules above, from the bars so far.
+
+    ``("armed", entry)``: a limit the next bar fills if it reaches ``entry.price`` (at its open when
+    it opens past it; nothing when it opens past the stop). ``("watching", entry)``: a break and
+    retest that needs a close past ``entry.price`` first. ``entry.bar`` is the next bar's index and a
+    fade's target assumes a fill at the limit. Empty once the setup has expired for the next bar
+    (``next_in_session`` says whether that bar is in the last bar's session) or its trades were taken
+    or ruled out.
+    """
+    n = len(bars)
+    following = len(bars.days) - 1 if next_in_session else len(bars.days)
+    if following > bars.sess[s.i] + params.life_sessions:
+        return []
+    out = []
+    levels = _retest_levels(s)
+    if levels is not None:
+        d, edge, stop, target = levels
+        broke = next((k for k in range(s.first, n) if (bars.c[k] - edge) * d > 0), None)
+        # After the break: retested (taken) or the target reached first (ruled out).
+        over = broke is not None and any(
+            (k > broke and ((bars.h[k] >= edge) if d < 0 else (bars.l[k] <= edge)))
+            or ((bars.l[k] <= target) if d < 0 else (bars.h[k] >= target)) for k in range(broke, n))
+        if (edge - stop) * d > 0 and not over:
+            out.append(("watching" if broke is None else "armed",
+                        Entry("break_retest", n, edge, stop, target, d, "range", s.range_wick, broke)))
+    for name, box, wick in (("range", s.range_box, s.range_own_wick), ("base", s.base_box, s.base_wick)):
+        if box is None:
+            continue
+        lo, hi = box
+        if any((bars.c[k - 1] > hi and bars.l[k] <= hi) or (bars.c[k - 1] < lo and bars.h[k] >= lo)
+               for k in range(s.first, n)):
+            continue  # its one return has come: taken or ruled out
+        if bars.c[n - 1] > hi:
+            d, edge, stop = 1, hi, wick[0]
+        elif bars.c[n - 1] < lo:
+            d, edge, stop = -1, lo, wick[1]
+        else:
+            continue
+        if (edge - stop) * d > 0:
+            out.append(("armed", Entry("fade", n, edge, stop, edge + params.fade_reward * (edge - stop), d, name,
+                                       wick)))
+    return out
 
 
 def weekly_value_areas(bars: Bars, *, share: float = 0.7, bin_pct: float = 0.1) -> Dict[np.datetime64, Box]:

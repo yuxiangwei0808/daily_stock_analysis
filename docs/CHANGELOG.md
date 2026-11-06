@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 实时图表数据接口 `GET /api/v1/trade-desk/chart/{ticker}`（1m/5m/15m/1d）：在独立的 moomoo 连接上读取最多 1,000 根 K 线，附带与回测相同规则的箱体、信号（待成交/观察中/持有中/已结束，均标注回测结论：未通过）、两周价值区、前一日高低收、持仓的止损/目标与价格提醒，以及 NX 通道；只读，不下单
 - [新功能] 箱体交易回测 `scripts/backtest_boxes.py`：用 moomoo 15 分钟 K 线（缓存于 `reports/backtests/bars_15m`，每只新下载的股票占用一个 30 天历史 K 线额度）回测交易视频中的箱体交易（突破回踩、箱体反抽），与同样以限价入场的随机时点“孪生”交易对比，含打乱 K 线对照、整理箱变体与周度价值区确认；规则在 `src/services/trade_desk/boxes.py`，供计划中的实时图表共用。2020-11 → 2026-11、49 只股票与 ETF：两种交易均未跑赢随机时点（见 docs/strategy-backtest.md）
 - [文档] 新增 docs/trading-methodology.md（交易想法的研究流程：先冻结规则、孪生对照、随机数据检验、两段时期与成本、影子模式前向评分，以及已测试想法登记表）与 docs/live-chart-plan.md（基于 KLineChart 的实时图表计划）
 - [新功能] 卖出影子模式（`GET /holdings/shadow`，Journal 页卡片）：基于 moomoo 实时推送（报价、盘口、成交回报），与一分钟循环分离，逐笔检查持仓是否触及止损、目标、盈亏位、内置期权规则、跌破 20 日低点或复盘建议减仓/止盈/平仓，记录“本会卖出”的时间、报价及延迟（报价到达时的年龄、检查耗时、订单等待时间），并保存计划价位的每次变化；之后跟踪 10 个交易日或至到期（到期日按收盘时的内在价值），对比“卖出”“继续持有”与你的实际操作。不发送任何订单，应用中没有下单代码，测试会在出现下单调用时失败；不存储数量和金额，也不发 Discord。

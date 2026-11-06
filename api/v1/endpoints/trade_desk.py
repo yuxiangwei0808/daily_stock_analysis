@@ -475,6 +475,17 @@ async def holding_rule_delete(rule_id: str, request: Request):
         raise HTTPException(404, detail="Alert not found") from exc
 
 
+@router.get("/chart/{ticker}")
+async def chart(ticker: str, request: Request, interval: Literal["1m", "5m", "15m", "1d"] = "15m",
+                impulse: float = Query(default=1.0), tidy: bool = False):
+    """Up to 1,000 moomoo bars with the backtested boxes, levels and flags, and your stops and alerts.
+
+    Read only. Boxes and flags come from completed 15-minute bars at every interval; each flag carries
+    its backtest grade, and none has passed.
+    """
+    return await invoke(get_service(request).charts.chart, ticker, interval, impulse_t=impulse, tidy=tidy)
+
+
 @router.get("/events")
 async def events(request: Request, after: Optional[int] = Query(default=None, ge=0)):
     try:

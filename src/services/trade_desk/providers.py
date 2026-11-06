@@ -21,6 +21,7 @@ import os
 import re
 import socket
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -46,6 +47,10 @@ _DEFAULT_CHAIN_CACHE_SECONDS = 300.0
 _SYNC_QUERY_CONNECT_SECONDS = 5
 # OpenD rejects an unsubscribe issued less than one minute after subscribing.
 _MIN_SUBSCRIPTION_SECONDS = 60.0
+# A new K-line subscription first returns OpenD's latest 60 bars; the rest arrive within about a
+# second (measured 2026-11-05), so a longer read is retried this often, this many times.
+_KLINE_FILL_WAIT_SECONDS = 0.5
+_KLINE_FILL_TRIES = 6
 # Subscriptions kept for the underlying: quote, book, and bar context.
 _UNDERLYING_SUBTYPES = ("QUOTE", "ORDER_BOOK", "K_DAY", "K_15M")
 # exchange-calendars defaults to roughly one year ahead, which excludes LEAPS.
@@ -2042,6 +2047,50 @@ class MoomooProvider:
             self._warn("order_book_time_unreported_observed_on_live_subscription")
         return quote
 
+    def kline(self, code: str, subtype: str, count: int) -> list[dict[str, Any]]:
+        """The latest ``count`` bars of one K-line type (``K_1M`` .. ``K_DAY``), oldest first.
+
+        Subscribes the type on this provider's connection (regular session only, the SDK's
+        default). ``time`` is the bar's end as OpenD reports it; ``partial`` marks a bar still
+        forming. OpenD returns at most 1,000 bars, and right after a new subscription only 60
+        until the rest load (waited for up to three seconds; fewer exist for a young stock).
+        """
+
+        with self._lock:
+            if not callable(getattr(self._ensure_context(), "get_cur_kline", None)):
+                raise ProviderError("sdk_unsupported", "Quote SDK context does not expose get_cur_kline")
+            fresh = self._subscribe([code], subtype)
+            variants = [((code, count), {"ktype": self._enum("KLType", subtype, subtype)})]
+            data = self._call_variants("get_cur_kline", variants)
+            for _ in range(_KLINE_FILL_TRIES if fresh else 0):
+                if len(_rows(data)) >= count:
+                    break
+                time.sleep(_KLINE_FILL_WAIT_SECONDS)
+                data = self._call_variants("get_cur_kline", variants)
+        now = self._now()
+        bars: list[dict[str, Any]] = []
+        for row in _rows(data)[-count:]:
+            stamp = _aware_datetime(_row_get(row, "time_key", "time"), default_tz=US_EASTERN)
+            values = {name: _safe_float(_row_get(row, name)) for name in ("open", "high", "low", "close")}
+            if stamp is None or any(value is None for value in values.values()):
+                continue
+            # Intraday times are bar end times; today's daily bar forms until the close.
+            if subtype != "K_DAY":
+                partial = stamp > now
+            else:
+                close = _resolve_session_close(stamp.astimezone(US_EASTERN).date())
+                partial = stamp.astimezone(US_EASTERN).date() == now.astimezone(US_EASTERN).date() and (
+                    close is None or now < close)
+            bars.append({"time": stamp.isoformat(), **values,
+                         "volume": _nonneg_int(_row_get(row, "volume")), "partial": partial})
+        return bars
+
+    def keep_subscriptions(self, wanted: Iterable[tuple[str, str]]) -> None:
+        """Release this provider's other subscriptions once they are past OpenD's one-minute minimum."""
+
+        with self._lock:
+            self._trim_subscriptions(set(wanted))
+
     def _recent_bars(self, symbol: str) -> list[dict[str, Any]]:
         """Recent daily and 15-minute bars as model context, never as prices.
 
@@ -2051,32 +2100,14 @@ class MoomooProvider:
 
         if not callable(getattr(self._ensure_context(), "get_cur_kline", None)):
             return []
-        now = self._now()
         bars: list[dict[str, Any]] = []
         for interval, subtype, count in (("1d", "K_DAY", 20), ("15m", "K_15M", 26)):
             try:
-                self._subscribe([symbol], subtype)
-                data = self._call_variants(
-                    "get_cur_kline",
-                    [((symbol, count), {"ktype": self._enum("KLType", subtype, subtype)})],
-                )
+                rows = self.kline(symbol, subtype, count)
             except ProviderError as exc:
                 self._warn(f"bars_unavailable:{interval}:{exc.code}")
                 continue
-            for row in _rows(data)[-count:]:
-                stamp = _aware_datetime(_row_get(row, "time_key", "time"), default_tz=US_EASTERN)
-                values = {name: _safe_float(_row_get(row, name)) for name in ("open", "high", "low", "close")}
-                if stamp is None or any(value is None for value in values.values()):
-                    continue
-                # Intraday times are bar end times; today's daily bar forms until the close.
-                if interval == "15m":
-                    partial = stamp > now
-                else:
-                    close = _resolve_session_close(stamp.astimezone(US_EASTERN).date())
-                    partial = stamp.astimezone(US_EASTERN).date() == now.astimezone(US_EASTERN).date() and (
-                        close is None or now < close)
-                bars.append({"interval": interval, "time": stamp.isoformat(), **values,
-                             "volume": _nonneg_int(_row_get(row, "volume")), "partial": partial})
+            bars.extend({"interval": interval, **row} for row in rows)
         return bars
 
     def _trim_subscriptions(self, desired: set[tuple[str, str]]) -> None:

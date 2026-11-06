@@ -955,7 +955,21 @@ and `kept` (id → reason). `POST
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.
 `GET /holdings`, `POST /holdings/refresh` and the `/holdings/rules` routes serve
 the read-only broker holdings and your alerts (409 when no account is set).
-OpenAPI at `/docs` describes request validation.
+`GET /chart/{ticker}?interval=15m` (also `1m`, `5m`, `1d`; `impulse=1.0|0.6`, `tidy=true|false`)
+returns up to 1,000 moomoo bars and what the live chart draws
+([live-chart-plan.md](live-chart-plan.md)):
+- `boxes`: the range and base boxes of every setup in the window, from `trade_desk/boxes.py`.
+- `flags`: each setup's trades: `armed` (a limit the next bar fills), `watching` (a break and
+  retest waiting for a close past its price), `open` and `closed` (with R after cost by the
+  backtest's exits). Each carries its backtest grade; none has passed.
+- `levels`: value-area low and high of the two prior weeks, the prior day's high, low and close,
+  and for a stock you hold, each position's plan stop and target and your price alerts.
+- `nx`: the NX tunnel lines on the chart's own bars.
+
+Boxes, levels and flags always use completed 15-minute regular-session bars. The chart reads
+bars on a moomoo connection of its own. It keeps the subscriptions of its 5 most recent
+tickers and releases older or idle ones at the next request. A moomoo failure returns 503 with
+its code. OpenAPI at `/docs` describes request validation.
 
 Additive `trade_desk_*` tables hold conversations, advice versions, plans, fills,
 events, preferences and worker leases. Existing `DecisionSignal` records remain

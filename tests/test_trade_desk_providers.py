@@ -1043,6 +1043,7 @@ def test_untracked_book_without_server_time_is_not_freshened():
 
 def test_live_snapshot_carries_recent_bars_and_survives_their_failure(monkeypatch):
     monkeypatch.setattr(providers, "_resolve_session_close", _session_close_16)
+    monkeypatch.setattr(providers.time, "sleep", lambda seconds: None)  # 18 of 20 daily bars: read again
     context = _FakeQuoteContext()
 
     def get_cur_kline(code, num, ktype=None, **kwargs):
@@ -1064,6 +1065,54 @@ def test_live_snapshot_carries_recent_bars_and_survives_their_failure(monkeypatc
         # 15:00 ET on 2026-09-18: that day's bar is still forming; earlier days are complete.
         assert snapshot.bars[-1]["partial"] is True and snapshot.bars[-2]["partial"] is False
         assert any(w.startswith("bars_unavailable:15m") for w in snapshot.warnings)
+    finally:
+        provider.close()
+
+
+def test_kline_reads_up_to_count_bars_and_the_chart_keeps_only_wanted_subscriptions():
+    context = _FakeQuoteContext()
+    clock = [NOW_UTC]
+
+    def get_cur_kline(code, num, ktype=None, **kwargs):
+        if code not in context.subscriptions.get(str(ktype), set()):
+            return -1, f"Please subscribe to {ktype} first"
+        # 14:40 .. 15:05 ET bar ends; at 15:00 the 15:05 bar is still forming.
+        return 0, [{"code": code, "time_key": f"2026-09-18 {14 + (40 + 5 * k) // 60}:{(40 + 5 * k) % 60:02d}:00",
+                    "open": 1.0 + k, "high": 2.0 + k, "low": 0.5 + k, "close": 1.5 + k, "volume": 10 * k}
+                   for k in range(6)][-num:]
+
+    context.get_cur_kline = get_cur_kline
+    provider = providers.MoomooProvider(sdk=_FakeSDK, context=context, clock=lambda: clock[0])
+    try:
+        bars = provider.kline("US.SPY", "K_5M", 3)
+        assert [bar["time"] for bar in bars] == ["2026-09-18T14:55:00-04:00", "2026-09-18T15:00:00-04:00",
+                                                 "2026-09-18T15:05:00-04:00"]
+        assert [bar["partial"] for bar in bars] == [False, False, True] and bars[0]["volume"] == 30
+        provider.kline("US.QQQ", "K_5M", 3)
+        clock[0] += timedelta(seconds=90)
+        provider.keep_subscriptions({("US.QQQ", "K_5M")})
+        assert context.subscriptions["K_5M"] == {"US.QQQ"}
+    finally:
+        provider.close()
+
+
+def test_a_new_kline_subscription_is_read_again_until_its_history_loads(monkeypatch):
+    context = _FakeQuoteContext()
+    reads, waits = [], []
+    monkeypatch.setattr(providers.time, "sleep", waits.append)
+
+    def get_cur_kline(code, num, ktype=None, **kwargs):
+        reads.append(code)
+        loaded = 5 if code == "US.SPY" and len(reads) >= 3 else 2  # OpenD's first answer is short
+        return 0, [{"code": code, "time_key": f"2026-09-{day:02d} 00:00:00", "open": 1.0, "high": 1.0,
+                    "low": 1.0, "close": 1.0, "volume": 1} for day in range(1, loaded + 1)][-num:]
+
+    context.get_cur_kline = get_cur_kline
+    provider = providers.MoomooProvider(sdk=_FakeSDK, context=context, now=NOW_UTC)
+    try:
+        assert len(provider.kline("US.SPY", "K_DAY", 5)) == 5 and len(reads) == 3 and len(waits) == 2
+        assert len(provider.kline("US.SPY", "K_DAY", 9)) == 5 and len(reads) == 4  # held: no waiting
+        assert len(provider.kline("US.NEW", "K_DAY", 5)) == 2 and len(waits) == 2 + providers._KLINE_FILL_TRIES
     finally:
         provider.close()
 

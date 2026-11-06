@@ -1,6 +1,7 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: phase 1 done (boxes module, `scripts/backtest_boxes.py`); later phases not built.
+Status: phases 1 and 2 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`);
+later phases not built.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
@@ -22,15 +23,15 @@ reading gets a fair, forward test.
 
 | Piece | Where | Reused for |
 |---|---|---|
-| moomoo live feed: quote, order-book and fill push on their own connections | `trade_desk/live_feed.py` (with the shadow-mode update, not yet committed) | Live prices and the connection pattern |
-| 15-minute and daily bars from OpenD (`get_cur_kline`, subscribed) | `providers._recent_bars` | The chart's history |
+| moomoo live feed: quote, order-book and fill push on their own connections | `trade_desk/live_feed.py` | Live prices and the connection pattern |
+| Bars from OpenD (`get_cur_kline`, subscribed) | `MoomooProvider.kline` | The chart's history |
 | Position plans: stop, target, source | `position_plans.py` | Stop and target lines, risk |
 | Your alert rules | `holdings.py` | Alert lines |
 | NX tunnels and CD marks, rebuilt from your moomoo scripts | `moomoo_indicators.py` | Indicators on the chart |
 | 20-day low and other levels | `levels.py`, `monitor.price_levels` | Lines |
 | Shadow grading: month-clustered t, `t_needed`, a results table per trigger | `shadow_exits.py`, `idea_tracker.py` | Grading flags and your marks |
 | Event stream to the page (SSE) | `GET /api/v1/trade-desk/events`, `useTaskStream` | The pattern for the chart stream |
-| Box, value-area and twin code from the 2026-11-05 research | Scratch scripts, not in the repo | Ported in phase 1 |
+| Boxes, value areas, twins and exits | `trade_desk/boxes.py`, `trade_desk/backtest/boxes.py` | Boxes, levels and flag grading |
 
 ## Choices
 
@@ -48,19 +49,26 @@ reading gets a fair, forward test.
 
 Each phase ships on its own with tests. Phase 0 is a precondition.
 
-0. **The shadow-mode update is committed and running.** The chart shares its live feed. Its
-   test gate has not yet passed on the final code.
+0. **The shadow-mode update is committed** (2026-11-06). It runs once the server is restarted.
 1. **Boxes and levels in the repo**: `src/services/trade_desk/boxes.py`
    - Port from the research scripts: impulse, range and base boxes, both entries, the
      tidy-box option, the weekly value area, and the limit-entry twins.
    - Add `scripts/backtest_boxes.py`, which reproduces the 2026-11-05 results on the saved
      bars (same seeds), and document it in [strategy-backtest.md](strategy-backtest.md).
    - Tests: fixed synthetic bars with known boxes, no look-ahead, and fills at gaps.
-2. **Chart snapshot API**: `GET /api/v1/trade-desk/chart/{ticker}?interval=15m`.
+2. **Chart snapshot API**: `GET /api/v1/trade-desk/chart/{ticker}?interval=15m` (done,
+   `trade_desk/chart.py`).
    - Returns bars (from `get_cur_kline`, up to 1,000), plus overlays (boxes, VAH, VAL,
-     prior-day high and low, plan stop and target, alerts, NX) and the current flags.
-   - Same login as the other Trade Desk routes.
-   - Tests use a fake provider.
+     prior-day high, low and close, plan stop and target, alerts, NX) and the flags.
+   - Flags are `armed`, `watching`, `open` or `closed`; `boxes.pending` gives the first two
+     with the same rules, and a test checks that an armed flag is the trade the next bar fills.
+   - It reads bars on its own moomoo connection, so it cannot disturb the advice quotes or
+     shadow mode. It keeps the newest 5 tickers' subscriptions and releases the rest at the
+     next request; phase 4 adds the timed idle release.
+   - Right after a new subscription OpenD returns only its latest 60 bars; the rest load within
+     about a second, so the read is repeated for up to three seconds. Checked on OpenD on
+     2026-11-05: 1,000 bars at every interval in 1.3–2.2 s, regular session only.
+   - Same login as the other Trade Desk routes. Tests use a fake provider.
 3. **Chart tab on the Trade Desk page.**
    - KLineChart with candles and volume, and a picker for any stock or for your holdings,
      watchlist and trade ideas.

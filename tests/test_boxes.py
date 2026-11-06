@@ -154,3 +154,53 @@ def test_month_t_and_the_pass_bar():
     good = {"edge": 0.1, "t_edge": 2.5, "mean_R": 0.05}
     assert bb.passes({"A": good, "B": good}, 2.0)
     assert not bb.passes({"A": good, "B": {**good, "mean_R": -0.01}}, 2.0)
+
+
+def _cut(bars, n):
+    return bx.Bars(bars.start[:n], bars.o[:n], bars.h[:n], bars.l[:n], bars.c[:n], bars.v[:n])
+
+
+def _fixtures():
+    fade = [(103.2, 103.6, 103.15, 103.5), (103.5, 103.55, 103.0, 103.2)]
+    return [_break_and_retest(), _bars([QUIET] * 11 + [_impulse_day(SIDEWAYS, fade)] + [QUIET] * 2)]
+
+
+def test_an_armed_flag_is_the_trade_the_next_bar_fills():
+    checked = 0
+    for bars in _fixtures():
+        for s in bx.setups(bars):
+            for e in bx.entries(bars, s):
+                touched = bars.h[e.bar] >= e.price if e.direction < 0 else bars.l[e.bar] <= e.price
+                if not touched or e.price == bars.o[e.bar]:
+                    continue  # filled at its open: no limit price to arm in advance
+                cut = _cut(bars, e.bar)
+                same = bars.sess[e.bar] == bars.sess[e.bar - 1]
+                live = next(x for x in bx.setups(cut) if x.i == s.i)
+                armed = [p for state, p in bx.pending(cut, live, next_in_session=same) if state == "armed"]
+                same_trade = [p for p in armed if (p.kind, p.box, p.bar, p.direction, p.price, p.stop)
+                              == (e.kind, e.box, e.bar, e.direction, e.price, e.stop)]
+                assert same_trade and same_trade[0].target == pytest.approx(e.target), e
+                checked += 1
+    assert checked >= 3
+
+
+def test_a_box_shows_once_its_range_closes_and_waits_for_a_break_then_ends_with_the_trade():
+    bars = _break_and_retest()
+    s = next(bx.setups(bars))
+    cut = _cut(bars, s.first)  # the eighth range bar has just closed
+    live = next(x for x in bx.setups(cut) if x.i == s.i)
+    assert live.range_box == (102.9, 103.1)
+    states = {(state, p.kind) for state, p in bx.pending(cut, live)}
+    assert ("watching", "break_retest") in states and ("armed", "break_retest") not in states
+    after = _cut(bars, s.i + 12)  # the retest filled and the price is falling to the target
+    live = next(x for x in bx.setups(after) if x.i == s.i)
+    assert not [p for state, p in bx.pending(after, live) if p.kind == "break_retest"]
+
+
+def test_a_setup_expires_after_its_last_session():
+    bars = _break_and_retest()
+    s = next(bx.setups(bars))
+    alive = bx.pending(_cut(bars, s.first), s, bx.Params(life_sessions=0), next_in_session=True)
+    assert alive
+    assert bx.pending(_cut(bars, bars.s_last[bars.sess[s.i]] + 1), s, bx.Params(life_sessions=0),
+                      next_in_session=False) == []
