@@ -272,9 +272,13 @@ class Charts:
                     self.chart(ticker, "15m", impulse_t=impulse_t, tidy=tidy)
                 except Exception as exc:  # the next day tries again
                     logger.info("Chart grades for %s: %s", ticker, type(exc).__name__)
-        if due:
-            self._grading = threading.Thread(target=run, name="chart-grades", daemon=True)
-            self._grading.start()
+            try:  # the trading assistant's plans and calls that a session left open (assistant.py)
+                from .assistant import settle_open_plans
+                settle_open_plans(grades.repo, self._connection(), now)
+            except Exception as exc:
+                logger.info("Plan grades: %s", type(exc).__name__)
+        self._grading = threading.Thread(target=run, name="chart-grades", daemon=True)
+        self._grading.start()
 
     def pushed_bar(self, code: str, kind: str) -> Optional[Dict[str, Any]]:
         """The latest pushed bar of ``kind`` (``K_1M`` ..) for ``code``, with its ``seq``; None before the first push."""

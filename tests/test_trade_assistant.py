@@ -272,3 +272,105 @@ def test_the_api_starts_shows_and_stops_a_session():
         assert started.status_code == 200 and started.json()["running"] and started.json()["horizon"] == "0dte"
         stopped = client.post("/api/v1/trade-desk/assistant/stop").json()
         assert stopped["running"] is False and stopped["stopped"]["reason"] == "stopped from the page"
+
+
+class FakeRepo:
+    def __init__(self):
+        self.rows = {}
+
+    def chart_trades(self, ticker=None, statuses=None, limit=5000):
+        rows = [dict(r) for r in self.rows.values() if (ticker is None or r["ticker"] == ticker)
+                and (statuses is None or r["status"] in statuses)]
+        return sorted(rows, key=lambda r: r.get("created_at", ""), reverse=True)[:limit]
+
+    def save_chart_trades(self, records):
+        for rec in records:
+            self.rows[rec["id"]] = dict(rec)
+
+    def delete_chart_trade(self, record_id, statuses):
+        if record_id in self.rows and self.rows[record_id]["status"] in statuses:
+            del self.rows[record_id]
+            return True
+        return False
+
+
+def _day_bars(path):
+    return [{"time": (at(9, 31) + timedelta(minutes=k)).isoformat(), "open": o, "high": h, "low": l, "close": c, "volume": 100,
+             "partial": False} for k, (o, h, l, c) in enumerate(path)]
+
+
+def test_a_confirmed_plan_is_watched_alerted_and_graded_at_the_close():
+    repo = FakeRepo()
+    a, charts, _ = _assistant(SimpleNamespace(repo=repo))
+    a.start(["SPY"], "0dte", at(9, 50), threads=False)
+    a.io(at(9, 50))
+    with pytest.raises(ValueError, match="Start the assistant on QQQ"):
+        a.add_plan("QQQ", {"direction": "long", "stop": 1, "target": 2}, now=at(9, 50))
+    charts.push_quote("US.SPY", 736.0, at(9, 50, 1))
+    a.check(at(9, 50, 1))
+    with pytest.raises(ValueError, match="stop goes below"):
+        a.add_plan("SPY", {"direction": "long", "stop": 737, "target": 740}, now=at(9, 50, 2))
+    plan = a.add_plan("SPY", {"direction": "long", "trigger": {"kind": "above", "price": 737}, "stop": 735.5, "target": 739,
+                              "time_stop": "15:30"}, text="long over 737", now=at(9, 50, 2))
+    assert plan["status"] == "waiting" and repo.rows[plan["id"]]["text"] == "long over 737"
+    assert a.events_after(0)[-1]["title"] == "Plan watched: SPY long above 737"
+    charts.push_quote("US.SPY", 737.2, at(10, 0))
+    a.check(at(10, 0))
+    assert a.events_after(0)[-1]["title"] == "Your plan triggered: SPY long at 737.2"
+    a.io(at(10, 0, 1))
+    assert repo.rows[plan["id"]]["status"] == "open"  # saved by the io pass
+    charts.push_quote("US.SPY", 739.1, at(11, 0))
+    a.check(at(11, 0))
+    assert a.events_after(0)[-1]["title"] == "Your plan on SPY reached its target 739"
+    other = a.add_plan("SPY", {"direction": "short", "trigger": {"kind": "below", "price": 730}, "stop": 733, "target": 725},
+                       now=at(11, 1))
+    assert a.remove_plan(other["id"], at(11, 2)) and other["id"] not in repo.rows
+    assert a.state()["tickers"][0]["plans"][0]["id"] == plan["id"]
+    # The day's bars: up 0.01 a minute, about 737.2 at 10:00, so the 10:00 entry reaches 739 around 12:40.
+    a._tickers["SPY"].bars = _day_bars([(736.9 + 0.01 * k, 736.9 + 0.01 * k + 0.2, 736.9 + 0.01 * k - 0.1,
+                                         736.9 + 0.01 * k + 0.005) for k in range(390)])
+    a.stop("the session closed", at(16, 15))
+    graded = repo.rows[plan["id"]]
+    assert graded["status"] == "closed" and graded["how"] == "target" and graded["month"] == "2026-11-09"
+    assert graded["R"] > 0 and graded["twin_R"] is not None
+
+
+def test_a_typed_plan_is_read_by_the_model_for_you_to_confirm(monkeypatch):
+    from src.services.trade_desk import assistant_model
+    seen = {}
+
+    def fake_generate(prompt, system):
+        seen["prompt"], seen["system"] = prompt, system
+        return {"data": {"direction": "long", "trigger": {"kind": "close_above", "price": 738.03, "bar_minutes": 5},
+                         "stop": 736, "target": 740, "time_stop": "15:30", "questions": ["Which strike?"]},
+                "label": "Claude Code (claude-sonnet-5-5)", "seconds": 6.1}
+    monkeypatch.setattr(assistant_model, "generate", fake_generate)
+    a, charts, _ = _assistant()
+    a.start(["SPY"], "0dte", at(9, 50), threads=False)
+    a.io(at(9, 50))
+    out = a.parse_plan("SPY", "calls if a 5 min bar closes over the pre-market high, stop 736, target 740, out by 3:30", at(9, 51))
+    assert out["draft"]["trigger"] == {"kind": "close_above", "price": 738.03, "bar_minutes": 5}
+    assert out["questions"] == ["Which strike?"] and out["model"].startswith("Claude Code")
+    assert '"Pre-market high"' in seen["prompt"] and "Never invent a price" in seen["system"]
+    assert a.events_after(0)[-1]["kind"] == "session"  # reading a plan watches nothing
+
+    def failing(prompt, system):
+        raise RuntimeError("no model answered: claude_code_cli usage limit; codex_cli timeout; litellm error")
+    monkeypatch.setattr(assistant_model, "generate", failing)
+    with pytest.raises(ValueError, match="No model answered"):
+        a.parse_plan("SPY", "long", at(9, 52))
+
+
+def test_after_the_close_open_plans_of_the_day_are_graded_and_older_ones_expire():
+    repo = FakeRepo()
+    repo.rows["you|SPY|plan|a"] = {"id": "you|SPY|plan|a", "ticker": "SPY", "status": "open", "source": "you", "kind": "plan",
+                                   "direction": 1, "trigger": {"kind": "now", "price": None, "bar_minutes": None},
+                                   "stop": 735.0, "target": 745.0, "time_stop": "15:00", "day": "2026-11-09",
+                                   "entry_time": at(9, 45, 30).isoformat(), "price": 736.0, "created_at": at(9, 45).isoformat()}
+    repo.rows["you|SPY|plan|old"] = {**repo.rows["you|SPY|plan|a"], "id": "you|SPY|plan|old", "day": "2026-11-06",
+                                     "status": "waiting"}
+    provider = SimpleNamespace(kline=lambda code, kind, count, push=False: [
+        {**bar, "partial": False} for bar in _day_bars([(736, 736.5, 735.6, 736.2)] * 390)])
+    assert asst.settle_open_plans(repo, provider, at(16, 20)) == 2
+    assert repo.rows["you|SPY|plan|a"]["status"] == "closed" and repo.rows["you|SPY|plan|a"]["how"] == "time"
+    assert repo.rows["you|SPY|plan|old"]["status"] == "expired"

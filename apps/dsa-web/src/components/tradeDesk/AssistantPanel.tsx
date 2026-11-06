@@ -3,6 +3,7 @@ import { BellRing, Play, Square } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { Badge, Button, Card } from '../common';
 import type { AssistantContract, AssistantEvent, AssistantHorizon, AssistantState, AssistantTicker } from '../../types/tradeDesk';
+import { AssistantPlans } from './AssistantPlans';
 import { nyTime, price } from './chartOverlays';
 import { errorMessage } from './deskFormat';
 
@@ -85,6 +86,7 @@ function TickerDetail({ item }: { item: AssistantTicker }) {
           </div> : null}
         </div>
       </div>
+      <AssistantPlans ticker={item.ticker} plans={item.plans || []} />
       <div>
         <h4 className="pb-1 text-xs font-semibold text-foreground">Contracts{item.contracts.expiry ? `, expiring ${item.contracts.expiry}` : ''}</h4>
         {item.contracts.rows.length ? <ContractRows rows={item.contracts.rows} />

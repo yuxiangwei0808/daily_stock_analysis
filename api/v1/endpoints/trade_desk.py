@@ -600,6 +600,46 @@ async def assistant_stop(request: Request):
     return await invoke(get_service(request).assistant.stop, "stopped from the page")
 
 
+class AssistantPlanText(Model):
+    ticker: str
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class AssistantPlanInput(Model):
+    ticker: str
+    direction: Literal["long", "short"]
+    trigger_kind: Literal["now", "above", "below", "close_above", "close_below"] = "now"
+    trigger_price: Optional[float] = Field(default=None, gt=0)
+    bar_minutes: Optional[Literal[1, 5, 15]] = None
+    invalidation: Optional[float] = Field(default=None, gt=0)
+    stop: float = Field(gt=0)
+    target: float = Field(gt=0)
+    time_stop: Optional[str] = Field(default=None, max_length=5)
+    instrument: Optional[Literal["calls", "puts", "shares"]] = None
+    text: str = Field(default="", max_length=1000)
+
+
+@router.post("/assistant/plans/parse")
+async def assistant_plan_parse(body: AssistantPlanText, request: Request):
+    """Reads a plan you typed into fields for you to check; nothing is watched until you confirm it."""
+    return await invoke(get_service(request).assistant.parse_plan, body.ticker, body.text)
+
+
+@router.post("/assistant/plans", status_code=201)
+async def assistant_plan_add(body: AssistantPlanInput, request: Request):
+    """Watches a plan you confirmed for the rest of the session and grades it after; nothing is sent to moomoo."""
+    fields = {"direction": body.direction, "invalidation": body.invalidation, "stop": body.stop, "target": body.target,
+              "time_stop": body.time_stop, "instrument": body.instrument,
+              "trigger": {"kind": body.trigger_kind, "price": body.trigger_price, "bar_minutes": body.bar_minutes}}
+    return await invoke(get_service(request).assistant.add_plan, body.ticker, fields, text=body.text)
+
+
+@router.delete("/assistant/plans/{record_id}", status_code=204)
+async def assistant_plan_remove(record_id: str, request: Request):
+    if not await invoke(get_service(request).assistant.remove_plan, record_id):
+        raise HTTPException(409, detail="Only a plan that has not triggered can be removed")
+
+
 @router.get("/assistant/stream")
 async def assistant_stream(request: Request):
     """Server-sent events: ``alert`` as each happens, ``state`` once a second while a session runs."""

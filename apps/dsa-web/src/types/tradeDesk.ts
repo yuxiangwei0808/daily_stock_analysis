@@ -1018,6 +1018,44 @@ export interface AssistantEvent {
   detail: string;
 }
 
+export type AssistantTrigger = 'now' | 'above' | 'below' | 'close_above' | 'close_below';
+
+export interface AssistantPlanDraft {
+  direction: 'long' | 'short' | null;
+  trigger: { kind: AssistantTrigger; price: number | null; barMinutes: 1 | 5 | 15 | null };
+  invalidation: number | null;
+  stop: number | null;
+  target: number | null;
+  timeStop: string | null;
+  instrument: 'calls' | 'puts' | 'shares' | null;
+}
+
+export interface AssistantPlan {
+  id: string;
+  ticker: string;
+  status: 'waiting' | 'open' | 'closed' | 'void' | 'expired';
+  source: 'you' | 'assistant';
+  kind: 'plan' | 'call';
+  direction: 'long' | 'short';
+  trigger: { kind: AssistantTrigger; price: number | null; barMinutes: number | null };
+  invalidation?: number;
+  stop: number;
+  target: number;
+  timeStop: string;
+  instrument?: string;
+  price?: number;
+  entryTime?: string;
+  liveExit?: { how: string; price: number; time: string };
+  how?: string;
+  exit?: number;
+  r?: number;
+  twinR?: number;
+  void?: string;
+  text?: string;
+  why?: string;
+  model?: string;
+}
+
 export interface AssistantTicker {
   ticker: string;
   price: number | null;
@@ -1028,6 +1066,7 @@ export interface AssistantTicker {
   flags: Array<{ kind: string; box: string; direction: string; state: string; price: number; stop: number; target: number; grade: string }>;
   contracts: { expiry: string | null; rows: AssistantContract[]; asOf: string | null; error: string | null };
   positions: AssistantPosition[];
+  plans: AssistantPlan[];
   loaded: boolean;
   error: string | null;
 }

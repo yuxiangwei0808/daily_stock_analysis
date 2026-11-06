@@ -40,7 +40,10 @@ MIN_TRADES = 30
 BAR = timedelta(minutes=15)
 OPEN_STATES = ("waiting", "open", "closed")  # still moving: entry, exit or twins to come
 KINDS = (("system", "break_retest", "System: break and retest"), ("system", "fade", "System: fade at a box"),
-         ("you", "mark", "Your marks"), ("you", "box", "Your boxes"))
+         ("you", "mark", "Your marks"), ("you", "box", "Your boxes"),
+         # Same-day trades graded by the trading assistant (assistant_grades.py): clustered by day, not month.
+         ("you", "plan", "Your plans"), ("assistant", "call", "Assistant calls"))
+SESSION_KINDS = ("plan", "call")
 
 
 def _aware(text: str) -> datetime:
@@ -161,8 +164,8 @@ class ChartGrades:
                 changed[rid] = {**rec, "status": "expired"}
         yours = []
         for rec in existing.values():
-            if rec.get("source") != "you":
-                continue
+            if rec.get("source") != "you" or rec.get("kind") not in ("mark", "box"):
+                continue  # plans and calls are graded by the trading assistant
             update = self._mark(ctx, rec) if rec["kind"] == "mark" else self._box(ctx, rec)
             if update:
                 changed[rec["id"]] = rec
@@ -270,6 +273,8 @@ class ChartGrades:
         rows = self.repo.chart_trades(statuses=OPEN_STATES)
         out = set()
         for r in rows:
+            if r.get("kind") in SESSION_KINDS:
+                continue  # settled from the day's 1-minute bars (assistant.settle_open_plans)
             if r.get("source") == "system":
                 out.add((r["ticker"], r["impulse_t"], r["tidy"]))
             elif r["status"] != "closed" or r.get("twin_R") is None:

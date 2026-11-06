@@ -28,6 +28,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from . import assistant_grades as ag
 from . import register
 from .analytics import black_scholes_price
 from .chart import _validate
@@ -111,6 +112,7 @@ class _Ticker:
         self.reload_at: Optional[datetime] = None
         self.loaded = False
         self.warned: set = set()
+        self.plans: List[Dict[str, Any]] = []  # today's plans and calls on this stock (assistant_grades.py)
         self.error: Optional[str] = None
 
     # -- levels --------------------------------------------------------------------------------
@@ -172,6 +174,7 @@ class Assistant:
         self._events: deque = deque(maxlen=EVENTS)
         self._seq = 0
         self._next: Dict[str, float] = {}
+        self._dirty: Dict[str, Dict[str, Any]] = {}  # plan records to save, by id
 
     # -- start and stop ----------------------------------------------------------------------------
     @property
@@ -197,6 +200,7 @@ class Assistant:
             self._next = {}
         for item in self._tickers.values():
             item.stream = self.charts.stream(item.ticker, "1m")  # quote, 1- and 15-minute bars, with push
+        self._load_plans(now)
         self._event(None, "session", f"Watching {', '.join(names)}", f"{HORIZONS[horizon]}; alerts on this page", now)
         if threads:
             self._stop.clear()
@@ -215,9 +219,16 @@ class Assistant:
                 thread.join(timeout=5)
         self._threads = []
         if self.running:
+            _, closing = _session_bounds(_local(now).date())
             for item in self._tickers.values():
                 if item.stream is not None:
                     item.stream.close()
+                if closing is not None and now >= closing:  # the day's bars are complete: grade what traded
+                    bars = [bar for bar in item.bars if datetime.fromisoformat(bar["time"]) <= closing]
+                    for rec in item.plans:
+                        if rec["status"] in ag.WATCHED and ag.settle(rec, bars, closing):
+                            self._dirty[rec["id"]] = rec
+            self._save_plans()
             self._event(None, "session", "Stopped", reason, now)
             with self._lock:
                 self.stopped = {"at": now.isoformat(), "reason": reason}
@@ -288,6 +299,8 @@ class Assistant:
             if quote and quote.get("seq") != item.quote_seq:
                 item.quote_seq = quote["seq"]
                 self._price(item, float(quote["price"]), quote.get("at"), quote.get("received") or now, now)
+            if item.price is not None:
+                self._step_plans(item, now)
             if closing is not None:
                 self._close_warnings(item, now, closing)
 
@@ -326,6 +339,7 @@ class Assistant:
     def io(self, now: datetime) -> None:
         if not self.running:
             return
+        self._save_plans()
         for item in list(self._tickers.values()):
             try:
                 if not item.loaded:
@@ -501,6 +515,112 @@ class Assistant:
             with self._lock:
                 item.positions, item.held = mine, current
 
+    # -- plans and calls (assistant_grades.py) ------------------------------------------------------
+    def _repo(self) -> Any:
+        return getattr(self.service, "repo", None)
+
+    def _load_plans(self, now: datetime) -> None:
+        repo = self._repo()
+        if repo is None:
+            return
+        day = _local(now).date().isoformat()
+        for item in self._tickers.values():
+            rows = repo.chart_trades(ticker=item.ticker, limit=200)
+            item.plans = [row for row in rows if row.get("kind") in ("plan", "call") and row.get("day") == day][::-1]
+
+    def _save_plans(self) -> None:
+        with self._lock:
+            dirty, self._dirty = list(self._dirty.values()), {}
+        repo = self._repo()
+        if dirty and repo is not None:
+            try:
+                repo.save_chart_trades(dirty)
+            except Exception:  # kept for the next pass
+                with self._lock:
+                    for rec in dirty:
+                        self._dirty.setdefault(rec["id"], rec)
+                raise
+
+    def _step_plans(self, item: _Ticker, now: datetime) -> None:
+        for rec in item.plans:
+            if rec["status"] not in ag.WATCHED:
+                continue
+            with self._lock:
+                what = ag.step(rec, item.price, item.bars, now)
+            if what is None:
+                continue
+            self._dirty[rec["id"]] = rec
+            whose = "Your plan" if rec["source"] == "you" else "Assistant call"
+            side = "long" if rec["direction"] == 1 else "short"
+            titles = {"triggered": f"{whose} triggered: {item.ticker} {side} at {rec.get('price', item.price):g}",
+                      "void": f"{whose} on {item.ticker} is void: {rec.get('void', '')}",
+                      "expired": f"{whose} on {item.ticker} expired: not triggered by {rec['time_stop']}",
+                      "stop": f"{whose} on {item.ticker} reached its stop {rec['stop']:g}",
+                      "target": f"{whose} on {item.ticker} reached its target {rec['target']:g}",
+                      "time": f"{whose} on {item.ticker}: time stop {rec['time_stop']}"}
+            detail = f"Last {item.price:g}; stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}."
+            self._event(item.ticker, "plan", titles[what], detail, now, plan=rec["id"])
+
+    def _item(self, ticker: str) -> _Ticker:
+        name = _validate(ticker, "1m")
+        item = self._tickers.get(name) if self.running else None
+        if item is None:
+            raise ValueError(f"Start the assistant on {name} first")
+        return item
+
+    def add_plan(self, ticker: str, fields: Dict[str, Any], *, text: str = "", source: str = "you", why: str = "",
+                 model: str = "", now: Optional[datetime] = None) -> Dict[str, Any]:
+        """A plan you confirmed (or a call of the assistant's), watched from now on and graded after the session."""
+        now = now or self._clock()
+        item = self._item(ticker)
+        if item.price is None:
+            raise ValueError(f"No price for {item.ticker} yet")
+        _, closing = _session_bounds(_local(now).date())
+        if closing is None or now >= closing:
+            raise ValueError("Plans are for the regular session")
+        plan = ag.check_plan(fields, item.price, closing, now)
+        rec = ag.new_record(item.ticker, source, plan, item.price, now, text=text, why=why, model=model)
+        repo = self._repo()
+        if repo is not None:
+            repo.save_chart_trades([rec])
+        with self._lock:
+            item.plans.append(rec)
+        whose = "Plan" if source == "you" else "Assistant call"
+        side = "long" if rec["direction"] == 1 else "short"
+        trigger = rec["trigger"]
+        when = "now" if trigger["kind"] == "now" else f"{trigger['kind'].replace('_', ' ')} {trigger['price']:g}" + (
+            f" on a {trigger['bar_minutes']}-minute bar" if trigger["bar_minutes"] else "")
+        self._event(item.ticker, "plan", f"{whose} watched: {item.ticker} {side} {when}",
+                    f"Stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}.", now, plan=rec["id"])
+        return ag.view(rec)
+
+    def remove_plan(self, record_id: str, now: Optional[datetime] = None) -> bool:
+        """Only a plan that has not triggered can be removed; once it traded it stays on the record."""
+        now = now or self._clock()
+        for item in self._tickers.values():
+            for rec in item.plans:
+                if rec["id"] == record_id and rec["status"] == "waiting":
+                    repo = self._repo()
+                    if repo is not None and not repo.delete_chart_trade(record_id, ("waiting",)):
+                        return False
+                    with self._lock:
+                        item.plans.remove(rec)
+                    self._event(item.ticker, "plan", f"Plan removed on {item.ticker}", "", now)
+                    return True
+        return False
+
+    def parse_plan(self, ticker: str, text: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """The model's reading of a plan you typed, for you to check and confirm (nothing is watched yet)."""
+        from . import assistant_notes
+        now = now or self._clock()
+        item = self._item(ticker)
+        with self._lock:
+            ticker_state = {"ticker": item.ticker, "price": item.price, "levels": item.levels()}
+        try:
+            return assistant_notes.parse_plan(text, ticker_state, now)
+        except RuntimeError as exc:  # every backend failed: the page says so, and the form still works
+            raise ValueError(assistant_notes.answer_failed(exc)) from exc
+
     # -- what the page shows ---------------------------------------------------------------------------
     def state(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         now = now or self._clock()
@@ -524,6 +644,7 @@ class Assistant:
                                   "as_of": item.contracts_at.isoformat() if item.contracts_at else None,
                                   "error": item.chain_error},
                     "positions": list(item.positions), "loaded": item.loaded, "error": item.error,
+                    "plans": [ag.view(rec) for rec in item.plans][::-1],
                 })
             return {"running": self.running, "horizon": self.horizon, "horizons": HORIZONS,
                     "started_at": self.started_at.isoformat() if self.started_at else None, "stopped": self.stopped,
@@ -589,3 +710,31 @@ def _regular(text: str) -> bool:
 def _weight(row: Dict[str, Any]) -> str:
     weight = row.get("weight_pct")
     return f"{weight:.1f}%" if weight is not None else "—"
+
+
+def settle_open_plans(repo: Any, provider: Any, now: datetime) -> int:
+    """After the close: grades the day's plans and calls still waiting or open (a session stopped early, a
+    restart) from the day's 1-minute bars; older ones that missed their day expire. Returns how many moved."""
+    day = _local(now).date()
+    _, closing = _session_bounds(day)
+    rows = [row for row in repo.chart_trades(statuses=ag.WATCHED, limit=1000) if row.get("kind") in ("plan", "call")]
+    changed = []
+    bars_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
+    for rec in rows:
+        if rec.get("day") != day.isoformat():
+            rec.update(status="expired", void="not graded on its day")
+            changed.append(rec)
+            continue
+        if closing is None or now < closing:
+            continue
+        if rec["ticker"] not in bars_by_ticker:
+            bars = provider.kline(f"US.{rec['ticker']}", "K_1M", 1000, push=False)
+            bars_by_ticker[rec["ticker"]] = [bar for bar in bars if _regular(bar["time"])
+                                             and _local(datetime.fromisoformat(bar["time"])).date() == day
+                                             and datetime.fromisoformat(bar["time"]) <= closing]
+        if ag.settle(rec, bars_by_ticker[rec["ticker"]], closing):
+            changed.append(rec)
+    if changed:
+        repo.save_chart_trades(changed)
+    return len(changed)
+

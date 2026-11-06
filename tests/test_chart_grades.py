@@ -182,5 +182,6 @@ def test_the_routes_record_marks_and_boxes_and_serve_the_grades(repo, monkeypatc
         assert client.delete(f"/api/v1/trade-desk/chart-yours/{box.json()['id']}").status_code == 204
         assert client.delete("/api/v1/trade-desk/chart-yours/sys%7CSPY%7Cx").status_code == 409
         table = client.get("/api/v1/trade-desk/chart-grades").json()
-        assert [k["label"] for k in table["kinds"]] == ["System: break and retest", "System: fade at a box", "Your marks", "Your boxes"]
+        assert [k["label"] for k in table["kinds"]] == ["System: break and retest", "System: fade at a box", "Your marks", "Your boxes",
+                                                   "Your plans", "Assistant calls"]
         assert table["recent"][0]["id"] == made.json()["id"] and table["min_trades"] == 30

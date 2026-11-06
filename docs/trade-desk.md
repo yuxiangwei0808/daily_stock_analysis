@@ -929,10 +929,33 @@ to moomoo, and its alerts go to this page only, never to Discord.
   the start only sets the side), a box flag becoming armed, watching or filled, a position appearing or
   closing, its P&L on cost crossing a step (10 % for options, 2 % for stock), and 30 and 15 minutes before
   the close while you hold a contract expiring today.
+- **Your plan** (`POST /assistant/plans/parse`, `POST /assistant/plans`, `DELETE /assistant/plans/{id}`;
+  `trade_desk/assistant_grades.py`): type it in your words ("calls if a 5-minute bar closes above VWAP,
+  stop under the prior-day low, target 742, out by 3:30") and **Read it**, or **Fill in by hand**. The model
+  turns the words into fields, using only the prices you wrote or the levels shown, and lists what is
+  missing; you check the form and **Watch this plan**. Nothing is watched before that. A plan is
+  long or short and enters now, at the first trade at or past a price, or when a 1-, 5- or 15-minute bar
+  closes past it; it may carry a price that cancels it if traded first; it needs a stop and a target on
+  the stock and leaves by its time stop (the close by default). The session alerts when it triggers, is
+  cancelled or expires, and when the price reaches its stop, its target or its time stop. A plan that has
+  not triggered can be removed. Plans are same-day: after the close each is graded from the day's
+  1-minute bars (stop or target, whichever a bar reaches first, the stop when both, a gap at the open
+  past it; else the last trade before the time stop; in R after 0.05 % per round trip) against the same
+  trade at 20 random minutes of that session, and shows in **Forward grades** as *Your plans*, clustered
+  by day. A session stopped early, or a restart, leaves open plans to the daily pass after 16:20.
+- **The model** (`trade_desk/assistant_model.py`): your Claude Code plan first, then Codex, and the API
+  only as a fallback (`TRADE_ASSISTANT_BACKENDS`, default `claude_code_cli,codex_cli,litellm`), each with
+  the assistant's own light settings: `TRADE_ASSISTANT_CLAUDE_CODE_CLI_MODEL` and `_EFFORT` (default the
+  routine model, effort `low`), `TRADE_ASSISTANT_CODEX_CLI_MODEL` and `_EFFORT` (`low`),
+  `TRADE_ASSISTANT_LITELLM_MODEL` (default `LITELLM_MODEL`; it must be one of a channel's models), and
+  `TRADE_ASSISTANT_TIMEOUT_SECONDS` (90). A backend that fails or is over its usage limit passes to the next;
+  each answer names the model that gave it. A test read of a plan through Claude Code on Sonnet 5.5 took
+  6 seconds.
 - **How:** a check thread reads only memory every 0.25 s (the chart service's pushed trades and 1- and
-  15-minute bars, on its own moomoo connection); an io thread loads each chart at the start and after
-  each 15-minute close, today's 1-minute bars, the chain once, the contract quotes and the positions.
-  The Status page shows it as "Trading assistant". Your server restart ends a session.
+  15-minute bars, on its own moomoo connection) and steps the plans; an io thread loads each chart at the
+  start and after each 15-minute close, today's 1-minute bars, the chain once, the contract quotes and the
+  positions, and saves the plans. The Status page shows it as "Trading assistant". Your server restart
+  ends a session.
 
 ## 0DTE quote recorder
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 交易助手中的「你的计划」：用自己的话写下计划（如「5 分钟 K 线收在 VWAP 上方买 call，止损前日低点，目标 742，3:30 前离场」），模型解读为可监控的字段并列出缺失项，你确认后才开始监控；触发、作废、到期、止损、目标与时间止损都会提醒；收盘后按当日 1 分钟 K 线评分，并与同一交易在当日随机时点的结果对比（「Forward grades」新增「Your plans」）。模型调用优先走你的 Claude Code 订阅，其次 Codex，API 仅作兜底（`TRADE_ASSISTANT_*`）
 - [新功能] 交易助手（图表页「Trading assistant」，`/api/v1/trade-desk/assistant`）：点击 Start 后实时盯 1–3 只股票（0DTE/日内/波段），显示当日价位（前日高低收、两周价值区、盘前高低、开盘区间、VWAP、你的止损/目标/提醒，各带检验结论）、现价附近期权合约（买卖价、价差、隐含波动率、Delta、到期盈亏平衡所需涨跌、每分钟时间损耗、到各价位的估值）与你在这些股票上的持仓；价位突破、箱体信号、持仓变动、盈亏档位与 0DTE 收盘前提醒以声音和浏览器通知显示在页面上；不发 Discord，不下单；状态页新增「Trading assistant」
 - [改进] 交易想法遵循交易方法论（第 8 阶段）：趋势扫描想法、期权跟进与突破提醒只有在其依据的规则全部通过检验后才发送到 Discord；在此之前只在 Trade Desk「Ask」页的「Trade ideas」卡片显示（`GET /api/v1/trade-desk/ideas`），标注规则结论并照常前瞻跟踪。目前没有规则通过，因此 Discord 暂不再收到交易想法
 - [改进] 想法登记表 `trade_desk/register.py` 统一保存每条规则的检验结论；`docs/trading-methodology.md` 的登记表由它生成（测试校验一致），图表信号评级也改读该表；方法论新增选股（第 13 节）、日内与 0DTE 期权（第 14 节）以及看板/Discord/助手可显示内容（第 15 节）

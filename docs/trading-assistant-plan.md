@@ -1,8 +1,11 @@
 # Plan: real-time trading assistant
 
-Status: phases 0, 1 and 2 built on 2026-11-06 (the register and strict trade ideas; the 0DTE quote
+Status: phases 0 to 3 built on 2026-11-06 (the register and strict trade ideas; the 0DTE quote
 recorder, on with `OPTION_RECORDER_ENABLED=true`; the session engine, contract panel and dashboard
-alerts in the Chart tab, see [trade-desk.md](trade-desk.md#trading-assistant)). Phases 3 to 6 next. It builds on the Chart tab
+alerts in the Chart tab; your typed plans, watched and graded; see
+[trade-desk.md](trade-desk.md#trading-assistant)). The in-play test of phase 5 passed as a range
+selector. Decision 5 (2026-11-06): model calls go through your Claude Code plan first, then Codex, and
+the API only as a fallback. Phases 4, 5's live list and 6 next. It builds on the Chart tab
 ([live-chart-plan.md](live-chart-plan.md)) and follows
 [trading-methodology.md](trading-methodology.md), which is the main source for how we trade and how
 we find stocks.

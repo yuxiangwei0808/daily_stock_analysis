@@ -9,7 +9,10 @@ import type {
   HoldingsResponse,
   PortfolioSummary,
   AssistantHorizon,
+  AssistantPlan,
+  AssistantPlanDraft,
   AssistantState,
+  AssistantTrigger,
   RecentIdeas,
   TrackRecord,
   PaperFillRequest,
@@ -439,6 +442,27 @@ export const tradeDeskApi = {
   async stopAssistant(): Promise<AssistantState> {
     const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/stop`, undefined, { timeout: 30000 });
     return toCamelCase<AssistantState>(response.data);
+  },
+
+  async parseAssistantPlan(ticker: string, text: string): Promise<{ draft: AssistantPlanDraft; questions: string[]; text: string; model: string; seconds: number | null }> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/plans/parse`, { ticker, text }, { timeout: 180000 });
+    return toCamelCase(response.data);
+  },
+
+  async addAssistantPlan(input: {
+    ticker: string; direction: 'long' | 'short'; triggerKind: AssistantTrigger; triggerPrice: number | null; barMinutes: 1 | 5 | 15 | null;
+    invalidation: number | null; stop: number; target: number; timeStop: string | null; instrument: 'calls' | 'puts' | 'shares' | null; text: string;
+  }): Promise<AssistantPlan> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/plans`, {
+      ticker: input.ticker, direction: input.direction, trigger_kind: input.triggerKind, trigger_price: input.triggerPrice,
+      bar_minutes: input.barMinutes, invalidation: input.invalidation, stop: input.stop, target: input.target,
+      time_stop: input.timeStop, instrument: input.instrument, text: input.text,
+    });
+    return toCamelCase<AssistantPlan>(response.data);
+  },
+
+  async removeAssistantPlan(id: string): Promise<void> {
+    await apiClient.delete(`${BASE_PATH}/assistant/plans/${encodeURIComponent(id)}`);
   },
 
   getAssistantStreamUrl(): string {
