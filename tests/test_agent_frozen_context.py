@@ -125,19 +125,6 @@ class DesktopBackendPackagingAssetsTestCase(unittest.TestCase):
         self.assertIn("ma_golden_cross", strategy_names)
         self.assertIn("wave_theory", strategy_names)
 
-    def test_backend_pyinstaller_scripts_include_strategies_data_directory(self):
-        macos_script = (self.repo_root / "scripts" / "build-backend-macos.sh").read_text(
-            encoding="utf-8"
-        )
-        windows_script = (self.repo_root / "scripts" / "build-backend.ps1").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn('--add-data "strategies:strategies"', macos_script)
-        self.assertIn("--add-data', 'strategies;strategies'", windows_script)
-        self.assertIn("_internal/strategies", macos_script)
-        self.assertIn("_internal\\strategies", windows_script)
-
 
 if __name__ == "__main__":
     unittest.main()

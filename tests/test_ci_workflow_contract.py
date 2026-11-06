@@ -79,7 +79,6 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         "steps.filter.outputs.backend_contract_assets == 'true' || "
         "steps.filter.outputs.backend_web_contract == 'true' }}"
     )
-    assert changes_job["outputs"]["docker"] == "${{ steps.filter.outputs.docker }}"
     assert changes_job["outputs"]["frontend"] == (
         "${{ steps.frontend-filter.outputs.frontend_code }}"
     )
@@ -97,8 +96,6 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         "apps/dsa-web/**",
         "!**/*.md",
     ]
-    assert "docker:" in filters
-    assert "docker/**" in filters
     assert set(
         _expand_brace_pattern(parsed_filters["backend_web_contract"][0])
     ) == {
@@ -119,7 +116,6 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
 
     backend_tests_job = ci["jobs"]["backend-tests"]
     backend_gate_job = ci["jobs"]["backend-gate"]
-    docker_job = ci["jobs"]["docker-build"]
     assert backend_tests_job["needs"] == ["changes", "ai-governance"]
     assert backend_tests_job["if"] == "needs.changes.outputs.backend == 'true'"
     assert backend_tests_job["strategy"]["fail-fast"] == "false"
@@ -130,8 +126,6 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         "backend-tests",
     ]
     assert backend_gate_job["if"] == "always()"
-    assert docker_job["needs"] == ["changes", "ai-governance"]
-    assert docker_job["if"] == "needs.changes.outputs.docker == 'true'"
 
     install_step = next(
         step
@@ -181,44 +175,28 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
         Loader=yaml.BaseLoader,
     )["frontend_code"]
 
-    def outputs(changed_paths: list[str]) -> tuple[bool, bool, bool, bool]:
+    def outputs(changed_paths: list[str]) -> tuple[bool, bool]:
         backend = (
             _filter_output(changed_paths, backend_filters)
             or _filter_output(changed_paths, filters["backend_contract_assets"])
             or _filter_output(changed_paths, filters["backend_web_contract"])
         )
-        return (
-            backend,
-            _filter_output(changed_paths, filters["docker"]),
-            _filter_output(changed_paths, frontend_filters),
-            _filter_output(changed_paths, filters["futu_packaging"]),
-        )
+        return backend, _filter_output(changed_paths, frontend_filters)
 
     assert backend_filter_step["with"]["predicate-quantifier"] == "every"
-    assert outputs(["docs/CHANGELOG.md"]) == (True, False, False, False)
+    assert outputs(["docs/CHANGELOG.md"]) == (True, False)
     assert outputs(["docs/architecture/api_spec.json"])[0] is True
     assert outputs(["docs/alerts.md"])[0] is True
     assert outputs(["tests/fixtures/notification_reports/aggregate_report.md"])[0] is True
     assert outputs(["THIRD_PARTY_NOTICES.md"])[0] is True
-    assert outputs(["docs/CONTRIBUTING.md"]) == (False, False, False, False)
-    assert outputs(["README.md"]) == (False, False, False, False)
-    assert outputs(["LICENSE"]) == (False, False, False, False)
-    assert outputs(["apps/dsa-web/README.md"]) == (False, False, False, False)
-    assert outputs(["apps/dsa-desktop/README.md"]) == (False, False, False, False)
-    assert outputs(["src/config.py"]) == (True, True, False, False)
-    assert outputs(["requirements.txt"]) == (True, True, False, True)
-    assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, True, True, False)
-    assert outputs(["apps/dsa-web/src/App.tsx", "docs/CHANGELOG.md"]) == (
-        True,
-        True,
-        True,
-        False,
-    )
-    assert outputs(["apps/dsa-web/src/App.tsx", "src/config.py"]) == (
-        True,
-        True,
-        True,
-        False,
-    )
+    assert outputs(["docs/CONTRIBUTING.md"]) == (False, False)
+    assert outputs(["README.md"]) == (False, False)
+    assert outputs(["LICENSE"]) == (False, False)
+    assert outputs(["apps/dsa-web/README.md"]) == (False, False)
+    assert outputs(["src/config.py"]) == (True, False)
+    assert outputs(["requirements.txt"]) == (True, False)
+    assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, True)
+    assert outputs(["apps/dsa-web/src/App.tsx", "docs/CHANGELOG.md"]) == (True, True)
+    assert outputs(["apps/dsa-web/src/App.tsx", "src/config.py"]) == (True, True)
     assert outputs(["apps/dsa-web/public/stocks.index.json"])[0] is True
     assert outputs(["apps/dsa-web/public/runtime/new-asset.json"])[0] is True

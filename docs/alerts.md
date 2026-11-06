@@ -405,10 +405,6 @@ P8 不新增规则类型、API、表结构或 worker 行为；它把 P0-P7 已�
 - Alert API / Web 告警中心持久化规则：推荐入口，支持 `single_symbol`、`watchlist`、`portfolio_holdings`、`portfolio_account`、`market`，覆盖实时价、涨跌幅、成交量、日线技术指标、持仓风险与大盘红绿灯规则。
 - legacy `AGENT_EVENT_ALERT_RULES_JSON`：只兼容 `single_symbol` 的 `price_cross`、`price_change_percent`、`volume_spike` 三类基础规则；不支持 P5 技术指标、P6 watchlist/portfolio 或 P7 market light。系统不会自动迁移、删除或改写 legacy JSON。
 
-### Docker
-
-仓库 `docker/Dockerfile` 默认命令是 `python main.py --schedule`，因此容器内只要配置 `AGENT_EVENT_MONITOR_ENABLED=true` 就会在 schedule 模式中启用告警 worker。Web/API 持久化规则依赖应用数据库；Docker 部署时需要保留 `data/` 数据库卷，避免容器重建后丢失规则、触发历史、通知尝试和冷却状态。legacy JSON 仍通过环境变量注入，不是 Docker 专用配置体系。
-
 ### GitHub Actions
 
 仓库自带 `.github/workflows/00-daily-analysis.yml` 是一次性分析 workflow，实际调用 `python main.py`、`python main.py --market-review` 或 `python main.py --no-market-review`，不运行 `--schedule` 后台 alert worker，也没有映射 `AGENT_EVENT_*` 变量。仅在 repository Secrets / Variables 中新增 `AGENT_EVENT_MONITOR_ENABLED` 或 `AGENT_EVENT_ALERT_RULES_JSON` 不会让默认 Actions 开始持续轮询告警。

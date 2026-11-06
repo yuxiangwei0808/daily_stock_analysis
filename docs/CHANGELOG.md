@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [chore] 移除本 fork 不使用的上游附加内容：Electron 桌面端与打包脚本、Docker 与云部署文件及文档、只在上游仓库运行的 GitHub workflow（发布、Docker 推送、auto-tag、PR AI 审查、stale、network-smoke）、agent 轨迹评测 `evals/`、OpenClaw / Grok Bot 集成示例、`webui.py`、`CITATION.cff` 与运行诊断阶段规划文档；同步更新 CI、契约测试、AGENTS.md 与文档索引。后端运行、Web 构建与 Trade Desk 不受影响。
 - [新功能] moomoo 自定义指标脚本 `scripts/moomoo_box_indicator.txt`（Python 指标）：在 moomoo 自己的 15 分钟图上画出与回测相同规则的区间箱与基础箱，并标记冲击 K 线；只画图
 - [新功能] 止损风险面板（`GET /api/v1/trade-desk/holdings/stop-risk`）：每个持仓触及计划止损时的亏损、全部止损同时触发的合计，以及跳空至两倍止损距离的情景，均以账户百分比显示；持仓页与图表页共用同一组止损与价格
 - [新功能] 图表前瞻评分：系统信号只有在成交前已在图表上显示过才计入；可在图表上标记「此处做多/做空」（含止损/目标）或画框保存，按回测的出场规则跟踪，并与随机时点的同类交易对比；每类满 30 笔后给出结论（`GET /api/v1/trade-desk/chart-grades`）；只记录，不下单

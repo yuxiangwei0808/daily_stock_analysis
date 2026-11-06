@@ -9,8 +9,7 @@
 - 遵循现有目录边界：
   - 后端逻辑优先放在 `src/`、`data_provider/`、`api/`、`bot/`
   - Web 前端改动在 `apps/dsa-web/`
-  - 桌面端改动在 `apps/dsa-desktop/`
-  - 部署与流水线改动在 `scripts/`、`.github/workflows/`、`docker/`
+  - 脚本与流水线改动在 `scripts/`、`.github/workflows/`
 - 未经明确确认，不执行 `git commit`、`git tag`、`git push`。
 - commit message 使用英文，不添加 `Co-Authored-By`。
 - 不写死密钥、账号、路径、模型名、端口或环境差异逻辑。
@@ -47,7 +46,6 @@
 - `CLAUDE.md` 必须是指向 `AGENTS.md` 的软链接，用于兼容 Claude 生态。
 - `.github/copilot-instructions.md` 与 `.github/instructions/*.instructions.md` 是 GitHub Copilot / Coding Agent 的镜像或分层补充；若与本文件冲突，以 `AGENTS.md` 为准。
 - 仓库协作 skill 存放在 `.claude/skills/`，分析产物存放在 `.claude/reviews/`；前者可以入库，后者默认视为本地产物。
-- 根目录 `SKILL.md` 与 `docs/openclaw-skill-integration.md` 属于产品或外部集成说明，不是仓库协作规则真源。
 - 若未来新增 `.agents/skills/` 或其他 agent 专用目录，必须先明确单一真源，再通过脚本或镜像同步；禁止手工长期维护多份同义内容。
 - 修改 AI 协作治理资产时，执行：
 
@@ -63,8 +61,7 @@ python scripts/check_ai_assets.py
   - `main.py`：分析任务主入口
   - `server.py`：FastAPI 服务入口
   - `apps/dsa-web/`：Web 前端
-  - `apps/dsa-desktop/`：Electron 桌面端
-  - `.github/workflows/`：CI、发布、每日任务
+  - `.github/workflows/`：CI、每日任务
 - 核心职责：
   - `src/core/`：主流程编排
   - `src/services/`：业务服务层
@@ -105,16 +102,12 @@ python -m pytest -m "not network"
 python -m py_compile <changed_python_files>
 ```
 
-### Web / Desktop
+### Web
 
 ```bash
 cd apps/dsa-web
 npm ci
 npm run lint
-npm run build
-
-cd ../dsa-desktop
-npm install
 npm run build
 ```
 
@@ -130,8 +123,8 @@ gh run view <run_id> --log-failed
 
 1. 先判断任务类型：`fix / feat / refactor / docs / chore / test / review`
 2. 先读现有实现、配置、测试、脚本、工作流和文档，再动手修改。
-3. 识别改动边界：后端 / API / Web / Desktop / Workflow / Docs / AI 协作资产。
-4. 先判断是否命中高风险区域：配置语义、API / Schema、数据源 fallback、报告结构、认证、调度、发布流程、桌面端启动链路。
+3. 识别改动边界：后端 / API / Web / Workflow / Docs / AI 协作资产。
+4. 先判断是否命中高风险区域：配置语义、API / Schema、数据源 fallback、报告结构、认证、调度。
 5. 只做和当前任务直接相关的最小改动，不顺手夹带无关重构。
 6. 如果发现文档、脚本、工作流描述不一致，优先信任实际代码与工作流，再决定是否顺手修正文档。
 7. 改完后按下面的验证矩阵执行检查。
@@ -153,10 +146,7 @@ gh run view <run_id> --log-failed
 | --- | --- | --- | --- |
 | `ai-governance` | `.github/workflows/ci.yml` | 校验 `AGENTS.md` / `CLAUDE.md` / `.github` 指令 / `.claude/skills` 关系 | 是 |
 | `backend-gate` | `.github/workflows/ci.yml` | 执行 `./scripts/ci_gate.sh` | 是 |
-| `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是 |
 | `web-gate` | `.github/workflows/ci.yml` | 前端改动时执行 `npm run lint` + `npm run build` | 是（触发时） |
-| `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否，观测项 |
-| `pr-review` | `.github/workflows/pr-review.yml` | PR 静态检查 + AI 审查 + 自动标签 | 否，辅助项 |
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，需要补充说明本地验证与缺口。
 
@@ -173,13 +163,8 @@ gh run view <run_id> --log-failed
   - 默认执行：`cd apps/dsa-web && npm ci && npm run lint && npm run build`
   - 若涉及 API 联调、路由、状态管理、Markdown/图表渲染或认证状态，交付说明中要明确说明联动面和未覆盖风险。
 
-- 桌面端改动：
-  - 适用范围：`apps/dsa-desktop/`、`scripts/run-desktop.ps1`、`scripts/build-desktop*.ps1`、`scripts/build-*.sh`、`docs/desktop-package.md`
-  - 默认执行：先构建 Web，再构建桌面端
-  - 如受平台限制未能完整验证，需要明确说明是否验证了 Web 构建产物、Electron 构建以及 Release 工作流影响。
-
 - API / Schema / 认证联动改动：
-  - 适用范围：`api/**`、`src/schemas/**`、`src/services/**`、`apps/dsa-web/**`、`apps/dsa-desktop/**`
+  - 适用范围：`api/**`、`src/schemas/**`、`src/services/**`、`apps/dsa-web/**`
   - 至少覆盖对应后端验证 + 受影响客户端构建验证。
   - 若涉及登录、Cookie、会话、轮询状态、字段增删或枚举变化，必须明确写出兼容性影响。
 
@@ -189,11 +174,11 @@ gh run view <run_id> --log-failed
   - 需确认命令、配置项、文件名、工作流名称与实际仓库一致。
   - 改动 AI 协作治理资产时，执行 `python scripts/check_ai_assets.py`。
 
-- 工作流 / 脚本 / Docker 改动：
-  - 适用范围：`.github/**`、`scripts/**`、`docker/**`
+- 工作流 / 脚本改动：
+  - 适用范围：`.github/**`、`scripts/**`
   - 运行最接近改动面的本地验证。
-  - 交付时说明影响了哪条流水线、发布路径或部署路径。
-  - 若未执行 Docker / GitHub Actions 相关验证，明确说明原因与潜在风险。
+  - 交付时说明影响了哪条流水线或脚本入口。
+  - 若未执行 GitHub Actions 相关验证，明确说明原因与潜在风险。
 
 - 网络或三方依赖相关改动：
   - 先跑离线或确定性检查。
@@ -203,15 +188,15 @@ gh run view <run_id> --log-failed
 ## 7. 稳定性护栏
 
 - 配置与运行入口：
-  - 修改 `.env` 语义、默认值、CLI 参数、服务启动方式、调度语义时，要同时评估本地运行、Docker、GitHub Actions、API、Web、Desktop 的影响。
+  - 修改 `.env` 语义、默认值、CLI 参数、服务启动方式、调度语义时，要同时评估本地运行、GitHub Actions、API、Web 的影响。
   - 新配置优先做到“不配置也可运行，配置后增强能力”，避免叠加开关和互斥模式。
 
 - 数据源与 fallback：
   - 修改 `data_provider/` 时，要关注数据源优先级、失败降级、字段标准化、缓存与超时策略。
   - 单一数据源失败不应拖垮整个分析流程，除非需求明确要求 fail-fast。
 
-- API / Web / Desktop 兼容：
-  - 改 API / Schema / 认证 / 报告载荷时，要同时检查后端、Web、Desktop 的兼容性。
+- API / Web 兼容：
+  - 改 API / Schema / 认证 / 报告载荷时，要同时检查后端与 Web 的兼容性。
   - 默认优先追加字段、保留旧字段或提供兼容层，避免无提示破坏现有客户端。
 
 - 报告 / Prompt / 通知：
@@ -219,9 +204,8 @@ gh run view <run_id> --log-failed
   - 单一通知渠道失败不应拖垮整个分析主流程，除非需求明确要求 fail-fast。
   - 修改 `src/services/image_stock_extractor.py` 中 `EXTRACT_PROMPT` 时，要在 PR 描述中附完整最新 prompt。
 
-- 工作流 / 发布 / 打包：
-  - 修改自动 tag、Release、Docker 发布、日常分析或桌面端打包流程时，要评估触发条件、产物路径、权限边界和回滚方式。
-  - 自动 tag 默认保持 opt-in：只有 commit title 含 `#patch`、`#minor`、`#major` 才触发版本号更新，除非需求明确要求改变发布策略。
+- 工作流：
+  - 修改日常分析 workflow 时，要评估触发条件、产物路径、权限边界和回滚方式。
 
 ## 8. Issue / PR / Skill 工作流
 
@@ -286,6 +270,5 @@ CI 通过只能说明自动检查通过，不能替代人工语义收敛，也�
   - `风险点`
   - `回滚方式`
 - 如果是 `docs` 任务，可直接写：`Docs only, tests not run`，但仍需说明是否核对了命令和文件名。
-- 自动 tag 默认不触发，只有 commit title 包含 `#patch`、`#minor`、`#major` 才会触发版本号更新。
 - 手动打 tag 必须使用 annotated tag。
 - 用户可见变更优先通过 PR 合入，并补齐 label 与验证说明。

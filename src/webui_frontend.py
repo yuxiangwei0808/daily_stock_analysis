@@ -271,9 +271,6 @@ def _warn_if_assets_missing(artifact_index: Path, frontend_dir: Path) -> None:
             "请重新构建前端以修复此问题: %s",
             _manual_build_command(frontend_dir),
         )
-        logger.warning(
-            "Docker 用户请执行: docker-compose -f ./docker/docker-compose.yml build --no-cache"
-        )
 
 
 def prepare_webui_frontend_assets() -> bool:

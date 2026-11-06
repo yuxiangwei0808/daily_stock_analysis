@@ -103,12 +103,8 @@ This document compiles common issues encountered by users and their solutions.
    - To persist WebUI-saved config, point `ENV_FILE` at a writable data-volume file such as `/app/data/runtime.env`; do not bind-mount the host `.env` as a single file over `/app/.env`
    - Saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES` starts, stops, or rebuilds the runtime scheduler in long-running WebUI/API/Desktop processes; restarting a `--serve-only` or Desktop process restores enabled daily jobs without immediately running an analysis at startup
    - `SCHEDULE_RUN_IMMEDIATELY` and `RUN_IMMEDIATELY` remain startup/one-shot settings; saving them does not immediately trigger an analysis run
-3. **Manual `.env` edits in Docker**: Restart the container after changes
-   ```bash
-   docker-compose down && docker-compose up -d
-   ```
-4. **GitHub Actions**: `.env` file doesn't work, must configure in Secrets/Variables
-5. Check if there are multiple `.env` files (e.g., `.env.local`) causing override
+3. **GitHub Actions**: `.env` file doesn't work, must configure in Secrets/Variables
+4. Check if there are multiple `.env` files (e.g., `.env.local`) causing override
 
 ---
 
@@ -283,76 +279,6 @@ Work through the following 5 checkpoints in order:
    - Make sure port 11434 is open and Ollama binds the right address (`OLLAMA_HOST=0.0.0.0:11434`).
 
 > See [LLM Config Guide → Example 4 (Ollama)](LLM_CONFIG_GUIDE_EN.md#example-4-ollama) for a complete configuration example.
-
----
-
-## Docker Related
-
-### Q13: Docker container exits immediately after starting?
-
-**Solution**:
-1. View container logs:
-   ```bash
-   docker logs <container_id>
-   ```
-2. Common causes:
-   - Environment variables not correctly configured
-   - `.env` file format error (e.g., extra spaces)
-   - Dependency package version conflicts
-
----
-
-### Q14: API service inaccessible in Docker?
-
-**Solution**:
-1. Ensure startup command includes `--host 0.0.0.0` (cannot be 127.0.0.1)
-2. Check port mapping is correct:
-   ```yaml
-    ports:
-      - "8000:8000"
-    ```
-
----
-
-### Q14.1: Where is the software version stored when I install with Docker?
-
-**Short answer**: For Docker users, the authoritative version is **the image tag you actually deployed**, not a hardcoded constant in a Python source file.
-
-**Why**:
-1. Docker publishing is driven by `.github/workflows/docker-publish.yml`, which only publishes release images for Git tags matching `v*.*.*` (for example, `v3.12.0`).
-2. So the Docker image version follows the **GitHub Release / Git tag**, rather than a fixed value in `main.py`, `server.py`, or another backend module.
-3. The `version` field in `apps/dsa-web/package.json` is currently a placeholder `0.0.0`. The WebUI version/build card is useful for checking whether frontend assets were rebuilt, but it is not the Docker release version.
-4. The desktop app has its own version in `apps/dsa-desktop/package.json`, and that only applies to the Electron desktop build, not the Docker image.
-
-**How to check your current Docker version**:
-1. **Check the image tag in your deploy command or Compose file**. For example, in `ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0`, the deployed version is `v3.12.0`.
-2. **If you used `latest`**, check your original `docker pull`, `docker-compose.yml`, or deployment script, then compare with [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases).
-3. **If you only want to confirm the frontend was refreshed**, open WebUI → Settings and inspect `Build ID` / `Build Time`; that confirms static asset freshness, not the Docker release version.
-
-**Recommendation**: To avoid repeated updates, prefer a pinned version tag such as `v3.12.0` instead of relying on `latest`.
-
----
-
-## Desktop App
-
-### Q15: macOS says the desktop app is damaged or cannot be opened?
-
-**Cause**: The current macOS DMG is not signed and notarized with an Apple Developer certificate. After a browser download, macOS Gatekeeper may attach the quarantine attribute and block startup.
-
-**Solution**:
-
-1. Download only from the project's [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases), and select the package matching your Mac architecture. Do not bypass Gatekeeper for third-party copies or files from an untrusted source.
-2. Drag `Daily Stock Analysis` into Applications, then first try **System Settings → Privacy & Security → Open Anyway**.
-3. If it still does not start and you have verified that it came from the official project Release, remove quarantine only from this app and launch it:
-
-   ```bash
-   xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
-   open "/Applications/Daily Stock Analysis.app"
-   ```
-
-Replace the path if the app is not in `/Applications`. Never run `xattr` against the entire `/Applications` directory. This is a temporary way to allow a trusted unsigned app; it is not a substitute for signing or notarization. See the [desktop packaging guide](desktop-package.md#macos-提示应用已损坏无法打开) for the complete troubleshooting notes.
-
-> Related Issue: [#2113](https://github.com/ZhuLinsen/daily_stock_analysis/issues/2113)
 
 ---
 

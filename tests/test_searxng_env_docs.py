@@ -105,8 +105,6 @@ def test_workflow_reports_disabled_when_variable_unset() -> None:
 def test_docs_describe_public_searxng_discovery_as_opt_in() -> None:
     chinese_docs = [
         ROOT_DIR / "docs" / "full-guide.md",
-        ROOT_DIR / "docs" / "DEPLOY.md",
-        ROOT_DIR / "docs" / "docker" / "zeabur-deployment.md",
     ]
     for path in chinese_docs:
         content = path.read_text(encoding="utf-8")

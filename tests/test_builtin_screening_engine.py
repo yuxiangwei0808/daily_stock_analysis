@@ -30,11 +30,9 @@ SCREENING_ROOT = REPO_ROOT / "src" / "services" / "screening"
 
 def test_screening_engine_is_collected_from_the_internal_package() -> None:
     requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
-    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "alphasift.git" not in requirements
     assert "#egg=alphasift" not in requirements
-    assert "import src.services.screening.pipeline" in dockerfile
 
 
 def test_screening_routes_have_a_primary_prefix_and_no_install_endpoint() -> None:
