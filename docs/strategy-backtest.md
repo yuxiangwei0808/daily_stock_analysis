@@ -238,3 +238,25 @@ engine's own test) "passed" the frozen design: +0.11 T a day, t 2.5 and 3.6. The
 were both divided by T, so a stock-day whose T happened to be low got a high score and a high outcome
 alike. The outcome is now divided by T2, the median session range of the sessions 11 to 20 before, which
 shares no session with T. A day needs 20 prior sessions. Nothing else changes.
+
+### Findings (run of 2026-11-06; 49 stocks and ETFs, 2020-11 → 2026-11, period B from 2023-11)
+
+`reports/backtests/in_play_2026-11-06.md`. Verdict: **pass as a range selector**. It says which stocks
+will move more today, not which way, so it chooses what to watch and is not a trade rule.
+
+| | Period A (734 days) | Period B (753 days) |
+|---|---|---|
+| Top 5 by S: rest-of-day range minus the other stocks', in T | +0.175 (t 15.2) | +0.399 (t 8.3) |
+| Days the top 5 moved more | 74 % | 82 % |
+| Week clusters instead of days | t 12.9 | t 5.4 |
+| Random walks from each stock's own shuffled bars | +0.005 (t 0.5) | +0.022 (t 1.7) |
+
+- A typical stock's rest-of-day range is 0.87 T, so the picks moved about 20 % more than the others in
+  period A and about 45 % more in period B.
+- With the scores shuffled among each day's stocks (200 times) the edge is +0.001 (sd 0.022).
+- Secondary checks, all in the same direction: top 3 +0.23 / +0.52; the gap alone +0.14 / +0.31; the
+  first bar's range alone +0.13 / +0.35; S times the volume ratio +0.20 / +0.36; up gaps +0.13 / +0.25;
+  down gaps +0.13 / +0.27 (t 4.6 or more everywhere).
+- Not tested: whether trading the picks pays (direction, entries, options costs), a universe beyond these
+  49 names, and pre-market volume, which these bars don't have.
+

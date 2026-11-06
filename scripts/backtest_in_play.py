@@ -40,15 +40,16 @@ def main():
     parser.add_argument("--cache", default="reports/backtests/bars_15m")
     parser.add_argument("--out", default="reports/backtests")
     args = parser.parse_args()
-    paths = sorted(Path(args.cache).glob("*.csv"))
+    paths = sorted(Path(args.cache).glob("*.csv*"))  # the box test caches CSV.gz
     if not paths:
         raise SystemExit(f"No cached bars in {args.cache}: run scripts/backtest_boxes.py first")
     rng = np.random.default_rng(ip.SEED)
     tables, walks = {}, {}
     for path in paths:
         bars = load(path, args.start, args.end)
-        tables[path.stem] = ip.features(bars)
-        walks[path.stem] = ip.features(ip.random_walk(bars, rng))
+        name = path.name.split(".")[0]
+        tables[name] = ip.features(bars)
+        walks[name] = ip.features(ip.random_walk(bars, rng))
     main_edges = ip.daily_edges(tables)
     result = {"frozen": "2026-11-06", "stocks": len(paths), "start": args.start, "split": args.split, "end": args.end,
               "main": ip.summary(main_edges, args.split), "weeks": ip.summary(main_edges, args.split, weeks=True)}

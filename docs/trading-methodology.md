@@ -200,6 +200,7 @@ a test fails when these tables and the register differ. Change a verdict there, 
 | Video box trades: fade at a fresh box | Same, 6,515 trades | No edge shown: −0.07 / +0.01 R, 0.03 R worse than random timing (t −1.8 / −0.9) | Same; `scripts/backtest_boxes.py` |
 | Video boxes confirmed by a weekly value-area edge | Same trades; VAH/VAL of the 2 prior weeks within the box | No edge shown in all 8 variants: about half of all boxes line up by chance, and those did no better | Same |
 | Tidier boxes (small, no drift) | Same, with and without the value-area filter | No edge shown at 1.0 T; rejected at 0.6 T (loses in both periods) | Same |
+| In play at 09:45: gap plus first 15-minute range over the normal, top 5 | moomoo 15-min, 49 stocks, 2020-11 → 2026-11, same-date twins, 1,487 days | Pass as a range selector, not a trade rule: the picks' rest-of-day range was +0.18 / +0.40 T above the other stocks' (t 15.2 / 8.3); random walks +0.01 / +0.02 | [strategy-backtest.md](strategy-backtest.md) |
 
 Tracked forward or shown, without a verdict here (the scoreboard grades the forward sources):
 

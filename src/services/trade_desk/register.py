@@ -56,6 +56,10 @@ IDEAS: Tuple[Idea, ...] = (
          "No edge shown in all 8 variants: about half of all boxes line up by chance, and those did no better", "Same"),
     Idea("box_tidy", "Tidier boxes (small, no drift)", "Same, with and without the value-area filter", NO_EDGE,
          "No edge shown at 1.0 T; rejected at 0.6 T (loses in both periods)", "Same"),
+    Idea("in_play_range", "In play at 09:45: gap plus first 15-minute range over the normal, top 5",
+         "moomoo 15-min, 49 stocks, 2020-11 → 2026-11, same-date twins, 1,487 days", PASS,
+         "Pass as a range selector, not a trade rule: the picks' rest-of-day range was +0.18 / +0.40 T above "
+         "the other stocks' (t 15.2 / 8.3); random walks +0.01 / +0.02", BACKTEST_DOC),
     # Shown or tracked, without a verdict here.
     Idea("report_calls", "Stock report calls (buy, watch, sell)", "Forward from each day's first report", FORWARD,
          "Tracked forward against the rest of the watchlist", "Journal tab, What's working"),
