@@ -507,7 +507,7 @@ describe('TradeDeskPage', () => {
     renderPage('/trade-desk?view=ask');
     const tab = await screen.findByRole('tab', { name: /Ask about a stock|问问股票/ });
     expect(tab).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getAllByRole('tab')).toHaveLength(3);  // plan monitoring (Positions) was removed
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['问问股票', '券商持仓', '图表', '日志']);  // plan monitoring (Positions) was removed
     // Unfolded although there is history (the sidebar's "Ask" links here).
     expect(await screen.findByLabelText(/Ticker|股票代码/)).toBeInTheDocument();
   });

@@ -767,3 +767,86 @@ export interface TradeJournal {
   /** Sales of positions held without a matching fill (bought before the history, or assigned): not counted. */
   unmatchedCloses?: number;
 }
+
+/** The chart tab (GET /chart/{ticker}): moomoo bars with the backtested boxes, levels and flags. */
+export type ChartInterval = '1m' | '5m' | '15m' | '1d';
+
+export interface ChartBar {
+  /** The bar's end, as moomoo stamps it (a daily bar: its date). */
+  time: string;
+  start: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  /** Still forming: boxes and flags never use it. */
+  partial: boolean;
+}
+
+export interface ChartBox {
+  /** The impulse bar's end time; flags name their setup by it. */
+  setup: string;
+  box: 'range' | 'base';
+  bottom: number;
+  top: number;
+  wickBottom: number;
+  wickTop: number;
+  up: boolean;
+  from: string;
+  to: string;
+  /** The end of the setup's last session. */
+  until: string;
+  alive: boolean;
+}
+
+export interface ChartGrade {
+  verdict: string;
+  /** Month-clustered t against the same trades at random times, periods A and B. */
+  t: number[];
+  label: string;
+  source: string;
+}
+
+export type ChartFlagState = 'armed' | 'watching' | 'open' | 'closed';
+
+export interface ChartFlag {
+  kind: 'break_retest' | 'fade';
+  setup: string;
+  box: 'range' | 'base';
+  direction: 'long' | 'short';
+  price: number;
+  stop: number;
+  target: number;
+  rewardRisk: number | null;
+  grade: ChartGrade;
+  state: ChartFlagState;
+  /** The entry bar's end (open and closed trades). */
+  time: string | null;
+  /** ``r`` is the R after cost: at the exit when closed, at the last close while open. */
+  result: { how: string | null; r: number; exit: number | null; exitTime: string | null } | null;
+}
+
+export interface ChartLevel {
+  kind: 'val' | 'vah' | 'prior_high' | 'prior_low' | 'prior_close' | 'stop' | 'target' | 'alert' | string;
+  price: number;
+  label: string;
+  positionKey?: string;
+  ruleId?: string;
+}
+
+export interface ChartSnapshot {
+  ticker: string;
+  interval: ChartInterval;
+  asOf: string;
+  params: { impulseT: number; tidy: boolean };
+  bars: ChartBar[];
+  /** NX tunnel lines per bar (keys a, b, a1, b1); null before 250 bars. */
+  nx: Record<string, Array<number | null>>;
+  note: string;
+  warnings: string[];
+  boxes: ChartBox[];
+  flags: ChartFlag[];
+  levels: ChartLevel[];
+  typicalRange: { t: number; impulse: number; barsThrough: string } | null;
+}

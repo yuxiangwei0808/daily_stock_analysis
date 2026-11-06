@@ -829,6 +829,29 @@ pause custom P&L rules as well as default profit/loss alerts. Discord names the 
 risk line leaves out, and says the estimate is unavailable when nothing could be priced; an
 unpriced holding is never reported as zero.
 
+## Chart
+
+The **Chart** tab (`/trade-desk?view=chart&ticker=SPY`) shows a stock with what the system
+sees, so you can read it and decide yourself. DSA never places, changes or cancels an order.
+
+- **Pick a stock**: type a ticker, or pick one of your holdings, your watchlist or a recent
+  trade idea.
+- **Bars**: up to 1,000 moomoo bars at 1, 5 or 15 minutes, or daily, in New York time, with
+  volume and the NX tunnel lines (A/B over 26 bars, A1/B1 over 89).
+- **Boxes**: each setup's range box (blue) and base box (purple), from the backtested rules.
+  A box still in play is drawn solid with dashed edges to the right; an expired one is dashed.
+  On daily bars the boxes are hidden, since they come from 15-minute bars.
+- **Lines**: the value-area low and high of the last two weeks (VAL/VAH −1w, −2w), the prior
+  day's high, low and close (PDH, PDL, PDC), and for a stock you hold, its plan stop and target
+  and your price alerts. The side panel lists them with their distance from the last price.
+- **Flags**: *armed* (a limit the next 15-minute bar fills), *watching* (a break waiting for a
+  retest), *open* and the window's *finished* trades with their R. Selecting a flag draws its
+  entry, stop and target. Every flag shows its backtest grade: none has beaten the same trades
+  at random times, so they are context, not suggestions.
+- **Box rules**: the four backtested variants (impulse 1 or 0.6 T, normal or tidy boxes).
+
+The chart refreshes every minute while the tab is visible.
+
 ## Your trades (journal from moomoo fills)
 
 The Journal tab's **Your trades** card reads a year of your filled trades from moomoo

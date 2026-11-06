@@ -1,7 +1,7 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: phases 1 and 2 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`);
-later phases not built.
+Status: phases 1 to 3 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
+the Chart tab); later phases not built.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
@@ -69,12 +69,15 @@ Each phase ships on its own with tests. Phase 0 is a precondition.
      about a second, so the read is repeated for up to three seconds. Checked on OpenD on
      2026-11-05: 1,000 bars at every interval in 1.3–2.2 s, regular session only.
    - Same login as the other Trade Desk routes. Tests use a fake provider.
-3. **Chart tab on the Trade Desk page.**
-   - KLineChart with candles and volume, and a picker for any stock or for your holdings,
+3. **Chart tab on the Trade Desk page** (done, `ChartPanel.tsx`, `chartOverlays.ts`).
+   - KLineChart with candles, volume and NX, and a picker for any stock or for your holdings,
      watchlist and trade ideas.
-   - The overlays: a labelled box drawing and a labelled level line.
-   - A side panel lists the flags with their grades.
-   - Checked with a scratch web build and screenshots before anything is built into `static/`.
+   - The overlays: a labelled box, a labelled level line with its price on the axis, and a
+     mark for each trade taken. Short labels on the chart; the side panel lists full names.
+   - A side panel lists the flags with their grades; selecting one draws its entry, stop and
+     target. It refreshes every minute until phase 4 streams.
+   - Checked with a scratch web build and screenshots on real SPY bars, light and dark, desktop
+     and phone width, before anything is built into `static/`.
 4. **Live updates.**
    - Subscribe quote, 1-minute and 15-minute bar push for open charts only. Each moomoo
      subscription counts against the account's limit, so cap open charts at about 5 and

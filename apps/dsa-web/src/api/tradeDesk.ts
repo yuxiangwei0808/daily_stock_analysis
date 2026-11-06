@@ -24,6 +24,8 @@ import type {
   PortfolioRisk,
   TradeJournal,
   ShadowExits,
+  ChartInterval,
+  ChartSnapshot,
   SystemStatus,
   TradePreferences,
   TradePreferencesUpdate,
@@ -379,6 +381,12 @@ export const tradeDeskApi = {
 
   async deleteHoldingRule(ruleId: string): Promise<void> {
     await apiClient.delete(`${BASE_PATH}/holdings/rules/${encodeURIComponent(ruleId)}`);
+  },
+
+  async getChart(ticker: string, interval: ChartInterval, impulse = 1.0, tidy = false): Promise<ChartSnapshot> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/chart/${encodeURIComponent(ticker.trim().toUpperCase())}`,
+      { params: { interval, impulse, tidy }, timeout: 30000 });
+    return toCamelCase<ChartSnapshot>(response.data);
   },
 
   getEventsUrl(after?: string): string {
