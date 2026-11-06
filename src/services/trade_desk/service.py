@@ -190,6 +190,8 @@ class TradeDeskService:
         self.holdings = Holdings(self)
         from .chart import Charts
         self.charts = Charts(self)  # its own moomoo connection, opened on the first chart
+        from .assistant import Assistant
+        self.assistant = Assistant(self, self.charts)  # the trading assistant; runs only after Start
 
     def provider(self, mode):
         with self._lock:
@@ -920,6 +922,7 @@ class TradeDeskService:
             for cancel, _ in self._jobs.values():
                 cancel.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self.assistant.close()
         self.charts.close()
         for provider in self.providers.values():
             provider.close()

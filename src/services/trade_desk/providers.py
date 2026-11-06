@@ -2131,13 +2131,15 @@ class MoomooProvider:
         if hasattr(sdk, "logger"):
             sdk.logger.file_level = logging.INFO
 
-    def nearest_chain(self, code: str) -> tuple[Optional[date], list[dict[str, Any]]]:
-        """The nearest expiry on or after today and its standard contracts (``code``, ``right``, ``strike``).
+    def nearest_chain(self, code: str, min_days: int = 0) -> tuple[Optional[date], list[dict[str, Any]]]:
+        """The nearest expiry at least ``min_days`` after today and its standard contracts (``code``, ``right``, ``strike``).
 
         Two rate-limited requests (expiry dates, then that expiry's chain); no subscription.
         """
         with self._lock:
-            upcoming = self._upcoming_expiries(code, self._now())
+            now = self._now()
+            first = now.astimezone(US_EASTERN).date() + timedelta(days=min_days)
+            upcoming = [day for day in self._upcoming_expiries(code, now) if day >= first]
             if not upcoming:
                 return None, []
             contracts = self._fetch_chain(code, upcoming[0])

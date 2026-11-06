@@ -10,6 +10,7 @@ import { NX_INDICATOR, PERIODS, alpha, flagTitle, nxByTime, nyTime, overlaysFor,
 import type { ChartColors } from './chartOverlays';
 import { errorMessage, formatDate } from './deskFormat';
 import { GradesCard, YoursCard } from './ChartYours';
+import { AssistantPanel } from './AssistantPanel';
 import { StopRiskCard } from './StopRiskCard';
 
 const INTERVALS: ChartInterval[] = ['1m', '5m', '15m', '1d'];
@@ -307,6 +308,7 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
           ))}
         </div>
       </Card>
+      <AssistantPanel current={ticker} onShow={show} />
       {error ? <InlineAlert variant="danger" message={error} /> : null}
       {!ticker ? <Card variant="bordered" padding="md"><EmptyState icon={<CandlestickChart className="h-8 w-8" />} title="Pick a stock"
         description="Type a ticker or pick one from your holdings, watchlist or trade ideas. The chart shows the system's boxes, value areas, prior-day levels, your stops and alerts, and NX." /></Card> : null}

@@ -963,3 +963,85 @@ export interface RecentIdeas {
   rules: Record<'idea' | 'breakout', IdeaRule[]>;
   discord: Record<'idea' | 'breakout', boolean>;
 }
+
+export type AssistantHorizon = '0dte' | 'intraday' | 'swing';
+
+export interface AssistantLevel {
+  id: string;
+  kind: string;
+  label: string;
+  price: number;
+  distancePct: number | null;
+  verdict: string | null;
+  verdictLabel: string;
+}
+
+export interface AssistantContract {
+  code: string;
+  right: 'call' | 'put';
+  strike: number;
+  expiry: string | null;
+  bid: number | null;
+  ask: number | null;
+  mid: number | null;
+  spreadPct: number | null;
+  iv: number | null;
+  delta: number | null;
+  volume: number | null;
+  openInterest: number | null;
+  breakeven?: number;
+  breakevenMovePct?: number | null;
+  minutesLeft: number | null;
+  thetaPerMin?: number;
+  atLevels?: Array<{ id: string; label: string; price: number; now: number; in30m: number }>;
+}
+
+export interface AssistantPosition {
+  key: string;
+  ticker: string;
+  type: 'stock' | 'option';
+  label: string;
+  pnlPct?: number | null;
+  weightPct?: number | null;
+  daysLeft?: number | null;
+  stop?: number | null;
+  target?: number | null;
+  source: string;
+}
+
+export interface AssistantEvent {
+  seq: number;
+  at: string;
+  ticker: string | null;
+  kind: string;
+  title: string;
+  detail: string;
+}
+
+export interface AssistantTicker {
+  ticker: string;
+  price: number | null;
+  priceAt: string | null;
+  changePct: number | null;
+  quoteAgeS: number | null;
+  levels: AssistantLevel[];
+  flags: Array<{ kind: string; box: string; direction: string; state: string; price: number; stop: number; target: number; grade: string }>;
+  contracts: { expiry: string | null; rows: AssistantContract[]; asOf: string | null; error: string | null };
+  positions: AssistantPosition[];
+  loaded: boolean;
+  error: string | null;
+}
+
+export interface AssistantState {
+  running: boolean;
+  horizon: AssistantHorizon | null;
+  horizons: Record<AssistantHorizon, string>;
+  startedAt: string | null;
+  stopped: { at: string; reason: string } | null;
+  maxTickers: number;
+  tickers: AssistantTicker[];
+  events: AssistantEvent[];
+  seq: number;
+  note: string;
+}
+

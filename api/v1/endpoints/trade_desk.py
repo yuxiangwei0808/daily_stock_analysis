@@ -578,6 +578,50 @@ async def chart_stream(ticker: str, request: Request, interval: Literal["1m", "5
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class AssistantStart(Model):
+    tickers: list[str] = Field(min_length=1, max_length=3)
+    horizon: Literal["0dte", "intraday", "swing"] = "0dte"
+
+
+@router.get("/assistant")
+async def assistant_state(request: Request):
+    """The trading assistant's session: each stock's levels, contracts, positions and the alerts so far."""
+    return await invoke(get_service(request).assistant.state)
+
+
+@router.post("/assistant/start")
+async def assistant_start(body: AssistantStart, request: Request):
+    """Starts watching one to three stocks; another session running is stopped first. Read only."""
+    return await invoke(get_service(request).assistant.start, body.tickers, body.horizon)
+
+
+@router.post("/assistant/stop")
+async def assistant_stop(request: Request):
+    return await invoke(get_service(request).assistant.stop, "stopped from the page")
+
+
+@router.get("/assistant/stream")
+async def assistant_stream(request: Request):
+    """Server-sent events: ``alert`` as each happens, ``state`` once a second while a session runs."""
+    stream = get_service(request).assistant.stream()
+
+    async def events():
+        quiet = 0.0
+        yield "event: ready\ndata: {}\n\n"
+        while not await request.is_disconnected():
+            for name, data in await asyncio.to_thread(stream.poll):
+                yield f"event: {name}\ndata: {json.dumps(data, allow_nan=False, default=str)}\n\n"
+                quiet = 0.0
+            quiet += STREAM_POLL_SECONDS
+            if quiet >= 15:
+                yield ": heartbeat\n\n"
+                quiet = 0.0
+            await asyncio.sleep(STREAM_POLL_SECONDS)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.get("/events")
 async def events(request: Request, after: Optional[int] = Query(default=None, ge=0)):
     try:

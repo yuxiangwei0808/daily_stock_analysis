@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 交易助手（图表页「Trading assistant」，`/api/v1/trade-desk/assistant`）：点击 Start 后实时盯 1–3 只股票（0DTE/日内/波段），显示当日价位（前日高低收、两周价值区、盘前高低、开盘区间、VWAP、你的止损/目标/提醒，各带检验结论）、现价附近期权合约（买卖价、价差、隐含波动率、Delta、到期盈亏平衡所需涨跌、每分钟时间损耗、到各价位的估值）与你在这些股票上的持仓；价位突破、箱体信号、持仓变动、盈亏档位与 0DTE 收盘前提醒以声音和浏览器通知显示在页面上；不发 Discord，不下单；状态页新增「Trading assistant」
 - [改进] 交易想法遵循交易方法论（第 8 阶段）：趋势扫描想法、期权跟进与突破提醒只有在其依据的规则全部通过检验后才发送到 Discord；在此之前只在 Trade Desk「Ask」页的「Trade ideas」卡片显示（`GET /api/v1/trade-desk/ideas`），标注规则结论并照常前瞻跟踪。目前没有规则通过，因此 Discord 暂不再收到交易想法
 - [改进] 想法登记表 `trade_desk/register.py` 统一保存每条规则的检验结论；`docs/trading-methodology.md` 的登记表由它生成（测试校验一致），图表信号评级也改读该表；方法论新增选股（第 13 节）、日内与 0DTE 期权（第 14 节）以及看板/Discord/助手可显示内容（第 15 节）
 - [新功能] 0DTE 期权报价记录（`OPTION_RECORDER_ENABLED=true`，默认关闭）：交易日开盘前读取最近到期日期权链，开盘至收盘后 15 分钟每 15 秒记录标的与离现价最近 24 个行权价的看涨/看跌报价、隐含波动率与希腊值，写入 `option_quotes/<日期>/<代码>.csv.gz`，供日后检验 0DTE 规则；只读，不订阅、不下单；状态页新增「0DTE quote recorder」

@@ -1,7 +1,8 @@
 # Plan: real-time trading assistant
 
-Status: phases 0 and 1 built on 2026-11-06 (the register and strict trade ideas; the 0DTE quote
-recorder, on with `OPTION_RECORDER_ENABLED=true`). Phases 2 to 6 not started. It builds on the Chart tab
+Status: phases 0, 1 and 2 built on 2026-11-06 (the register and strict trade ideas; the 0DTE quote
+recorder, on with `OPTION_RECORDER_ENABLED=true`; the session engine, contract panel and dashboard
+alerts in the Chart tab, see [trade-desk.md](trade-desk.md#trading-assistant)). Phases 3 to 6 next. It builds on the Chart tab
 ([live-chart-plan.md](live-chart-plan.md)) and follows
 [trading-methodology.md](trading-methodology.md), which is the main source for how we trade and how
 we find stocks.

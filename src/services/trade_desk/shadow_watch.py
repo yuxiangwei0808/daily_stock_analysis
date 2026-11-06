@@ -363,6 +363,18 @@ class ShadowWatch:
                 "pass_ms": shadow_exits.spread(pass_ms),
                 **(feed.status(now) if feed is not None else {})}
 
+    def live_view(self, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+        """The positions as the live feed last read them (every 15 s, at once after a fill), priced on its quotes.
+
+        None outside the session or before the feed's first read; the trading assistant then uses the last sync."""
+        now = now or utcnow()
+        feed = self._feed
+        raw = feed.raw() if feed is not None else None
+        if raw is None or not self._in_session(now):
+            return None
+        opening, _ = self._session(now)
+        return build_view(raw, feed.quotes(now, opening), _local(now).date(), now=now)
+
     def health(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         now = now or utcnow()
         state = self.status(now)

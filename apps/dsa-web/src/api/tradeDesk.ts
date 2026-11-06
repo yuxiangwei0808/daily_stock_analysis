@@ -8,6 +8,8 @@ import type {
   HoldingRuleInput,
   HoldingsResponse,
   PortfolioSummary,
+  AssistantHorizon,
+  AssistantState,
   RecentIdeas,
   TrackRecord,
   PaperFillRequest,
@@ -424,6 +426,30 @@ export const tradeDeskApi = {
   },
 
   /** Server-sent events for an open chart: ``bar``, ``quote``, ``closed`` (reload the snapshot) and ``evicted``. */
+  async getAssistant(): Promise<AssistantState> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/assistant`);
+    return toCamelCase<AssistantState>(response.data);
+  },
+
+  async startAssistant(tickers: string[], horizon: AssistantHorizon): Promise<AssistantState> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/start`, { tickers, horizon }, { timeout: 60000 });
+    return toCamelCase<AssistantState>(response.data);
+  },
+
+  async stopAssistant(): Promise<AssistantState> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/stop`, undefined, { timeout: 30000 });
+    return toCamelCase<AssistantState>(response.data);
+  },
+
+  getAssistantStreamUrl(): string {
+    return `${API_BASE_URL}${BASE_PATH}/assistant/stream`;
+  },
+
+  /** A stream event's JSON, in the same shape as the API's responses. */
+  readAssistant<T>(raw: unknown): T {
+    return toCamelCase<T>(raw);
+  },
+
   getChartStreamUrl(ticker: string, interval: ChartInterval): string {
     return `${API_BASE_URL}${BASE_PATH}/chart/${encodeURIComponent(ticker.trim().toUpperCase())}/stream?interval=${interval}`;
   },

@@ -276,6 +276,18 @@ class Charts:
             self._grading = threading.Thread(target=run, name="chart-grades", daemon=True)
             self._grading.start()
 
+    def pushed_bar(self, code: str, kind: str) -> Optional[Dict[str, Any]]:
+        """The latest pushed bar of ``kind`` (``K_1M`` ..) for ``code``, with its ``seq``; None before the first push."""
+        with self._lock:
+            bar = self._bars.get((code, kind))
+            return dict(bar) if bar else None
+
+    def pushed_quote(self, code: str) -> Optional[Dict[str, Any]]:
+        """The last pushed trade for ``code``: ``price``, ``at`` (exchange time), ``received`` and ``seq``."""
+        with self._lock:
+            quote = self._quotes.get(code)
+            return dict(quote) if quote else None
+
     def stream(self, ticker: str, interval: str = "15m") -> "ChartStream":
         """Subscribes the quote and the bars with push and returns what the page's stream reads."""
         ticker = _validate(ticker, interval)

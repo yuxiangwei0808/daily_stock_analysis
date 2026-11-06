@@ -63,6 +63,13 @@ IDEAS: Tuple[Idea, ...] = (
          "Tracked forward against same-day stocks", "Journal tab, What's working"),
     Idea("prior_day_levels", "Prior day high, low and close", "Shown on the chart", NOT_TESTED,
          "Not tested as levels on their own", "[trade-desk.md](trade-desk.md#chart)"),
+    Idea("value_area_levels", "Value-area high and low of the two prior weeks", "Shown on the chart", NOT_TESTED,
+         "Not tested as levels on their own (only as a box filter, above)", "[trade-desk.md](trade-desk.md#chart)"),
+    Idea("premarket_levels", "Pre-market high and low", "Shown by the trading assistant", NOT_TESTED,
+         "Not tested", "[trading-assistant-plan.md](trading-assistant-plan.md)"),
+    Idea("opening_range", "Opening range (first 5 and 15 minutes)", "Shown by the trading assistant", NOT_TESTED,
+         "Not tested here (the 60-day same-day test of ORB showed no edge, above)", "Same"),
+    Idea("vwap", "VWAP from 1-minute bars", "Shown by the trading assistant", NOT_TESTED, "Not tested", "Same"),
 )
 _BY_ID: Dict[str, Idea] = {idea.id: idea for idea in IDEAS}
 

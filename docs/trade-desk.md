@@ -900,6 +900,40 @@ once; a sixth pauses the oldest, which then refreshes every minute. A closed pag
 subscriptions are released after 10 minutes. The Status page's "Chart live bars" line shows the
 open charts, pushes, quote delay and the time spent per push.
 
+## Trading assistant
+
+The Chart tab's **Trading assistant** card (`trade_desk/assistant.py`, `GET /assistant`,
+`POST /assistant/start` and `/assistant/stop`, server-sent events at `GET /assistant/stream`; plan in
+[trading-assistant-plan.md](trading-assistant-plan.md)). Nothing runs until you press **Start** on one
+to three stocks with a horizon (0DTE options, intraday or swing); **Stop**, or 15 minutes after the
+close, ends it (a session started after the close runs until you stop it). Read only: nothing is sent
+to moomoo, and its alerts go to this page only, never to Discord.
+
+- **Levels** for each stock, with the price's distance and the register verdict of each
+  ([trading-methodology.md](trading-methodology.md) §11; none has passed): the chart's prior-day high,
+  low and close and the two prior weeks' value areas, your plan stops and targets and price alerts, the
+  pre-market high and low (from moomoo's snapshot at the start), the 5- and 15-minute opening range
+  and VWAP from today's 1-minute bars, kept up to date from pushes.
+- **Contracts:** calls and puts of the 10 strikes nearest the price, for the nearest expiry (0DTE and
+  intraday) or the first one at least 14 days out (swing), quoted every 5 seconds: bid and ask, the
+  spread as % of mid, implied volatility, delta, the move the stock needs to break even at expiry, the
+  value lost to time each minute, and what the contract would be worth if the stock reached the nearest
+  level above and below or your stop or target, now and in 30 minutes. Those values are Black-Scholes
+  estimates at the contract's quoted implied volatility, not quotes; it never picks a contract.
+- **Your positions** on the stocks: P&L on cost, weight in the account, plan stop and target, days to
+  expiry. They come from shadow mode's live feed (read every 15 seconds, at once after a fill) while it
+  runs, otherwise from the last holdings sync, and the card says which.
+- **Box flags** that are armed, watching or open, reloaded at every 15-minute close, with their grades.
+- **Alerts**, each once, with a sound and a browser notification once allowed (**Allow notifications**):
+  the price crossing a level (each level and direction at most every 15 minutes; the first trade after
+  the start only sets the side), a box flag becoming armed, watching or filled, a position appearing or
+  closing, its P&L on cost crossing a step (10 % for options, 2 % for stock), and 30 and 15 minutes before
+  the close while you hold a contract expiring today.
+- **How:** a check thread reads only memory every 0.25 s (the chart service's pushed trades and 1- and
+  15-minute bars, on its own moomoo connection); an io thread loads each chart at the start and after
+  each 15-minute close, today's 1-minute bars, the chain once, the contract quotes and the positions.
+  The Status page shows it as "Trading assistant". Your server restart ends a session.
+
 ## 0DTE quote recorder
 
 With `OPTION_RECORDER_ENABLED=true` the server holding the monitor lease records option quotes for
@@ -1051,6 +1085,9 @@ and `kept` (id → reason). `POST
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.
 `GET /holdings`, `POST /holdings/refresh` and the `/holdings/rules` routes serve
 the read-only broker holdings and your alerts (409 when no account is set).
+`GET /assistant`, `POST /assistant/start` (`{"tickers": [..], "horizon": "0dte|intraday|swing"}`, one to three
+US stocks; another session is stopped first), `POST /assistant/stop` and the event stream `GET /assistant/stream`
+(`state` once a second while a session runs, `alert` as each happens) serve the trading assistant.
 `GET /ideas?days=7` (1–30) lists the trend scan's reviewed ideas and the breakout alerts, newest first,
 with the register verdicts of the rules each kind rests on and whether it may reach Discord.
 `GET /chart/{ticker}?interval=15m` (also `1m`, `5m`, `1d`; `impulse=1.0|0.6`, `tidy=true|false`)

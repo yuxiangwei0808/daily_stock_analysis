@@ -208,6 +208,10 @@ Tracked forward or shown, without a verdict here (the scoreboard grades the forw
 | Stock report calls (buy, watch, sell) | Forward from each day's first report | Tracked forward against the rest of the watchlist | Journal tab, What's working |
 | Social scan and YouTube picks | Forward, 5/10/20 sessions | Tracked forward against same-day stocks | Journal tab, What's working |
 | Prior day high, low and close | Shown on the chart | Not tested as levels on their own | [trade-desk.md](trade-desk.md#chart) |
+| Value-area high and low of the two prior weeks | Shown on the chart | Not tested as levels on their own (only as a box filter, above) | [trade-desk.md](trade-desk.md#chart) |
+| Pre-market high and low | Shown by the trading assistant | Not tested | [trading-assistant-plan.md](trading-assistant-plan.md) |
+| Opening range (first 5 and 15 minutes) | Shown by the trading assistant | Not tested here (the 60-day same-day test of ORB showed no edge, above) | Same |
+| VWAP from 1-minute bars | Shown by the trading assistant | Not tested | Same |
 <!-- register:end -->
 
 ## 12. Don't
