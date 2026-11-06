@@ -24,8 +24,10 @@ import type {
   PortfolioRisk,
   TradeJournal,
   ShadowExits,
+  ChartGradeTable,
   ChartInterval,
   ChartSnapshot,
+  ChartYours,
   SystemStatus,
   TradePreferences,
   TradePreferencesUpdate,
@@ -387,6 +389,26 @@ export const tradeDeskApi = {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/chart/${encodeURIComponent(ticker.trim().toUpperCase())}`,
       { params: { interval, impulse, tidy }, timeout: 30000 });
     return toCamelCase<ChartSnapshot>(response.data);
+  },
+
+  async getChartGrades(): Promise<ChartGradeTable> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/chart-grades`);
+    return toCamelCase<ChartGradeTable>(response.data);
+  },
+
+  /** Records "I'd go long / short here" for grading; nothing is sent to moomoo. */
+  async addChartMark(ticker: string, mark: { direction: 'long' | 'short'; stop: number; target: number; note?: string }): Promise<ChartYours> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/chart/${encodeURIComponent(ticker)}/marks`, mark);
+    return toCamelCase<ChartYours>(response.data);
+  },
+
+  async addChartBox(ticker: string, box: { top: number; bottom: number; note?: string }): Promise<ChartYours> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/chart/${encodeURIComponent(ticker)}/boxes`, box);
+    return toCamelCase<ChartYours>(response.data);
+  },
+
+  async deleteChartYours(id: string): Promise<void> {
+    await apiClient.delete(`${BASE_PATH}/chart-yours/${encodeURIComponent(id)}`);
   },
 
   /** Server-sent events for an open chart: ``bar``, ``quote``, ``closed`` (reload the snapshot) and ``evicted``. */

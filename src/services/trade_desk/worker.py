@@ -274,7 +274,8 @@ class TradeDeskWorker:
                  ("youtube", self._youtube, lambda: self._youtube.tick(now)),
                  ("social", self._social, lambda: self._social.tick(now)),
                  ("breakouts", self._breakouts, lambda: self._breakouts.tick(now, session, quotes=quotes, shared=True)),
-                 ("opportunities", self._opportunities, lambda: self._opportunities.tick(regular_session))]
+                 ("opportunities", self._opportunities, lambda: self._opportunities.tick(regular_session)),
+                 ("chart_grades", getattr(self.service, "charts", None), lambda: self.service.charts.grade_due(now))]
         for name, part, call in parts:
             if part is None:
                 continue

@@ -1,7 +1,7 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: phases 1 to 4 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
-the Chart tab, live updates); later phases not built.
+Status: phases 1 to 5 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
+the Chart tab, live updates, forward grades); later phases not built.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
@@ -91,15 +91,22 @@ Each phase ships on its own with tests. Phase 0 is a precondition.
    - The Status page's "Chart live bars" line shows pushes, quote delay (arrival minus exchange
      time) and handler time. Checked on OpenD after the close on 2026-11-05: quote pushes reach
      the stream at 0.05 ms each. Bar pushes and the delay need a market-hours check.
-5. **Flags, your marks, and grading.**
-   - Each flag (box retest, fade at a box) is stored with entry, stop, target and direction
-     when it triggers.
-   - You can mark "I'd go long / short here" with your own stop and target, or keep a box you
-     drew.
+5. **Flags, your marks, and grading** (done, `chart_grades.py`, table `trade_desk_chart_trades`).
+   - A flag is stored when the chart first shows it (armed or watching) and counts only if that
+     was before its entry bar started; it is then followed to its exit. One seen during its
+     entry bar is "late", one never shown before it traded is not recorded.
+   - You can mark "I'd go long / short here" with your own stop and target (it enters at the next
+     15-minute bar's open), or draw a box and keep it (traded by the system's fade rule).
    - Grading:
-     - The backtest's exit rules, against limit-entry twins at random times.
-     - One table per source: system flags by kind, and your marks.
-     - A verdict after 30 finished trades, using the month-clustered t at its critical value.
+     - The backtest's exit rules, against twins with the same entry mechanics at random times
+       (limit twins for flags and boxes, open-of-bar twins for marks), computed once their own
+       five sessions are over.
+     - One row per source: system flags by kind, your marks, your boxes.
+     - A verdict after 30 graded trades, using the month-clustered t at its critical value and a
+       positive mean R.
+   - Records move on every chart read and once a day after 16:20 New York (up to 30 stocks).
+   - The twin refactor left the backtest unchanged: rerun on the 49 cached stocks, identical
+     to the 2026-11-05 reproduction including the shuffled-data control.
 6. **Risk panel.** Loss at each stop as a percentage of the account, the total if every stop is
    hit, and a gap scenario. Percentages only.
 7. **moomoo add-on.**

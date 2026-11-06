@@ -46,6 +46,16 @@ class TrackedIdeaRecord(Base):
     created_at = Column(String(40), nullable=False, index=True)
 
 
+class ChartTradeRecord(Base):
+    """A chart flag seen in time, or a mark or box of yours, followed to its exit and graded (chart_grades.py)."""
+    __tablename__ = "trade_desk_chart_trades"
+    id = Column(String(160), primary_key=True)
+    ticker = Column(String(16), nullable=False, index=True)
+    status = Column(String(16), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    created_at = Column(String(40), nullable=False, index=True)
+
+
 class FillRecord(Base):
     __tablename__ = "trade_desk_fills"
     id = Column(String(64), primary_key=True)
@@ -424,6 +434,40 @@ class TradeDeskRepository:
                 row = session.get(TrackedIdeaRecord, record_id)
                 if row is not None:
                     row.payload = encoded(payload)
+
+    def chart_trades(self, ticker=None, statuses=None, limit=5000):
+        """Chart trade records, newest first; ``ticker`` and ``statuses`` filter in SQL."""
+        with self.db.get_session() as session:
+            query = select(ChartTradeRecord)
+            if ticker:
+                query = query.where(ChartTradeRecord.ticker == ticker)
+            if statuses:
+                query = query.where(ChartTradeRecord.status.in_(list(statuses)))
+            rows = session.execute(query.order_by(ChartTradeRecord.created_at.desc()).limit(limit)).scalars().all()
+            return [{**json.loads(row.payload), "id": row.id, "ticker": row.ticker, "status": row.status,
+                     "created_at": row.created_at} for row in rows]
+
+    def save_chart_trades(self, records):
+        """Insert or replace records (each with ``id``, ``ticker``, ``status``) in one transaction."""
+        with self.db.session_scope() as session:
+            for record in records:
+                payload = {k: v for k, v in record.items() if k not in ("id", "ticker", "status", "created_at")}
+                row = session.get(ChartTradeRecord, record["id"])
+                if row is None:
+                    session.add(ChartTradeRecord(id=record["id"], ticker=record["ticker"], status=record["status"],
+                                                 payload=encoded(payload),
+                                                 created_at=record.get("created_at") or utcnow().isoformat()))
+                else:
+                    row.status, row.payload = record["status"], encoded(payload)
+
+    def delete_chart_trade(self, record_id, statuses):
+        """Deletes a record only while its status is one of ``statuses``; True when deleted."""
+        with self.db.session_scope() as session:
+            row = session.get(ChartTradeRecord, record_id)
+            if row is None or row.status not in statuses:
+                return False
+            session.delete(row)
+            return True
 
     def lease(self, owner, seconds=45):
         now = utcnow()

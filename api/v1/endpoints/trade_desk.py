@@ -489,6 +489,46 @@ async def chart(ticker: str, request: Request, interval: Literal["1m", "5m", "15
 STREAM_POLL_SECONDS = 0.25
 
 
+class ChartMarkInput(Model):
+    direction: Literal["long", "short"]
+    stop: float = Field(gt=0)
+    target: float = Field(gt=0)
+    note: str = Field(default="", max_length=200)
+
+
+class ChartBoxInput(Model):
+    top: float = Field(gt=0)
+    bottom: float = Field(gt=0)
+    note: str = Field(default="", max_length=200)
+
+
+@router.get("/chart-grades")
+async def chart_grades(request: Request):
+    """Forward grades of the chart's flags (seen before they traded) and of your marks and boxes."""
+    return await invoke(get_service(request).charts.grade_table)
+
+
+@router.post("/chart/{ticker}/marks", status_code=201)
+async def chart_mark(ticker: str, body: ChartMarkInput, request: Request):
+    """Records "I'd go long / short here" with your stop and target; it enters at the next 15-minute bar's open.
+
+    A record for grading only: nothing is sent to moomoo."""
+    return await invoke(get_service(request).charts.add_mark, ticker, body.direction, body.stop, body.target, body.note)
+
+
+@router.post("/chart/{ticker}/boxes", status_code=201)
+async def chart_box(ticker: str, body: ChartBoxInput, request: Request):
+    """Keeps a box you drew; it is traded on paper by the system's fade rule and graded."""
+    return await invoke(get_service(request).charts.add_box, ticker, body.top, body.bottom, body.note)
+
+
+@router.delete("/chart-yours/{record_id}", status_code=204)
+async def chart_yours_delete(record_id: str, request: Request):
+    """Removes a mark or box of yours that has not traded yet; once traded it stays on the record."""
+    if not await invoke(get_service(request).charts.remove_yours, record_id):
+        raise HTTPException(409, detail="Only a mark or box that has not traded yet can be removed")
+
+
 @router.get("/chart/{ticker}/stream")
 async def chart_stream(ticker: str, request: Request, interval: Literal["1m", "5m", "15m", "1d"] = "15m"):
     """Live updates for an open chart, as server-sent events; read only.

@@ -24,6 +24,7 @@ const chart = vi.hoisted(() => {
 vi.mock('klinecharts', () => ({ init: vi.fn(() => chart.instance), dispose: vi.fn(), registerOverlay: vi.fn(), registerIndicator: vi.fn() }));
 
 const api = vi.hoisted(() => ({ getChart: vi.fn(), getHoldings: vi.fn(), getTrackRecord: vi.fn(),
+  getChartGrades: vi.fn(() => Promise.resolve({ kinds: [], recent: [], minTrades: 30 })),
   getChartStreamUrl: (ticker: string, interval: string) => `/api/v1/trade-desk/chart/${ticker}/stream?interval=${interval}` }));
 vi.mock('../../../api/tradeDesk', async (original) => ({ ...(await original<typeof import('../../../api/tradeDesk')>()), tradeDeskApi: api }));
 vi.mock('../../../api/systemConfig', () => ({ systemConfigApi: { getWatchlist: vi.fn().mockResolvedValue(['SPY', '600519', 'hk00700']) } }));

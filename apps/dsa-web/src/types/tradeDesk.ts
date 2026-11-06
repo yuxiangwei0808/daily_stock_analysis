@@ -849,4 +849,59 @@ export interface ChartSnapshot {
   flags: ChartFlag[];
   levels: ChartLevel[];
   typicalRange: { t: number; impulse: number; barsThrough: string } | null;
+  /** Your marks and kept boxes on this stock, as graded so far. */
+  yours?: ChartYours[];
+}
+
+/** A mark ("I'd go long / short here") or a box you kept; ``r`` is R after cost, ``twinR`` the same trade at random times. */
+export interface ChartYours {
+  id: string;
+  kind: 'mark' | 'box';
+  status: 'waiting' | 'open' | 'closed' | 'expired' | 'void' | string;
+  direction?: 'long' | 'short';
+  price?: number;
+  stop?: number;
+  target?: number;
+  top?: number;
+  bottom?: number;
+  /** A box's fade: the next bar fills it at ``price``. */
+  armed?: boolean;
+  entryTime?: string;
+  exitTime?: string;
+  how?: string;
+  r?: number;
+  twinR?: number;
+  markedAt?: string;
+  keptAt?: string;
+  reference?: number;
+  note?: string;
+  void?: string;
+}
+
+export interface ChartGradeKind {
+  source: 'system' | 'you';
+  kind: string;
+  label: string;
+  graded: number;
+  needed: number;
+  waiting: number;
+  open: number;
+  closed: number;
+  expired: number;
+  late: number;
+  void: number;
+  meanR: number | null;
+  twinR: number | null;
+  edge: number | null;
+  t: number | null;
+  months: number;
+  tNeeded: number | null;
+  verdict: 'too_early' | 'passes' | 'no_edge' | string;
+}
+
+export interface ChartGradeTable {
+  kinds: ChartGradeKind[];
+  recent: Array<{ id: string; ticker: string; status: string; source: string; kind: string; direction?: number; price?: number;
+    r?: number; twinR?: number; entryTime?: string; how?: string }>;
+  minTrades: number;
 }

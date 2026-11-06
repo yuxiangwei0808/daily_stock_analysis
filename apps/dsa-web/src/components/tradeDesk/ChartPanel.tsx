@@ -9,6 +9,7 @@ import type { ChartFlag, ChartInterval, ChartSnapshot } from '../../types/tradeD
 import { NX_INDICATOR, PERIODS, alpha, flagTitle, nxByTime, nyTime, overlaysFor, price, registerChartFigures, toKLine } from './chartOverlays';
 import type { ChartColors } from './chartOverlays';
 import { errorMessage, formatDate } from './deskFormat';
+import { GradesCard, YoursCard } from './ChartYours';
 
 const INTERVALS: ChartInterval[] = ['1m', '5m', '15m', '1d'];
 const VARIANTS = [
@@ -77,8 +78,8 @@ const r = (value: number) => `${value >= 0 ? '+' : '−'}${Math.abs(value).toFix
 const flagKey = (flag: ChartFlag) => `${flag.setup}|${flag.kind}|${flag.box}|${flag.state}|${flag.time ?? ''}`;
 
 /** The canvas: candles, volume and NX, with the snapshot's overlays. */
-function PriceChart({ snapshot, selected, colors, live }: { snapshot: ChartSnapshot; selected: ChartFlag | null; colors: ChartColors;
-  live?: KLineData | null }) {
+function PriceChart({ snapshot, selected, colors, live, handleRef }: { snapshot: ChartSnapshot; selected: ChartFlag | null; colors: ChartColors;
+  live?: KLineData | null; handleRef?: React.MutableRefObject<Chart | null> }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const barsRef = useRef<KLineData[]>([]);
@@ -92,6 +93,7 @@ function PriceChart({ snapshot, selected, colors, live }: { snapshot: ChartSnaps
     const chart = init(container, { timezone: 'America/New_York' });
     if (!chart) return undefined;
     chartRef.current = chart;
+    if (handleRef) handleRef.current = chart;
     chart.setDataLoader({
       getBars: ({ type, callback }) => callback(type === 'init' ? barsRef.current : [], false),
       subscribeBar: ({ callback }) => { pushRef.current = callback; },
@@ -101,8 +103,8 @@ function PriceChart({ snapshot, selected, colors, live }: { snapshot: ChartSnaps
     chart.createIndicator({ name: NX_INDICATOR, paneId: 'candle_pane' }, true);
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => chart.resize()) : null;
     observer?.observe(container);
-    return () => { observer?.disconnect(); dispose(container); chartRef.current = null; shownRef.current = ''; };
-  }, []);
+    return () => { observer?.disconnect(); dispose(container); chartRef.current = null; shownRef.current = ''; if (handleRef) handleRef.current = null; };
+  }, [handleRef]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -176,6 +178,8 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
   const [showClosed, setShowClosed] = useState(false);
   const [picks, setPicks] = useState<{ held: string[]; watchlist: string[]; ideas: string[] }>({ held: [], watchlist: [], ideas: [] });
   const sequence = useRef(0);
+  const chartHandle = useRef<Chart | null>(null);
+  const [gradesVersion, setGradesVersion] = useState(0);
 
   useEffect(() => {
     void Promise.allSettled([tradeDeskApi.getHoldings(), systemConfigApi.getWatchlist(), tradeDeskApi.getTrackRecord()]).then(([held, watch, record]) => {
@@ -318,7 +322,7 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
               </div>
               {snapshot.typicalRange ? <span className="text-xs text-muted-text">Typical session range T = {price(snapshot.typicalRange.t)}; an impulse is a 15-minute move of {price(snapshot.typicalRange.impulse)} or more</span> : null}
             </div>
-            <PriceChart snapshot={snapshot} selected={selected} colors={colors} live={liveBar} />
+            <PriceChart snapshot={snapshot} selected={selected} colors={colors} live={liveBar} handleRef={chartHandle} />
             <p className="px-1 pt-2 text-[11px] text-muted-text">{snapshot.note}</p>
             {snapshot.interval === '1d' ? <p className="px-1 pt-1 text-[11px] text-muted-text">{BOX_HIDDEN}</p> : null}
             {snapshot.warnings.map((code) => <p key={code} className="px-1 pt-1 text-[11px] text-warning">{WARNINGS[code] || code}</p>)}
@@ -336,6 +340,8 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
                   selected={selected === flag} onSelect={() => setSelectedKey(flagKey(flag))} />)}</div> : null}
               </div> : null}
             </Card>
+            <YoursCard ticker={snapshot.ticker} lastPrice={lastPrice} yours={snapshot.yours || []} chart={chartHandle}
+              onChanged={() => { void load(true); setGradesVersion((value) => value + 1); }} />
             <Card variant="bordered" padding="sm">
               <h3 className="px-1 pb-2 text-sm font-semibold text-foreground">Lines</h3>
               {snapshot.levels.length ? <table className="w-full text-xs"><tbody>
@@ -349,6 +355,7 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
           </div>
         </div>
       ) : ticker && busy ? <p className="flex items-center gap-2 text-sm text-secondary-text"><RefreshCw className="h-4 w-4 animate-spin text-cyan" />Loading {ticker} from moomoo…</p> : null}
+      <GradesCard version={gradesVersion} />
     </div>
   );
 }

@@ -88,11 +88,10 @@ def simulate(bars: bx.Bars, e: int, entry: float, stop: float, target: float, d:
     return {"R": pnl / risk, "ret_pct": pnl / entry * 100, "exit_bar": int(k), "exit": float(price), "how": how}
 
 
-def twins(bars: bx.Bars, e: int, entry: float, stop: float, target: float, d: int, rng: np.random.Generator,
-          life: int = bx.Params.life_sessions) -> float:
-    """Mean R of ``N_TWINS`` limit entries at random times with the trade's distances (NaN when none fill)."""
+def twin_candidates(bars: bx.Bars, e: int, entry: float, d: int):
+    """Bars that reach the trade's limit (same distance from the previous close) and their levels, and the last
+    session they come from: the trade's own, or five sessions either side when fewer than five fill in it."""
     s = bars.sess[e]
-    stop_pct, target_pct = abs(stop - entry) / entry, abs(target - entry) / entry
     dip = (bars.c[e - 1] - entry) * d / bars.c[e - 1]  # how far the price came against the trade to fill it
     for lo_s, hi_s in ((s, s), (max(s - 5, 0), min(s + 5, len(bars.days) - 1))):
         lo, hi = max(bars.s_first[lo_s], 1), bars.s_last[hi_s]
@@ -102,12 +101,37 @@ def twins(bars: bx.Bars, e: int, entry: float, stop: float, target: float, d: in
         cand, level = cand[ok], level[ok]
         if len(cand) >= 5 or (lo_s, hi_s) != (s, s):
             break
+    return cand, level, int(hi_s)
+
+
+def twins(bars: bx.Bars, e: int, entry: float, stop: float, target: float, d: int, rng: np.random.Generator,
+          life: int = bx.Params.life_sessions) -> float:
+    """Mean R of ``N_TWINS`` limit entries at random times with the trade's distances (NaN when none fill)."""
+    stop_pct, target_pct = abs(stop - entry) / entry, abs(target - entry) / entry
+    cand, level, _ = twin_candidates(bars, e, entry, d)
     if not len(cand):
         return float("nan")
     out = []
     for j in rng.integers(0, len(cand), N_TWINS):
         r, lv = cand[j], level[j]
         price = bars.o[r] if (bars.o[r] - lv) * d < 0 else lv
+        res = simulate(bars, r, price, price * (1 - d * stop_pct), price * (1 + d * target_pct), d,
+                       bars.session_end(r, life))
+        if res:
+            out.append(res["R"])
+    return float(np.mean(out)) if out else float("nan")
+
+
+def market_twins(bars: bx.Bars, e: int, stop_pct: float, target_pct: float, d: int, rng: np.random.Generator,
+                 life: int = bx.Params.life_sessions) -> float:
+    """Mean R of ``N_TWINS`` entries at the open of random bars of the trade's session, with its distances.
+
+    The twin of an entry at a bar's open (your marks), as ``twins`` is of a limit entry."""
+    s = bars.sess[e]
+    cand = np.arange(bars.s_first[s], bars.s_last[s] + 1)
+    out = []
+    for r in cand[rng.integers(0, len(cand), N_TWINS)]:
+        price = bars.o[r]
         res = simulate(bars, r, price, price * (1 - d * stop_pct), price * (1 + d * target_pct), d,
                        bars.session_end(r, life))
         if res:

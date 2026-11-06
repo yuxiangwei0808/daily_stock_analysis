@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 
 from . import boxes as bx
 from .backtest import boxes as bb
+from .chart_grades import ChartGrades, Context
 from .models import utcnow
 from .moomoo_indicators import NX_MIN_BARS, nx
 from .providers import _safe_float
@@ -56,6 +57,8 @@ TOUCH = timedelta(seconds=30)  # an open stream marks its ticker used this often
 CLOSE_GRACE = timedelta(seconds=3)  # after a 15-minute bar's end, before the page reloads the snapshot
 SILENT = timedelta(seconds=60)  # no push this long while a chart is open in the session: a warning
 SAMPLES = 5000
+GRADE_AT = dtime(16, 20)  # New York: the daily pass over stocks with trades still running
+MAX_DAILY_CHARTS = 30
 # The 2026-11-05 backtest (docs/strategy-backtest.md): each trade against the same trade at random
 # times; t by month in period A (2020-11 to 2023-11) and period B (to 2026-11).
 GRADES = {
@@ -142,6 +145,8 @@ class Charts:
         self.error: Optional[str] = None
         self._stop = threading.Event()
         self._sweeper: Optional[threading.Thread] = None
+        self._graded_day: Optional[date] = None
+        self._grading: Optional[threading.Thread] = None
 
     def _connection(self) -> Any:
         with self._lock:
@@ -205,7 +210,7 @@ class Charts:
                 self._seq += 1
                 previous = self._quotes.get(str(row.get("code") or ""))
                 self._quotes[str(row.get("code") or "")] = {
-                    "price": price, "at": data_at.isoformat() if data_at else None, "seq": self._seq}
+                    "price": price, "at": data_at.isoformat() if data_at else None, "seq": self._seq, "received": arrived}
                 self.pushes["quote"] += 1
                 self.last_push = arrived
                 # The first push is only the last known state, and a quote without a new trade says nothing of delay.
@@ -214,6 +219,73 @@ class Charts:
                 self.handler_ms.append((time.thread_time() - started) * 1000)
         except Exception as exc:
             self.error = type(exc).__name__
+
+    # -- forward grades (chart_grades.py) ------------------------------------------------------
+    @property
+    def grades(self) -> Optional[ChartGrades]:
+        repo = getattr(self.service, "repo", None)
+        return ChartGrades(repo) if repo is not None else None
+
+    def _grades(self) -> ChartGrades:
+        grades = self.grades
+        if grades is None:
+            raise ValueError("Grading needs the Trade Desk database")
+        return grades
+
+    def _last_price(self, code: str, now: datetime) -> float:
+        """The last trade pushed in the past minute, else the latest 15-minute close."""
+        with self._lock:
+            quote = dict(self._quotes.get(code) or {})
+        if quote.get("received") and now - quote["received"] <= SILENT:
+            return float(quote["price"])
+        rows = self._connection().kline(code, "K_15M", 1, push=True)
+        if not rows:
+            raise ValueError("No price for this stock yet")
+        return float(rows[-1]["close"])
+
+    def add_mark(self, ticker: str, direction: str, stop: float, target: float, note: str = "",
+                 now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Your "I'd go long / short here": it enters at the next 15-minute bar's open and is graded like a flag."""
+        ticker = _validate(ticker, "15m")
+        now = now or utcnow()
+        grades = self._grades()
+        return _your_view(grades.add_mark(ticker, direction, stop, target, self._last_price(f"US.{ticker}", now), now, note))
+
+    def add_box(self, ticker: str, top: float, bottom: float, note: str = "", now: Optional[datetime] = None) -> Dict[str, Any]:
+        """A box you drew, kept: graded by the system's fade rule from now on."""
+        ticker = _validate(ticker, "15m")
+        return _your_view(self._grades().add_box(ticker, top, bottom, now or utcnow(), note))
+
+    def remove_yours(self, record_id: str) -> bool:
+        return self._grades().remove(record_id)
+
+    def grade_table(self) -> Dict[str, Any]:
+        return self._grades().summary()
+
+    def grade_due(self, now: Optional[datetime] = None) -> None:
+        """Once a day after the close, reads the charts of the stocks whose records are still moving.
+
+        Runs on a thread of its own, so the minute's monitor goes on; records otherwise move only when a
+        chart of their stock is read."""
+        now = now or utcnow()
+        local = now.astimezone(_NEW_YORK)
+        grades = self.grades
+        if grades is None or local.weekday() >= 5 or local.time() < GRADE_AT or self._graded_day == local.date():
+            return
+        if self._grading is not None and self._grading.is_alive():
+            return
+        self._graded_day = local.date()
+        due = grades.unfinished()[:MAX_DAILY_CHARTS]
+
+        def run():
+            for ticker, impulse_t, tidy in due:
+                try:
+                    self.chart(ticker, "15m", impulse_t=impulse_t, tidy=tidy)
+                except Exception as exc:  # the next day tries again
+                    logger.info("Chart grades for %s: %s", ticker, type(exc).__name__)
+        if due:
+            self._grading = threading.Thread(target=run, name="chart-grades", daemon=True)
+            self._grading.start()
 
     def stream(self, ticker: str, interval: str = "15m") -> "ChartStream":
         """Subscribes the quote and the bars with push and returns what the page's stream reads."""
@@ -291,6 +363,15 @@ class Charts:
                "note": NOTE, "warnings": warnings}
         out.update(_overlays(rows15, bx.Params(impulse_t=impulse_t, tidy=tidy), now, warnings,
                              cut=len(rows15) >= MAX_BARS))
+        grading = out.pop("_grading", None)
+        out["yours"] = []
+        grades = self.grades
+        if grading is not None and grades is not None:
+            try:
+                out["yours"] = [_your_view(rec) for rec in grades.record(ticker, *grading)]
+            except Exception as exc:  # the chart still shows; the records move at the next read
+                logger.warning("Chart grades for %s: %s", ticker, type(exc).__name__)
+                warnings.append("grades_unavailable")
         out["levels"] += self._your_levels(ticker)
         return out
 
@@ -421,9 +502,12 @@ def _overlays(rows15: List[Dict[str, Any]], params: bx.Params, now: datetime, wa
         return empty
     n = len(bars)
     box_rows, flags = [], []
+    system, live = [], []  # for the forward grades: every flag with its entry bar, and setups still pending
     for s in bx.setups(bars, params):
         alive = bool(following <= bars.sess[s.i] + params.life_sessions)
         setup_id = done[s.i]["time"]
+        if alive:
+            live.append((setup_id, s))
         for name, box, wick, part in (("range", s.range_box, s.range_own_wick, (s.i + 1, s.first - 1)),
                                       ("base", s.base_box, s.base_wick, (s.i - params.box_bars, s.i - 1))):
             if box is not None:
@@ -438,16 +522,31 @@ def _overlays(rows15: List[Dict[str, Any]], params: bx.Params, now: datetime, wa
                 continue
             ended = bars.sess[entry.bar] + params.life_sessions <= last_complete
             state = "closed" if result["how"] != "time" or ended else "open"
+            system.append((setup_id, state, entry, entry.bar))
             flags.append({**_flag(entry, setup_id, params), "state": state, "time": done[entry.bar]["time"],
                           "result": {"how": result["how"] if state == "closed" else None, "R": round(result["R"], 3),
                                      "exit": _p(result["exit"]) if state == "closed" else None,
                                      "exit_time": done[result["exit_bar"]]["time"] if state == "closed" else None}})
         for state, entry in bx.pending(bars, s, params, next_in_session=in_session):
             flags.append({**_flag(entry, setup_id, params), "state": state, "time": None, "result": None})
+            system.append((setup_id, state, entry, None))
     order = {"armed": 0, "open": 1, "watching": 2, "closed": 3}
     flags.sort(key=lambda f: (order[f["state"]], -(datetime.fromisoformat(f["time"] or f["setup"]).timestamp())))
     return {"boxes": box_rows, "flags": flags, "levels": _levels(bars, day),
-            "typical_range": {"T": _p(T), "impulse": _p(params.impulse_t * T), "bars_through": done[n - 1]["time"]}}
+            "typical_range": {"T": _p(T), "impulse": _p(params.impulse_t * T), "bars_through": done[n - 1]["time"]},
+            "_grading": (Context(bars, params, now, in_session, last_complete), system, live)}
+
+
+_YOURS = ("id", "kind", "status", "price", "stop", "target", "top", "bottom", "armed", "entry_time", "exit_time", "how",
+          "R", "twin_R", "marked_at", "kept_at", "reference", "note", "void")
+
+
+def _your_view(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """A mark or box of yours as the page draws it."""
+    view = {key: rec.get(key) for key in _YOURS if rec.get(key) is not None}
+    if rec.get("direction") in (1, -1):
+        view["direction"] = "long" if rec["direction"] > 0 else "short"
+    return view
 
 
 def _flag(entry: bx.Entry, setup_id: str, params: bx.Params) -> Dict[str, Any]:

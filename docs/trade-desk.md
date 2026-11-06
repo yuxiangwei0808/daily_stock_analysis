@@ -850,6 +850,23 @@ sees, so you can read it and decide yourself. DSA never places, changes or cance
   at random times, so they are context, not suggestions.
 - **Box rules**: the four backtested variants (impulse 1 or 0.6 T, normal or tidy boxes).
 
+**Your marks and boxes**: "Mark long / short here" with your stop and target records a paper
+trade that enters at the open of the next 15-minute bar. "Draw a box" (two clicks on the chart)
+and "Keep box" record a box that is traded by the system's fade rule: the first return to it
+from outside within five sessions, entered at its near edge, the stop at its far edge, the
+target at 2R. A mark or box can be removed until it trades; after that it stays on the record.
+Nothing is sent to moomoo.
+
+**Forward grades** (under the chart): one row each for the system's break-and-retest flags, its
+fades, your marks and your boxes. A system flag counts only if the chart showed it, armed or
+watching, before the bar it entered in started; one first seen during that bar is "late" and left
+out. Every trade follows the backtest's exits (stop, target or the fifth session's close, with
+cost) and is compared with the same trade at random times in its session (limit entries for
+flags and boxes, entries at a bar's open for marks). A row gets a verdict after 30 graded trades:
+it passes only if its edge over random timing reaches the month-clustered t the methodology needs
+and its trades made money. Records move whenever a chart of their stock is read, and once a day
+after 16:20 New York for stocks with trades still running.
+
 **Live updates**: while the tab is open, moomoo pushes the forming bar and each trade to the page
 (the header shows "Live" and the last trade's time). When a 15-minute bar closes, the page
 reloads the boxes and flags, which only ever use completed bars. Up to five charts stay live at
@@ -1004,6 +1021,11 @@ describes request validation.
 15-minute bar ended; the page reloads the snapshot) and `evicted` (more than five charts are
 open). It subscribes the quote and the bars with push on the chart's connection; the pushes are
 kept in memory, never in the events table.
+`POST /chart/{ticker}/marks` (`direction`, `stop`, `target`, `note`) and `POST /chart/{ticker}/boxes`
+(`top`, `bottom`, `note`) record your marks and boxes (422 when a stop or target is on the wrong
+side of the last price); `DELETE /chart-yours/{id}` removes one that has not traded (409 after);
+`GET /chart-grades` returns the grade table and the latest records. They are kept in the additive
+`trade_desk_chart_trades` table.
 
 Additive `trade_desk_*` tables hold conversations, advice versions, plans, fills,
 events, preferences and worker leases. Existing `DecisionSignal` records remain

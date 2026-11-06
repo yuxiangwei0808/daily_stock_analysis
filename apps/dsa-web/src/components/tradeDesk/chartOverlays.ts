@@ -109,6 +109,28 @@ export function overlaysFor(snapshot: ChartSnapshot, colors: ChartColors, select
     name: 'dsaLevel', groupId: 'system', lock: true, points: [{ value: level.price }],
     extendData: { label: shortLabel(level), color: levelColor(level), dashed: LEVEL_KIND[level.kind] !== 'yours' } satisfies LevelData,
   }));
+  (snapshot.yours || []).forEach((item) => {
+    if (item.kind === 'box' && item.top != null && item.bottom != null && item.keptAt && interval !== '1d') {
+      const kept = ms(item.keptAt);
+      const lastBar = snapshot.bars.length ? ms(snapshot.bars[snapshot.bars.length - 1].start) : kept;
+      const from = Math.min(kept, lastBar);
+      out.push({ name: 'dsaBox', groupId: 'system', lock: true,
+        points: [{ timestamp: from, value: item.top }, { timestamp: from, value: item.bottom }, { timestamp: lastBar, value: item.top }],
+        extendData: { label: `Your box ${price(item.bottom)}–${price(item.top)}${item.armed ? ' (armed)' : ''}`, color: colors.warning,
+          alive: item.status === 'waiting' || item.status === 'open' } satisfies BoxData });
+    }
+    if (item.kind === 'mark' && item.direction && item.entryTime && interval !== '1d' && item.price != null) {
+      out.push({ name: 'dsaMark', groupId: 'system', lock: true, points: [{ timestamp: ms(item.entryTime), value: item.price }],
+        extendData: { label: `your ${item.direction}${item.r == null ? '' : ` ${item.r >= 0 ? '+' : '−'}${Math.abs(item.r).toFixed(1)}R`}`,
+          color: colors.warning, up: item.direction === 'long' } satisfies MarkData });
+    }
+    if (item.kind === 'mark' && (item.status === 'waiting' || item.status === 'open')) {
+      ([['stop', item.stop], ['target', item.target]] as const).forEach(([name, value]) => {
+        if (value != null) out.push({ name: 'dsaLevel', groupId: 'system', lock: true, points: [{ value }],
+          extendData: { label: `Your ${item.direction} mark ${name} ${price(value)}`, color: colors.warning, dashed: true } satisfies LevelData });
+      });
+    }
+  });
   if (selected) {
     const tone = selected.direction === 'long' ? colors.up : colors.down;
     const parts: Array<[string, number, string]> = [
@@ -179,6 +201,15 @@ export function registerChartFigures() {
       const base = up ? tip + 8 : tip - 8;
       return [{ type: 'polygon', ignoreEvent: true, attrs: { coordinates: [{ x, y: tip }, { x: x - 5, y: base }, { x: x + 5, y: base }] }, styles: { style: 'fill', color } },
         label(x, up ? base + 1 : base - 1, text, color, 'center', up ? 'top' : 'bottom')];
+    },
+  });
+  registerOverlay({
+    name: 'dsaDraftBox', totalStep: 3, needDefaultPointFigure: true, needDefaultXAxisFigure: true, needDefaultYAxisFigure: true,
+    createPointFigures: ({ coordinates }) => {
+      if (coordinates.length < 2) return [];
+      const [a, b] = coordinates;
+      return [{ type: 'rect', attrs: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(b.x - a.x), height: Math.abs(b.y - a.y) },
+        styles: { style: 'stroke_fill', color: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgb(245, 158, 11)', borderSize: 1, borderStyle: 'dashed' } }];
     },
   });
   registerIndicator<NxRow, unknown, Record<number, NxRow>>({
