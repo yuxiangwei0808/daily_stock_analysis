@@ -8,6 +8,7 @@ import pytest
 
 from src.services.trade_desk import boxes as bx
 from src.services.trade_desk import chart as ch
+from src.services.trade_desk import register
 from src.services.trade_desk.backtest import boxes as bb
 from src.services.trade_desk.providers import ProviderError
 from tests.test_boxes import _break_and_retest
@@ -165,7 +166,7 @@ def test_the_route_checks_its_inputs_and_reports_moomoo_errors(monkeypatch):
     with TestClient(app) as client:
         ok = client.get("/api/v1/trade-desk/chart/SPY", params={"impulse": 0.6, "tidy": True})
         assert ok.status_code == 200 and ok.json()["params"] == {"impulse_t": 0.6, "tidy": True}
-        assert all(f["grade"]["verdict"] == ch.GRADES[(f["kind"], 0.6, True)][0] for f in ok.json()["flags"])
+        assert all(f["grade"]["verdict"] == register.box_grade(f["kind"], 0.6, True)[0] for f in ok.json()["flags"])
         assert client.get("/api/v1/trade-desk/chart/SPY", params={"interval": "2h"}).status_code == 422
         assert client.get("/api/v1/trade-desk/chart/SPY", params={"impulse": 0.8}).status_code == 422
         assert client.get("/api/v1/trade-desk/chart/S%20PY").status_code == 422

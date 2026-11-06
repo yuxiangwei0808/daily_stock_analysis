@@ -466,7 +466,7 @@ class TradeDeskWorker:
         if not preferences["discord_enabled"]:
             return
         from src.config import get_config
-        from . import discord_routes as routes
+        from . import discord_routes as routes, register
         config = get_config()
         if not (getattr(config, "discord_webhook_url", None) or routes.webhooks() or
                 (getattr(config, "discord_bot_token", None) and getattr(config, "discord_main_channel_id", None))):
@@ -490,6 +490,8 @@ class TradeDeskWorker:
             name = routes.category(event["event_type"])
             if not routes.enabled(preferences, name) or not routes.routed(name, main):
                 continue  # switched off in the Trade Desk preferences, or nowhere to send it
+            if name == "ideas" and not register.discord_ok(event["payload"].get("rules")):
+                continue  # methodology stage 8: an idea reaches Discord once its rules have passed (register.py)
             prior = deliveries.get(event["id"])
             attempt = prior["payload"]["attempt"] if prior else 0
             if prior and (prior["payload"].get("success") or attempt >= 3):

@@ -10,6 +10,9 @@ twins that differ only in the idea being tested. Prove the engine shows nothing 
 Require the result in two separate periods, after costs. Then let it run forward in shadow mode
 before it becomes guidance.
 
+This doc is the source for how DSA trades and how it finds stocks: the trade ideas, the chart, the
+alerts and the trading assistant all follow it ([trading-assistant-plan.md](trading-assistant-plan.md)).
+
 ## 1. Stages
 
 | Stage | What it produces | Moves on when |
@@ -22,6 +25,9 @@ before it becomes guidance.
 | 6. Verdict | `pass`, `no edge shown` or `rejected` (section 6) | `pass` goes on to stage 7 |
 | 7. Forward (shadow) | Live levels graded in shadow mode, nothing sent | Enough finished positions (section 9) |
 | 8. Guidance | Shown on the dashboard or in Discord, labelled with its grade | Re-graded as results come in |
+
+Before stage 8 an idea may be shown on the dashboard, labelled with its verdict, and tracked
+forward; it reaches Discord only at stage 8 (section 15).
 
 Going further, to a paper account, orders approved one at a time, or automatic orders, is a
 separate decision for the user. Each step needs graded forward results. It is not part of
@@ -177,19 +183,32 @@ backtest in `scripts/`.
 
 ## 11. Register of tested ideas
 
+Printed from `src/services/trade_desk/register.py` (`python -m src.services.trade_desk.register`);
+a test fails when these tables and the register differ. Change a verdict there, never only here.
+
+<!-- register:start -->
 | Idea | Test | Verdict | Details |
 |---|---|---|---|
 | Swing trend, breakout, pullback (daily) | S&P 500, 2021-10 → 2026-09, same-date twins | No edge shown (within ±0.3%) | [strategy-backtest.md](strategy-backtest.md) |
 | `fade_short` (long after drops) | Same | No edge shown: +0.21% in each period, small, defined after a look | Same |
 | moomoo NX and CD indicators | Same, three exits | No edge shown; CD 抄底 above NX's slow tunnel suggestive (t 1.4–1.8) | Same |
 | Same-day rules (ORB, gaps, big moves, momentum) | 5-min, 60 days; hourly, 2 years | No edge shown; `breakout_day` rejected (t −3.0) | Same |
-| Model review of trade ideas | Forward, 2026-09 → 11 | No measurable value (\|t\| ≤ 1) | 2026-11-03 reflection (not yet in docs) |
-| Printed stop and target on ideas | Forward, same | Better than no stop (−2.5% vs −6.4% per idea) | Same |
+| Model review of trade ideas | Forward, 2026-09 → 11 | No edge shown: no measurable value (\|t\| ≤ 1) | 2026-11-03 reflection (not yet in docs) |
+| Printed stop and target on ideas | Forward, same | No edge shown as a test (one regime); the stop lost less than no stop (−2.5% vs −6.4% per idea) | Same |
 | Video zones: entries at a zone vs in the middle | Own option fills, 37 days | No edge shown: middle −12% vs zone +5%, n = 14–18, medians not significant | 2026-11-05 review |
 | Video box trades: break and retest toward the base | moomoo 15-min, 49 stocks, 2020-11 → 2026-11, 1,851 trades | Rejected: −0.06 / −0.03 R per trade after costs, 0.09–0.10 R worse than random timing (t −2.2 / −2.9) | [strategy-backtest.md](strategy-backtest.md) |
 | Video box trades: fade at a fresh box | Same, 6,515 trades | No edge shown: −0.07 / +0.01 R, 0.03 R worse than random timing (t −1.8 / −0.9) | Same; `scripts/backtest_boxes.py` |
 | Video boxes confirmed by a weekly value-area edge | Same trades; VAH/VAL of the 2 prior weeks within the box | No edge shown in all 8 variants: about half of all boxes line up by chance, and those did no better | Same |
 | Tidier boxes (small, no drift) | Same, with and without the value-area filter | No edge shown at 1.0 T; rejected at 0.6 T (loses in both periods) | Same |
+
+Tracked forward or shown, without a verdict here (the scoreboard grades the forward sources):
+
+| Idea | Test | Verdict | Details |
+|---|---|---|---|
+| Stock report calls (buy, watch, sell) | Forward from each day's first report | Tracked forward against the rest of the watchlist | Journal tab, What's working |
+| Social scan and YouTube picks | Forward, 5/10/20 sessions | Tracked forward against same-day stocks | Journal tab, What's working |
+| Prior day high, low and close | Shown on the chart | Not tested as levels on their own | [trade-desk.md](trade-desk.md#chart) |
+<!-- register:end -->
 
 ## 12. Don't
 
@@ -199,3 +218,50 @@ backtest in `scripts/`.
 - Assume fills at the stop, or leave out costs and gaps.
 - Trust one period, one regime or 60 days of data.
 - Treat "suggestive" as "works".
+- Send an idea to Discord, or present it as guidance, before every rule it rests on has passed.
+
+## 13. Discovery: which stocks to look at
+
+- A stock reaches a list (the trend scan, a day list, the chart's picker) only by a written rule, or
+  because you hold it, watch it or ask about it.
+- A selection rule is tested like any idea. Its twins are other stocks on the same date (section 5),
+  over two periods, with the pass bar of section 6.
+- Day trades and options pay for movement, so the first question for a day list is which stocks
+  will move most today, not which way: each pick's same-day range against same-date twins.
+  Direction is a separate test.
+- A model's pick (the review, a report call, a video, a social post) is a source, not a rule. It is
+  tracked forward on the scoreboard and is never a reason on its own to list a stock until it
+  passes.
+- The universe is point-in-time where possible (section 4). A day list built from today's movers is
+  fine, because its test compares stocks on the same date.
+
+## 14. Intraday and 0DTE options
+
+- **Data.** There are no historical option quotes (section 7). The quote recorder stores
+  near-the-money quotes of the nearest expiry for SPY, QQQ and your option underlyings every 15
+  seconds of the regular session. 0DTE rules are tested on those quotes once about 60 sessions are
+  recorded. Before that, test on the underlying in R and treat option results as estimates.
+- **Costs.** Once recorded, use the spread actually quoted at entry and exit (buy at the ask, sell
+  at the bid) instead of a flat 3% per leg, plus commissions per contract.
+- **Clusters** are days (section 6): a session's trades share its news and its regime.
+- **Near the close** a 0DTE contract's value is dominated by pin and gamma, where Black-Scholes at
+  one implied volatility is rough. Label such estimates as estimates.
+- **Your fills.** The journal holds your own option trades. A part of your method (where you enter,
+  how long you hold) can be tested on them, as the zone test was (section 2).
+
+## 15. What the dashboard, Discord and the assistant may say
+
+| Verdict | Dashboard | Discord | Assistant |
+|---|---|---|---|
+| `pass` (stage 8) | Guidance, with its grade | Yes | Guidance, with its grade |
+| `no edge shown`, `rejected`, `tracked forward`, `not tested` | Context, labelled with the verdict | No | Context, labelled; never a reason on its own |
+
+- The register (`src/services/trade_desk/register.py`) holds every verdict, and the tables of
+  section 11 are printed from it. An idea becomes `pass` only by an edit there, after its forward
+  grading agrees (section 9).
+- The assistant's own calls and the plans you type can't be replayed, so they go straight to
+  forward tracking (section 9). They are labelled "untested model call" or "your plan" and graded
+  against the same trade at random times (twins differ only in the time), clustered by day.
+- Every number the assistant writes comes from the system's computations or quotes, never from its
+  own estimate.
+

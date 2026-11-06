@@ -332,6 +332,15 @@ def _holdings(request: Request):
     return get_service(request).holdings
 
 
+@router.get("/ideas")
+async def recent_ideas(request: Request, days: int = Query(default=7, ge=1, le=30)):
+    """The trend scan's reviewed ideas and the breakout alerts of the last ``days``, with their rules' verdicts.
+
+    On the dashboard only: Discord gets an idea once every rule it rests on has passed (methodology stage 8)."""
+    from src.services.trade_desk.idea_tracker import recent_ideas as ideas
+    return await invoke(ideas, get_service(request).repo, days)
+
+
 @router.get("/track-record")
 async def idea_track_record(request: Request, days: int = Query(default=90, ge=7, le=730)):
     """Forward results of trade ideas (approved vs rejected by the review) and breakout alerts."""

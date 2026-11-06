@@ -380,9 +380,14 @@ Both event types use the worker's deduplicated, retried Discord delivery
 
 ## Swing trade opportunities
 
-> Backtest note (see [strategy-backtest.md](strategy-backtest.md)): the deterministic
-> trend and breakout rules below showed no edge over random entries in 2021–2026,
-> and their short side was clearly harmful. The model review on top is untested.
+> Methodology note ([trading-methodology.md](trading-methodology.md), register in
+> `trade_desk/register.py`): the trend and breakout rules below showed no edge over random
+> entries in 2021–2026, and the model review on top showed no measurable value forward. So the
+> scan's messages, their options follow-ups and the breakout alerts are recorded and tracked as
+> below but go to Discord only once every rule they rest on has passed (stage 8; each message names
+> its `rules`). Until then they show on the dashboard: **Ask** tab → **Trade ideas** (`GET /ideas`),
+> the last 7 days with entry, stop, target and result so far, each labelled with its rules'
+> verdicts; the ones the review rejected on request, and a chart button per stock.
 
 With `TRADE_OPPORTUNITIES_ENABLED=true` (default off) the worker looks for
 strong trends to go long or short over days to weeks. Nothing is ordered.
@@ -1021,6 +1026,8 @@ and `kept` (id → reason). `POST
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.
 `GET /holdings`, `POST /holdings/refresh` and the `/holdings/rules` routes serve
 the read-only broker holdings and your alerts (409 when no account is set).
+`GET /ideas?days=7` (1–30) lists the trend scan's reviewed ideas and the breakout alerts, newest first,
+with the register verdicts of the rules each kind rests on and whether it may reach Discord.
 `GET /chart/{ticker}?interval=15m` (also `1m`, `5m`, `1d`; `impulse=1.0|0.6`, `tidy=true|false`)
 returns up to 1,000 moomoo bars and what the live chart draws
 ([live-chart-plan.md](live-chart-plan.md)):

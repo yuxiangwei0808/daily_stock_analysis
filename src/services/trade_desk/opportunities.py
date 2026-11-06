@@ -30,7 +30,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from . import earnings, trend
+from . import earnings, register, trend
 from .levels import breakout_levels  # noqa: F401  (re-exported)
 from .models import TradeAdviceRequest
 
@@ -613,7 +613,8 @@ class BreakoutWatch:
                        + (f"\n{earnings_line}" if earnings_line else "") + (f"\n{note}" if note else "") + f"\nHow: {how}.")
             event = self._emit("breakout", {"underlying": ticker, "kind": "breakout" if up else "breakdown",
                                             "price": price, "level": round(level, 2), "change_pct": change,
-                                            "group": group, "group_move": move, "message": message}, key)
+                                            "group": group, "group_move": move, "message": message,
+                                            "rules": list(register.BREAKOUT_RULES)}, key)
             if event is not None and self._track is not None:
                 try:
                     if same_way and review.get("stop") and review.get("targets"):
@@ -924,7 +925,8 @@ class OpportunityRunner:
         scanned = (f"Scanned {result['scored']} stocks · {result['candidates']} strong trends reviewed · "
                    f"{len(result['ideas'])} passed")
         event = self.emit("trade_opportunities", {"underlying": "", "message": format_message(
-            fresh, repeats, result["regime"], options_follow=follow, scanned=scanned)}, f"opportunities:{result['slot']}")
+            fresh, repeats, result["regime"], options_follow=follow, scanned=scanned),
+            "rules": list(register.SCAN_RULES)}, f"opportunities:{result['slot']}")
         if event is None:
             self._save_state(result["day"], published=result["slot"])
             return  # already sent before a restart; its ideas were recorded then
@@ -965,7 +967,7 @@ class OpportunityRunner:
         for job in done:
             lines.extend(format_options(job, pending["jobs"][job["id"]]))
         if lines:
-            self.emit("options_ideas", {"underlying": "", "message": "\n".join(lines)},
+            self.emit("options_ideas", {"underlying": "", "message": "\n".join(lines), "rules": list(register.SCAN_RULES)},
                       f"options-ideas:{pending['batch']}")
 
 

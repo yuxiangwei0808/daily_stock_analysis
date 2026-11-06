@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import src.notification  # noqa: F401  (imported before get_config is stubbed, so nothing binds the stub)
+from src.services.trade_desk import register
 from src.services.trade_desk import worker as worker_module
 from src.services.trade_desk.repository import TradeDeskRepository
 
@@ -56,7 +57,7 @@ def test_a_failed_part_is_retried_alone(repo, monkeypatch):
     service = SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda mode: None)
     desk = worker_module.TradeDeskWorker(service)
     message = "PART-A " + "a" * 1500 + "\n\n" + "PART-B " + "b" * 1500
-    repo.event("trade_opportunities", {"underlying": "", "message": message}, "opportunities:1")
+    repo.event("track_record", {"underlying": "", "message": message}, "track-record:1")
     desk._deliver()
     assert [part[:6] for part in sent] == ["PART-A"]
     later = worker_module.utcnow() + timedelta(seconds=61)
@@ -77,7 +78,7 @@ def test_a_crash_after_the_claim_does_not_resend_delivered_parts(repo, monkeypat
     monkeypatch.setattr("src.notification.NotificationService.send_to_discord", lambda self, c, **kw: sent.append(c) or True)
     desk = worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
     message = "PART-A " + "a" * 1500 + "\n\n" + "PART-B " + "b" * 1500
-    event = repo.event("trade_opportunities", {"underlying": "", "message": message}, "opportunities:2")
+    event = repo.event("track_record", {"underlying": "", "message": message}, "track-record:2")
     repo.event("discord_attempt", {"event_id": event["id"], "attempt": 1, "success": False}, "discord-attempt:x:1")
     repo.event("discord_delivery", {"event_id": event["id"], "attempt": 1, "success": False, "sent_parts": [0], "parts": 2})
     repo.event("discord_attempt", {"event_id": event["id"], "attempt": 2, "success": False}, "discord-attempt:x:2")
@@ -226,21 +227,50 @@ def _delivery_desk(repo, monkeypatch, sent, **env):
     return worker_module.TradeDeskWorker(SimpleNamespace(repo=repo, enabled=True, holdings=None, provider=lambda m: None))
 
 
+def _a_rule_passed(monkeypatch):
+    monkeypatch.setattr(register, "passed", lambda rule: rule == "passed_rule")
+    return ["passed_rule"]
+
+
 def test_categories_go_to_their_own_channels_and_can_be_switched_off(repo, monkeypatch):
     sent = []
     desk = _delivery_desk(repo, monkeypatch, sent,
                           TRADE_DESK_DISCORD_WEBHOOKS="holdings=https://discord.test/h, ideas=https://discord.test/i,bogus=x")
+    rules = _a_rule_passed(monkeypatch)
     repo.event("holding_alert", {"underlying": "NVDA", "kind": "loss", "message": "Down 40% on cost"}, "h1")
-    repo.event("breakout", {"underlying": "MU", "kind": "breakout", "message": "MU broke out"}, "b1")
+    repo.event("breakout", {"underlying": "MU", "kind": "breakout", "message": "MU broke out", "rules": rules}, "b1")
     repo.event("social_digest", {"underlying": "", "message": "📣 digest"}, "d1")
     desk._deliver()
     assert [target for target, _ in sent] == ["https://discord.test/h", "https://discord.test/i", "main"]
     sent.clear()
     repo.set_preferences({"discord_categories": {"ideas": False}})
-    repo.event("breakout", {"underlying": "AMD", "kind": "breakout", "message": "AMD broke out"}, "b2")
+    repo.event("breakout", {"underlying": "AMD", "kind": "breakout", "message": "AMD broke out", "rules": rules}, "b2")
     repo.event("holding_alert", {"underlying": "NVDA", "kind": "profit", "message": "Up 50%"}, "h2")
     desk._deliver()
     assert [target for target, _ in sent] == ["https://discord.test/h"]  # ideas are off
+
+
+def test_ideas_reach_discord_only_once_every_rule_they_rest_on_has_passed(repo, monkeypatch):
+    sent = []
+    desk = _delivery_desk(repo, monkeypatch, sent)
+    repo.event("trade_opportunities", {"underlying": "", "message": "📈 ideas", "rules": list(register.SCAN_RULES)}, "o1")
+    repo.event("breakout", {"underlying": "MU", "kind": "breakout", "message": "MU broke out",
+                            "rules": list(register.BREAKOUT_RULES)}, "b1")
+    repo.event("options_ideas", {"underlying": "", "message": "calls", "rules": list(register.SCAN_RULES)}, "x1")
+    repo.event("breakout", {"underlying": "AMD", "kind": "breakout", "message": "no rules named"}, "b2")
+    repo.event("holding_alert", {"underlying": "NVDA", "kind": "loss", "message": "Down 40% on cost"}, "h1")
+    desk._deliver()
+    assert len(sent) == 1  # only the holding alert
+    assert not [e for e in repo.events() if e["event_type"] == "discord_attempt"
+                and e["payload"]["event_id"] in {1, 2, 3, 4}]  # never tried, still in the journal
+    assert {e["event_type"] for e in repo.events()} >= {"trade_opportunities", "breakout", "options_ideas"}
+    sent.clear()
+    monkeypatch.setattr(register, "passed", lambda rule: rule == "swing_trend")  # the breakout rule passes
+    repo.event("breakout", {"underlying": "TSM", "kind": "breakout", "message": "TSM broke out",
+                            "rules": list(register.BREAKOUT_RULES)}, "b3")
+    desk._deliver()
+    # Held breakouts of the last 15 minutes follow; the scan and its options also need the review to pass.
+    assert [content.split("\n")[0] for _, content in sent] == ["🚀 **MU** · Breakout", "🚀 **TSM** · Breakout"]
 
 
 def test_moves_on_names_you_do_not_hold_are_batched(repo, monkeypatch):

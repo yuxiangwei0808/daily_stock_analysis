@@ -8,6 +8,7 @@ import type {
   HoldingRuleInput,
   HoldingsResponse,
   PortfolioSummary,
+  RecentIdeas,
   TrackRecord,
   PaperFillRequest,
   TradeAdviceJob,
@@ -291,6 +292,11 @@ export const tradeDeskApi = {
   async updatePreferences(request: TradePreferencesUpdate): Promise<TradePreferences> {
     const response = await apiClient.patch<Record<string, unknown>>(`${BASE_PATH}/preferences`, toPreferencesPayload(request));
     return toCamelCase<TradePreferences>(response.data);
+  },
+
+  async getRecentIdeas(days = 7): Promise<RecentIdeas> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/ideas`, { params: { days } });
+    return toCamelCase<RecentIdeas>(response.data);
   },
 
   async getTrackRecord(): Promise<TrackRecord> {

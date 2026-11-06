@@ -10,6 +10,7 @@ import type { HoldingsView, TradeAdviceJob, TradeAdviceRequest, TradeDeskCatalog
 import type { DecisionSignalItem } from '../types/decisionSignals';
 import { HoldingsPanel } from '../components/tradeDesk/HoldingsPanel';
 import { ChartPanel } from '../components/tradeDesk/ChartPanel';
+import { IdeasCard } from '../components/tradeDesk/IdeasCard';
 import { TrackRecordCard } from '../components/tradeDesk/TrackRecordCard';
 import { ShadowExitsCard } from '../components/tradeDesk/ShadowExitsCard';
 import { TradeJournalCard } from '../components/tradeDesk/TradeJournalCard';
@@ -356,6 +357,10 @@ const TradeDeskPage: React.FC = () => {
   };
 
   const setActiveView = (nextView: TradeDeskView) => { setView(nextView); };
+  const openChart = (ticker: string) => {
+    setSearchParamsRef.current((current) => { const next = new URLSearchParams(current); next.set('ticker', ticker); next.set('view', 'chart'); return next; });
+    setView('chart');
+  };
   // Arrow keys, Home and End move between tabs (WAI-ARIA tabs pattern).
   const onTabKey = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     const index = TRADE_DESK_VIEWS.indexOf(view);
@@ -429,7 +434,7 @@ const TradeDeskPage: React.FC = () => {
       </div> : null}
     </div></Card>;
   };
-  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} autoStrategies={autoByInstrument[form.instrument] || autoStrategies} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
+  const renderOpportunities = () => <div className="space-y-5"><AdviceForm form={form} setForm={setForm} catalog={catalog} autoStrategies={autoByInstrument[form.instrument] || autoStrategies} health={health} selectedStrategies={selectedStrategies} setSelectedStrategies={setSelectedStrategies} onSubmit={() => void submitAdvice()} isSubmitting={isSubmitting} sourceReportId={sourceReportId} heldNote={heldNote} reportVerdict={currentVerdict} open={askPanelOpen} onToggle={() => setAskOpen(!askPanelOpen)} tickerOptions={tickerOptions} /><IdeasCard onChart={openChart} /><div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start">{renderQuestions()}{renderAnswer()}</div></div>;
   // Replay events must never read as live: resolve each event's data mode from
   // its payload or advice so the journal can label it.
   const journalMode = (event: TradeJournalEvent): string | undefined => {

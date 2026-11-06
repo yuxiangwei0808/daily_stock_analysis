@@ -18,7 +18,7 @@ Boxes, levels and flags always come from completed 15-minute regular-session bar
   next bar can still trade it.
 - ``flags``: each setup's trades. ``armed`` is a limit the next bar fills at its price, ``watching``
   a break and retest waiting for a close past its price, ``open`` and ``closed`` a trade taken, with
-  its R after cost by the backtest's exits. Each carries its backtest grade (``GRADES``); none has
+  its R after cost by the backtest's exits. Each carries its backtest grade (``register.BOX_VARIANTS``); none has
   passed, so they are context, not suggestions.
 - ``levels``: the value-area low and high of the two prior weeks, the prior session's high, low and
   close, and for a stock you hold, each position's plan stop and target and your price alerts.
@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from . import boxes as bx
+from . import register
 from .backtest import boxes as bb
 from .chart_grades import ChartGrades, Context
 from .models import utcnow
@@ -59,27 +60,15 @@ SILENT = timedelta(seconds=60)  # no push this long while a chart is open in the
 SAMPLES = 5000
 GRADE_AT = dtime(16, 20)  # New York: the daily pass over stocks with trades still running
 MAX_DAILY_CHARTS = 30
-# The 2026-11-05 backtest (docs/strategy-backtest.md): each trade against the same trade at random
-# times; t by month in period A (2020-11 to 2023-11) and period B (to 2026-11).
-GRADES = {
-    ("break_retest", 1.0, False): ("rejected", -2.24, -2.90),
-    ("fade", 1.0, False): ("no edge shown", -1.78, -0.90),
-    ("break_retest", 0.6, False): ("rejected", -4.60, -3.57),
-    ("fade", 0.6, False): ("rejected", -2.35, -1.10),
-    ("break_retest", 1.0, True): ("no edge shown", -0.04, -0.11),
-    ("fade", 1.0, True): ("no edge shown", -1.47, 0.26),
-    ("break_retest", 0.6, True): ("rejected", -0.52, -0.65),
-    ("fade", 0.6, True): ("rejected", -0.69, -0.49),
-}
 NOTE = ("Boxes and flags follow the backtested rules on completed 15-minute bars. No flag type has "
         "beaten the same trades at random times, so they are context, not suggestions.")
 
 
 def grade(kind: str, impulse_t: float, tidy: bool) -> Dict[str, Any]:
-    verdict, t_a, t_b = GRADES[(kind, impulse_t, tidy)]
+    verdict, t_a, t_b = register.box_grade(kind, impulse_t, tidy)
     return {"verdict": verdict, "t": [t_a, t_b],
             "label": f"{verdict.capitalize()} in backtest (t {t_a:+.2f} / {t_b:+.2f} vs random timing)",
-            "source": "docs/strategy-backtest.md, run of 2026-11-05"}
+            "source": register.BOX_SOURCE}
 
 
 def _local(text: str) -> datetime:

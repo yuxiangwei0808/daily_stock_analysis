@@ -931,3 +931,35 @@ export interface StopRisk {
   withoutStop: string[];
   unpriced: string[];
 }
+
+export interface RecentIdea {
+  id: string;
+  kind: 'idea' | 'breakout';
+  verdict: 'high' | 'medium' | 'rejected' | 'breakout' | string;
+  ticker: string;
+  name?: string | null;
+  direction: 'long' | 'short';
+  signalDay: string;
+  entry?: number | null;
+  stop?: number | null;
+  target?: number | null;
+  strength?: number | null;
+  status?: string | null;
+  reason?: string | null;
+  returnPct?: number | null;
+  r?: number | null;
+  days?: number | null;
+}
+
+export interface IdeaRule {
+  id: string;
+  verdict: string;
+  label: string;
+}
+
+export interface RecentIdeas {
+  days: number;
+  items: RecentIdea[];
+  rules: Record<'idea' | 'breakout', IdeaRule[]>;
+  discord: Record<'idea' | 'breakout', boolean>;
+}

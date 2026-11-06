@@ -626,3 +626,21 @@ def test_model_calls_are_measured_against_the_rest_of_the_watchlist():
     assert board["model:sell"]["avg_vs_peers_pct"] == pytest.approx(6.0)
     assert board["model:buy_shown"]["avg_vs_peers_pct"] == pytest.approx(4.0) and board["model:buy_shown"]["closed"] == 1
     assert board["model:buy_softened"]["avg_vs_peers_pct"] == pytest.approx(2.0) and board["model:buy_softened"]["closed"] == 1
+
+
+def test_recent_ideas_list_scans_and_breakouts_with_their_rules_verdicts(repo):
+    result = {"slot": "2026-11-06 12:00", "day": date(2026, 11, 6), "tracked": [
+        {"ticker": "AAA", "direction": "long", "price": 100.0, "stop": 97.0, "targets": [106.0], "verdict": "high"},
+        {"ticker": "BBB", "direction": "short", "price": 50.0, "stop": 52.0, "targets": [46.0], "verdict": "rejected"}]}
+    it.record_scan(repo, result)
+    it.record_breakout(repo, "CCC", "long", 20.0, 19.0, 22.0, date(2026, 11, 6))
+    repo.track_idea("social:2026-11-06:DDD", {"kind": "social", "ticker": "DDD", "direction": "long", "signal_day": "2026-11-06"})
+    out = it.recent_ideas(repo, days=7)
+    assert {(item["ticker"], item["kind"], item["verdict"]) for item in out["items"]} == {
+        ("AAA", "idea", "high"), ("BBB", "idea", "rejected"), ("CCC", "breakout", "breakout")}  # social picks are not ideas
+    aaa = next(item for item in out["items"] if item["ticker"] == "AAA")
+    assert (aaa["entry"], aaa["stop"], aaa["target"], aaa["status"]) == (100.0, 97.0, 106.0, "open")
+    assert [rule["id"] for rule in out["rules"]["idea"]] == ["swing_trend", "model_review"]
+    assert out["rules"]["breakout"][0]["verdict"] == "no edge shown"
+    assert out["discord"] == {"idea": False, "breakout": False}  # nothing has passed: dashboard only
+    assert it.recent_ideas(repo, days=7, now=datetime.now(timezone.utc) + timedelta(days=30))["items"] == []

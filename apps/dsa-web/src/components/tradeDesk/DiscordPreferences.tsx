@@ -8,7 +8,7 @@ import type { TradePreferences } from '../../types/tradeDesk';
 export const DISCORD_CATEGORIES = [
   { key: 'holdings', label: 'Your positions', detail: 'Holding alerts, your price alerts, daily portfolio summary' },
   { key: 'market', label: 'Market moves & news', detail: 'Big moves and material news; names you do not hold arrive batched every 15 min' },
-  { key: 'ideas', label: 'Trade ideas', detail: 'Swing opportunities, options ideas, breakouts' },
+  { key: 'ideas', label: 'Trade ideas', detail: 'Swing opportunities, options ideas, breakouts; sent only once their rules pass the trading methodology' },
   { key: 'digest', label: 'Digests', detail: 'Social scan, weekly track record, system status' },
 ] as const;
 

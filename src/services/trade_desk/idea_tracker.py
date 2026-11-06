@@ -575,6 +575,26 @@ def _split_safe(record: Dict[str, Any], bars: List[Dict[str, Any]]) -> tuple:
     return priced, {}
 
 
+IDEA_FIELDS = ("id", "kind", "verdict", "ticker", "name", "direction", "signal_day", "entry", "stop", "target",
+               "strength", "status", "reason", "return_pct", "r", "days")
+
+
+def recent_ideas(repo: Any, days: int = 7, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """The scan's reviewed ideas and the breakout alerts of the last ``days``, newest first, for the dashboard.
+
+    Each kind names the rules it rests on with their register verdicts; ``discord`` says whether it
+    may reach Discord, which needs every rule to have passed (methodology stage 8)."""
+    from . import register
+    since = ((now or datetime.now(_NEW_YORK)) - timedelta(days=days)).astimezone(timezone.utc).isoformat()
+    rows = [r for r in repo.tracked_ideas(since=since, limit=1000) if r.get("kind") in (None, "idea", "breakout")]
+    items = [{**{key: r.get(key) for key in IDEA_FIELDS}, "kind": r.get("kind") or "idea"} for r in rows]
+    kinds = {"idea": register.SCAN_RULES, "breakout": register.BREAKOUT_RULES}
+    return {"days": days, "items": items,
+            "rules": {kind: [{"id": rule, "verdict": register.get(rule).verdict, "label": register.label(rule)}
+                             for rule in rules] for kind, rules in kinds.items()},
+            "discord": {kind: register.discord_ok(rules) for kind, rules in kinds.items()}}
+
+
 def track_record(repo: Any, now: Optional[datetime] = None, window_days: int = WINDOW_DAYS) -> Dict[str, Any]:
     # created_at is stored in UTC ISO text; compare like with like.
     since = ((now or datetime.now(_NEW_YORK)) - timedelta(days=window_days)).astimezone(timezone.utc).isoformat()
