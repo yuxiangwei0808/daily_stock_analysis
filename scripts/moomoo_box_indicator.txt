@@ -1,0 +1,89 @@
+# DSA boxes for moomoo: the Trade Desk chart's range and base boxes on moomoo's own chart.
+#
+# Paste into moomoo's indicator editor as a Python indicator (Indicators > Custom > Python), on a
+# 15-minute chart with extended hours hidden. It is the rule of src/services/trade_desk/boxes.py:
+# T is the median session range of the 10 sessions before a bar's; an impulse is a bar whose change
+# from the previous close is at least IMPULSE x T; the range box is the bodies of the 8 bars after it
+# and the base box those before it; a box taller than 0.75 x the impulse is dropped (TIDY also drops
+# one taller than half the impulse or drifting by more than half its height); a setup lasts until
+# the end of the fifth session after its impulse. Each box is drawn from its own bars to the end of
+# its setup, the newest setup's on top; impulse bars are marked.
+#
+# Research context, not signals: the box trades did not beat the same trades at random times
+# (docs/strategy-backtest.md). It draws only; it sends nothing anywhere.
+indicator("DSABOX", "DSA boxes (tested rules, not signals)", True)
+
+import math
+from fdatetime import day
+
+BOX_BARS = 8
+MAX_HEIGHT = 0.75
+LIFE_SESSIONS = 5
+T_SESSIONS = 10
+
+
+def _median(values):
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _box(lows, highs, closes, a, b, size, tidy):
+    """Bars a..b-1's bodies as (low, high), or None when too tall or, with tidy, drifting."""
+    lo, hi = min(lows[a:b]), max(highs[a:b])
+    if hi - lo > MAX_HEIGHT * size:
+        return None
+    if tidy and (hi - lo > 0.5 * size or abs(closes[b - 1] - closes[a]) > 0.5 * (hi - lo)):
+        return None
+    return (lo, hi)
+
+
+def dsa_boxes(o, h, l, c, days, impulse_t=1.0, tidy=False):
+    """Per-bar levels: range top and bottom, base top and bottom (NaN where none), and impulse flags."""
+    n = len(c)
+    sess, first, last = [], [], []
+    for k in range(n):
+        if k == 0 or days[k] != days[k - 1]:
+            first.append(k)
+            last.append(k)
+        last[-1] = k
+        sess.append(len(first) - 1)
+    ranges = [max(h[a:b + 1]) - min(l[a:b + 1]) for a, b in zip(first, last)]
+    t_by_session = [_median(ranges[s - T_SESSIONS:s]) if s >= T_SESSIONS else math.nan for s in range(len(first))]
+    chg = [math.nan] + [c[k] - c[k - 1] for k in range(1, n)]
+    imp = [not math.isnan(t_by_session[sess[k]]) and not math.isnan(chg[k]) and abs(chg[k]) >= impulse_t * t_by_session[sess[k]]
+           for k in range(n)]
+    lows = [min(x, y) for x, y in zip(o, c)]
+    highs = [max(x, y) for x, y in zip(o, c)]
+    out = {name: [math.nan] * n for name in ("range_top", "range_bottom", "base_top", "base_bottom")}
+    for i in range(n):
+        if not imp[i] or i - BOX_BARS < 0 or i + BOX_BARS >= n or any(imp[i + 1:i + 1 + BOX_BARS]):
+            continue
+        size = abs(chg[i])
+        end = last[min(sess[i] + LIFE_SESSIONS, len(first) - 1)]
+        for name, a, b in (("range", i + 1, i + 1 + BOX_BARS), ("base", i - BOX_BARS, i)):
+            box = _box(lows, highs, c, a, b, size, tidy)
+            if box is None:
+                continue
+            for k in range(a, end + 1):  # later setups overwrite: the newest box is shown
+                out[name + "_bottom"][k], out[name + "_top"][k] = box
+    out["impulse"] = [1 if flag else 0 for flag in imp]
+    return out
+
+
+def _sequence(values):
+    seq = close()
+    for k in range(len(values)):
+        seq[k] = values[k]
+    return seq
+
+
+if __name__ == "__main__":
+    impulse_t = input_parameter("Impulse x T (1.0 or 0.6)", 1.0)
+    tidy = input_parameter("Tidy boxes (1 = yes)", 0)
+    levels = dsa_boxes(list(open()), list(high()), list(low()), list(close()), list(day()), impulse_t, tidy == 1)
+    plot("RANGE_TOP", _sequence(levels["range_top"]), color=Color.hex("#06B6D4"))
+    plot("RANGE_BOTTOM", _sequence(levels["range_bottom"]), color=Color.hex("#06B6D4"))
+    plot("BASE_TOP", _sequence(levels["base_top"]), color=Color.hex("#8B5CF6"))
+    plot("BASE_BOTTOM", _sequence(levels["base_bottom"]), color=Color.hex("#8B5CF6"))
+    plot_stickline("IMPULSE", _sequence(levels["impulse"]) == 1, high(), low(), color=Color.hex("#F59E0B"), width=1, empty=True, dashed=False)

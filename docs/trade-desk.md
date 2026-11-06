@@ -881,6 +881,13 @@ it passes only if its edge over random timing reaches the month-clustered t the 
 and its trades made money. Records move whenever a chart of their stock is read, and once a day
 after 16:20 New York for stocks with trades still running.
 
+**On moomoo's own chart**: `scripts/moomoo_box_indicator.txt` is a moomoo Python indicator that
+draws the same range and base boxes (and marks impulse bars) on moomoo's 15-minute chart. Paste
+it into moomoo's indicator editor as a Python indicator and use it with extended hours hidden, so
+its sessions are the regular ones the rules use. Its inputs are the impulse (1.0 or 0.6 T) and
+tidy boxes. It only draws; moomoo's drawing calls are not in the API documentation, so check it
+on the chart once against the Chart tab.
+
 **Live updates**: while the tab is open, moomoo pushes the forming bar and each trade to the page
 (the header shows "Live" and the last trade's time). When a 15-minute bar closes, the page
 reloads the boxes and flags, which only ever use completed bars. Up to five charts stay live at

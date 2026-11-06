@@ -1,7 +1,9 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: phases 1 to 6 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
-the Chart tab, live updates, forward grades, the stop risk panel); phase 7 not built.
+Status: phases 1 to 7 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
+the Chart tab, live updates, forward grades, the stop risk panel, the moomoo indicator). The
+optional moomoo price alerts are not built: they change account settings and need your OK each
+time.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
@@ -112,10 +114,15 @@ Each phase ships on its own with tests. Phase 0 is a precondition.
    through every stop to twice its distance. Percentages only. It uses the Holdings page's view
    and plan rows, so the stops, prices and weights match it; options are re-priced at the stop
    with their implied volatility, as the Portfolio risk card does.
-7. **moomoo add-on.**
-   - A custom indicator script that draws the boxes on moomoo's own charts. You paste it into
-     the app and check it, since moomoo's drawing functions are not documented in the API.
-   - Optionally, moomoo price alerts at stops or box edges through `set_price_reminder`. This
+7. **moomoo add-on** (indicator done, `scripts/moomoo_box_indicator.txt`).
+   - A moomoo Python indicator (moomoo also runs Python indicators, so the rules are ported
+     as they are rather than approximated in MyLang) that draws each setup's range and base
+     box from its own bars to the end of its setup, and marks impulse bars. Written against
+     the built-in Python indicators' calls (`plot`, `plot_stickline`, `input_parameter`,
+     `fdatetime.day`, read with `get_indicator_list`); a test runs it against stand-ins for
+     those calls and checks it draws the boxes of `boxes.py` in two variants. Still to check
+     on moomoo's chart once, since its drawing calls are not documented in the API.
+   - Not built: moomoo price alerts at stops or box edges through `set_price_reminder`. This
      changes your account's settings, so only with your OK each time.
 
 ## Risks and limits
