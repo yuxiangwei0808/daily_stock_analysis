@@ -850,7 +850,12 @@ sees, so you can read it and decide yourself. DSA never places, changes or cance
   at random times, so they are context, not suggestions.
 - **Box rules**: the four backtested variants (impulse 1 or 0.6 T, normal or tidy boxes).
 
-The chart refreshes every minute while the tab is visible.
+**Live updates**: while the tab is open, moomoo pushes the forming bar and each trade to the page
+(the header shows "Live" and the last trade's time). When a 15-minute bar closes, the page
+reloads the boxes and flags, which only ever use completed bars. Up to five charts stay live at
+once; a sixth pauses the oldest, which then refreshes every minute. A closed page's
+subscriptions are released after 10 minutes. The Status page's "Chart live bars" line shows the
+open charts, pushes, quote delay and the time spent per push.
 
 ## Your trades (journal from moomoo fills)
 
@@ -991,8 +996,14 @@ returns up to 1,000 moomoo bars and what the live chart draws
 
 Boxes, levels and flags always use completed 15-minute regular-session bars. The chart reads
 bars on a moomoo connection of its own. It keeps the subscriptions of its 5 most recent
-tickers and releases older or idle ones at the next request. A moomoo failure returns 503 with
-its code. OpenAPI at `/docs` describes request validation.
+tickers and releases older ones at the next request, and ones idle for 10 minutes at the next
+request or the minute's sweep. A moomoo failure returns 503 with its code. OpenAPI at `/docs`
+describes request validation.
+`GET /chart/{ticker}/stream?interval=15m` is a server-sent event stream for an open chart: `bar`
+(the shown interval's latest bar), `quote` (the last trade and its exchange time), `closed` (a
+15-minute bar ended; the page reloads the snapshot) and `evicted` (more than five charts are
+open). It subscribes the quote and the bars with push on the chart's connection; the pushes are
+kept in memory, never in the events table.
 
 Additive `trade_desk_*` tables hold conversations, advice versions, plans, fills,
 events, preferences and worker leases. Existing `DecisionSignal` records remain

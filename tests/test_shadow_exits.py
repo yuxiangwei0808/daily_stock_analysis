@@ -1315,7 +1315,7 @@ def test_the_real_sdk_offers_the_quote_parse_and_can_keep_pushes_out_of_its_log_
     # In a process of its own: the two SDKs register the same proto files, so only the first import in a process works.
     check = f"""
 import logging, {module} as sdk
-assert callable(sdk.StockQuoteHandlerBase.parse_rsp_pb)
+assert callable(sdk.StockQuoteHandlerBase.parse_rsp_pb) and callable(sdk.CurKlineHandlerBase.parse_rsp_pb)
 sdk.logger.file_level = logging.INFO
 sdk.logger.debug("a push")
 sdk.logger.info("a connection")

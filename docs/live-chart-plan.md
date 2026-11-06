@@ -1,7 +1,7 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: phases 1 to 3 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
-the Chart tab); later phases not built.
+Status: phases 1 to 4 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
+the Chart tab, live updates); later phases not built.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
@@ -78,15 +78,19 @@ Each phase ships on its own with tests. Phase 0 is a precondition.
      target. It refreshes every minute until phase 4 streams.
    - Checked with a scratch web build and screenshots on real SPY bars, light and dark, desktop
      and phone width, before anything is built into `static/`.
-4. **Live updates.**
-   - Subscribe quote, 1-minute and 15-minute bar push for open charts only. Each moomoo
-     subscription counts against the account's limit, so cap open charts at about 5 and
-     release idle ones after 10 minutes.
-   - Stream updates to the page over a separate in-memory SSE route, kept out of the events
-     table.
-   - Keep the two fixes shadow mode needed: no per-push pandas tables, and the SDK's file log
-     at INFO.
-   - Measure push delay and CPU in market hours, as for shadow mode.
+4. **Live updates** (done, `Charts.stream`, `GET /chart/{ticker}/stream`).
+   - An open chart subscribes the quote, the 15-minute bars and the shown interval's bars with
+     push (two or three subscriptions). Open charts are capped at 5 (a sixth ends the oldest
+     stream) and a closed page's subscriptions are released after 10 minutes by a sweep each
+     minute.
+   - The pushes land in memory; the SSE route reads them every quarter second and sends the
+     forming bar, the last trade, and each 15-minute close, after which the page reloads the
+     snapshot. Nothing goes to the events table.
+   - The two fixes shadow mode needed are kept: the chart's own handlers parse pushes without
+     the SDK's pandas table, and the SDK's file log is at INFO.
+   - The Status page's "Chart live bars" line shows pushes, quote delay (arrival minus exchange
+     time) and handler time. Checked on OpenD after the close on 2026-11-05: quote pushes reach
+     the stream at 0.05 ms each. Bar pushes and the delay need a market-hours check.
 5. **Flags, your marks, and grading.**
    - Each flag (box retest, fade at a box) is stored with entry, stop, target and direction
      when it triggers.

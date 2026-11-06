@@ -486,6 +486,43 @@ async def chart(ticker: str, request: Request, interval: Literal["1m", "5m", "15
     return await invoke(get_service(request).charts.chart, ticker, interval, impulse_t=impulse, tidy=tidy)
 
 
+STREAM_POLL_SECONDS = 0.25
+
+
+@router.get("/chart/{ticker}/stream")
+async def chart_stream(ticker: str, request: Request, interval: Literal["1m", "5m", "15m", "1d"] = "15m"):
+    """Live updates for an open chart, as server-sent events; read only.
+
+    ``bar`` is the shown interval's latest bar and ``quote`` the last trade, both pushed by moomoo;
+    ``closed`` says a 15-minute bar ended, and the page then reloads the snapshot, since boxes and
+    flags use completed bars only. ``evicted`` ends the stream when more than five charts are open.
+    """
+    stream = await invoke(get_service(request).charts.stream, ticker, interval)
+
+    async def events():
+        quiet = 0.0
+        try:
+            yield "event: ready\ndata: {}\n\n"
+            while not await request.is_disconnected():
+                now = utcnow()
+                if stream.due(now) and not await asyncio.to_thread(stream.touch, now):
+                    yield 'event: evicted\ndata: {"reason": "more than five charts are open"}\n\n'
+                    return
+                for name, data in stream.poll(now):
+                    yield f"event: {name}\ndata: {json.dumps(data, allow_nan=False)}\n\n"
+                    quiet = 0.0
+                quiet += STREAM_POLL_SECONDS
+                if quiet >= 15:
+                    yield ": heartbeat\n\n"
+                    quiet = 0.0
+                await asyncio.sleep(STREAM_POLL_SECONDS)
+        finally:
+            stream.close()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.get("/events")
 async def events(request: Request, after: Optional[int] = Query(default=None, ge=0)):
     try:

@@ -191,6 +191,9 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
         shadow_watch = getattr(worker, "_shadow_watch", None)
         if shadow_watch is not None:
             add("shadow_feed", "Shadow exits live feed", **shadow_watch.health(now))
+        charts = getattr(service, "charts", None)
+        if charts is not None:
+            add("chart_feed", "Chart live bars", **charts.health(now))
         for key, label, attr in (("pulse", "Market pulse", "_pulse"), ("opportunities", "Trade opportunities", "_opportunities"),
                                  ("breakouts", "Breakout watch", "_breakouts")):
             part = getattr(worker, attr, None)

@@ -389,6 +389,11 @@ export const tradeDeskApi = {
     return toCamelCase<ChartSnapshot>(response.data);
   },
 
+  /** Server-sent events for an open chart: ``bar``, ``quote``, ``closed`` (reload the snapshot) and ``evicted``. */
+  getChartStreamUrl(ticker: string, interval: ChartInterval): string {
+    return `${API_BASE_URL}${BASE_PATH}/chart/${encodeURIComponent(ticker.trim().toUpperCase())}/stream?interval=${interval}`;
+  },
+
   getEventsUrl(after?: string): string {
     const query = after ? `?after=${encodeURIComponent(after)}` : '';
     return `${API_BASE_URL}${BASE_PATH}/events${query}`;

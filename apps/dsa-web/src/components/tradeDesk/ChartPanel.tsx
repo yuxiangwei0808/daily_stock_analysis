@@ -17,7 +17,9 @@ const VARIANTS = [
   { key: '1-tidy', label: 'Impulse 1 T, tidy boxes', impulse: 1.0, tidy: true },
   { key: '0.6-tidy', label: 'Impulse 0.6 T, tidy boxes', impulse: 0.6, tidy: true },
 ];
-const REFRESH_MS = 60000;
+const REFRESH_MS = 60000;  // without the live stream (it failed, or more than five charts are open)
+const LIVE_QUIET_MS = 60000;
+type LiveState = 'off' | 'connecting' | 'connected' | 'evicted';
 const STATE_LABEL: Record<ChartFlag['state'], string> = { armed: 'Armed', watching: 'Watching', open: 'Open', closed: 'Closed' };
 const STATE_HELP: Record<ChartFlag['state'], string> = {
   armed: 'a limit the next 15-minute bar fills at this price',
@@ -75,8 +77,8 @@ const r = (value: number) => `${value >= 0 ? '+' : '−'}${Math.abs(value).toFix
 const flagKey = (flag: ChartFlag) => `${flag.setup}|${flag.kind}|${flag.box}|${flag.state}|${flag.time ?? ''}`;
 
 /** The canvas: candles, volume and NX, with the snapshot's overlays. */
-function PriceChart({ snapshot, selected, colors, onReady }: { snapshot: ChartSnapshot; selected: ChartFlag | null; colors: ChartColors;
-  onReady?: (push: (bar: KLineData) => void) => void }) {
+function PriceChart({ snapshot, selected, colors, live }: { snapshot: ChartSnapshot; selected: ChartFlag | null; colors: ChartColors;
+  live?: KLineData | null }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const barsRef = useRef<KLineData[]>([]);
@@ -122,8 +124,10 @@ function PriceChart({ snapshot, selected, colors, onReady }: { snapshot: ChartSn
     } else {
       chart.resetData();
     }
-    onReady?.((bar) => pushRef.current?.(bar));
-  }, [snapshot, onReady]);
+  }, [snapshot]);
+
+  // A pushed bar updates the forming candle, or starts the next one.
+  useEffect(() => { if (live) pushRef.current?.(live); }, [live]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -203,11 +207,46 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
   }, [ticker, barInterval, params.impulse, params.tidy]);
 
   useEffect(() => { void load(); }, [load]);
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+
+  // Live: moomoo's pushes for the forming bar and the last trade; at each 15-minute close the snapshot is reloaded.
+  const [liveState, setLiveState] = useState<LiveState>('off');
+  const [liveBar, setLiveBar] = useState<KLineData | null>(null);
+  const [quote, setQuote] = useState<{ price: number; at: string | null; received: number } | null>(null);
+  const shown = snapshot && snapshot.ticker === ticker && snapshot.interval === barInterval;
   useEffect(() => {
-    if (!ticker) return undefined;
+    setLiveBar(null); setQuote(null);
+    if (!shown || typeof EventSource === 'undefined') { setLiveState('off'); return undefined; }
+    const source = new EventSource(tradeDeskApi.getChartStreamUrl(ticker, barInterval), { withCredentials: true });
+    setLiveState('connecting');
+    const read = (event: Event) => { try { return JSON.parse((event as MessageEvent<string>).data); } catch { return null; } };
+    source.addEventListener('ready', () => setLiveState('connected'));
+    source.addEventListener('bar', (event) => {
+      const data = read(event);
+      if (data?.interval === barInterval && data.bar) setLiveBar(toKLine([data.bar])[0]);
+    });
+    source.addEventListener('quote', (event) => {
+      const data = read(event);
+      if (data && typeof data.price === 'number') setQuote({ price: data.price, at: data.at ?? null, received: Date.now() });
+    });
+    source.addEventListener('closed', () => { void loadRef.current(true); });
+    source.addEventListener('evicted', () => { setLiveState('evicted'); source.close(); });
+    source.onerror = () => setLiveState((state) => (state === 'evicted' ? state : 'connecting'));  // EventSource retries
+    return () => source.close();
+  }, [shown, ticker, barInterval]);
+
+  useEffect(() => {
+    if (!ticker || liveState === 'connected') return undefined;
     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void load(true); }, REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [ticker, load]);
+  }, [ticker, load, liveState]);
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (liveState !== 'connected') return undefined;
+    const timer = window.setInterval(() => setClock(Date.now()), 5000);
+    return () => window.clearInterval(timer);
+  }, [liveState]);
 
   const show = (value: string) => {
     const next = tradeDeskTicker(value);
@@ -221,7 +260,14 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
   const current = flags.filter((flag) => flag.state !== 'closed');
   const closed = flags.filter((flag) => flag.state === 'closed');
   const selected = flags.find((flag) => flagKey(flag) === selectedKey) || current[0] || null;
-  const last = snapshot?.bars.length ? snapshot.bars[snapshot.bars.length - 1] : null;
+  const lastBar = snapshot?.bars.length ? snapshot.bars[snapshot.bars.length - 1] : null;
+  const lastPrice = quote?.price ?? liveBar?.close ?? lastBar?.close ?? null;
+  const last = lastPrice == null ? null : { close: lastPrice };
+  const pushing = liveState === 'connected' && quote != null && clock - quote.received < LIVE_QUIET_MS;
+  const liveLine = liveState === 'evicted' ? 'Live updates paused: more than five charts are open. Refreshing every minute.'
+    : liveState === 'connecting' ? 'Connecting to live updates…'
+      : liveState === 'connected' ? (pushing ? `Live · last trade ${quote?.at ? nyTime(quote.at) : ''} ET` : 'Live: waiting for trades (outside the regular session there are none)')
+        : '';
   const closedR = useMemo(() => closed.reduce((sum, flag) => sum + (flag.result?.r || 0), 0), [closed]);
   const pickGroups: Array<[string, string[]]> = [['Holdings', picks.held], ['Watchlist', picks.watchlist], ['Trade ideas', picks.ideas]];
 
@@ -266,11 +312,13 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
               <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="font-mono text-lg font-semibold text-foreground">{snapshot.ticker}</h2>
                 {last ? <span className="font-mono text-sm text-foreground">{price(last.close)}</span> : null}
-                <span className="text-xs text-muted-text">{snapshot.interval} bars · as of {formatDate(snapshot.asOf)}</span>
+                <span className="text-xs text-muted-text">{snapshot.interval} bars · boxes as of {formatDate(snapshot.asOf)}</span>
+                {liveLine ? <span data-testid="live-state" className={`flex items-center gap-1 text-xs ${pushing ? 'text-success' : 'text-muted-text'}`}>
+                  {pushing ? <span className="h-1.5 w-1.5 rounded-full bg-success" /> : null}{liveLine}</span> : null}
               </div>
               {snapshot.typicalRange ? <span className="text-xs text-muted-text">Typical session range T = {price(snapshot.typicalRange.t)}; an impulse is a 15-minute move of {price(snapshot.typicalRange.impulse)} or more</span> : null}
             </div>
-            <PriceChart snapshot={snapshot} selected={selected} colors={colors} />
+            <PriceChart snapshot={snapshot} selected={selected} colors={colors} live={liveBar} />
             <p className="px-1 pt-2 text-[11px] text-muted-text">{snapshot.note}</p>
             {snapshot.interval === '1d' ? <p className="px-1 pt-1 text-[11px] text-muted-text">{BOX_HIDDEN}</p> : null}
             {snapshot.warnings.map((code) => <p key={code} className="px-1 pt-1 text-[11px] text-warning">{WARNINGS[code] || code}</p>)}

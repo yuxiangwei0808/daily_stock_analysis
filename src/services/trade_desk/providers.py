@@ -2047,19 +2047,20 @@ class MoomooProvider:
             self._warn("order_book_time_unreported_observed_on_live_subscription")
         return quote
 
-    def kline(self, code: str, subtype: str, count: int) -> list[dict[str, Any]]:
+    def kline(self, code: str, subtype: str, count: int, *, push: bool = False) -> list[dict[str, Any]]:
         """The latest ``count`` bars of one K-line type (``K_1M`` .. ``K_DAY``), oldest first.
 
         Subscribes the type on this provider's connection (regular session only, the SDK's
-        default). ``time`` is the bar's end as OpenD reports it; ``partial`` marks a bar still
-        forming. OpenD returns at most 1,000 bars, and right after a new subscription only 60
-        until the rest load (waited for up to three seconds; fewer exist for a young stock).
+        default; with ``push``, its updates are pushed too). ``time`` is the bar's end as OpenD
+        reports it; ``partial`` marks a bar still forming. OpenD returns at most 1,000 bars, and
+        right after a new subscription only 60 until the rest load (waited for up to three
+        seconds; fewer exist for a young stock).
         """
 
         with self._lock:
             if not callable(getattr(self._ensure_context(), "get_cur_kline", None)):
                 raise ProviderError("sdk_unsupported", "Quote SDK context does not expose get_cur_kline")
-            fresh = self._subscribe([code], subtype)
+            fresh = self._subscribe([code], subtype, push=push)
             variants = [((code, count), {"ktype": self._enum("KLType", subtype, subtype)})]
             data = self._call_variants("get_cur_kline", variants)
             for _ in range(_KLINE_FILL_TRIES if fresh else 0):
@@ -2084,6 +2085,45 @@ class MoomooProvider:
             bars.append({"time": stamp.isoformat(), **values,
                          "volume": _nonneg_int(_row_get(row, "volume")), "partial": partial})
         return bars
+
+    def listen_bars(self, on_bar: Callable[[dict], None], on_quote: Callable[[dict], None]) -> None:
+        """K-line and quote push on this provider's own connection, as plain rows.
+
+        Set before the first pushed subscription: the SDK's default K-line handler builds a pandas
+        table for every push. The callbacks run on the SDK's callback thread and must return quickly.
+        """
+        ctx = self._ensure_context()
+        sdk = self._sdk
+        ok = getattr(sdk, "RET_OK", 0)
+        _bound_sync_queries(ctx)
+        self._listening = True
+        if hasattr(sdk, "logger"):
+            sdk.logger.file_level = logging.INFO  # debug logs two lines per push into the home folder
+
+        class Bars(sdk.CurKlineHandlerBase):
+            def on_recv_rsp(self, content):
+                ret, rows = self.parse_rsp_pb(content)
+                if ret == ok:
+                    for row in rows:
+                        on_bar(row)
+                return ret, rows
+
+        class Quotes(sdk.StockQuoteHandlerBase):
+            def on_recv_rsp(self, content):
+                ret, rows = self.parse_rsp_pb(content)
+                if ret == ok:
+                    for row in rows:
+                        on_quote(row)
+                return ret, rows
+
+        ctx.set_handler(Bars())
+        ctx.set_handler(Quotes())
+
+    def watch_pushes(self, code: str, subtypes: Sequence[str]) -> None:
+        """Pushed updates of ``subtypes`` (``QUOTE``, ``K_1M`` ..) for one ``US.`` code on this connection."""
+        with self._lock:
+            for subtype in subtypes:
+                self._subscribe([code], subtype, push=True)
 
     def keep_subscriptions(self, wanted: Iterable[tuple[str, str]]) -> None:
         """Release this provider's other subscriptions once they are past OpenD's one-minute minimum."""

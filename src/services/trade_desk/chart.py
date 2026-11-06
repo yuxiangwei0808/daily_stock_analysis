@@ -3,8 +3,13 @@
 Read only; nothing is traded. Bars come from ``get_cur_kline`` on a moomoo connection of the
 chart's own, so its subscriptions never clash with the advice snapshots' (each trims what it does
 not use) or with shadow mode's live feed. The chart keeps the subscriptions of its ``MAX_CHARTS``
-most recent tickers and releases the rest, and any idle for ``IDLE``, at the next request (OpenD
-holds a new subscription for at least a minute).
+most recent tickers and releases the rest, and any idle for ``IDLE``, at the next request or the
+minute's sweep (OpenD holds a new subscription for at least a minute).
+
+Live updates (``stream``): an open chart also subscribes the quote and its bars with push. The
+pushes land in memory on the SDK's thread, as plain rows (no pandas table per push), and the page's
+stream reads them from there: the forming bar, the last trade, and each 15-minute close, after
+which the page reloads the snapshot so boxes and flags move only on completed bars.
 
 Boxes, levels and flags always come from completed 15-minute regular-session bars, through
 ``boxes.py``, so the chart draws exactly the rule that was backtested:
@@ -21,9 +26,12 @@ Boxes, levels and flags always come from completed 15-minute regular-session bar
 """
 from __future__ import annotations
 
+import logging
 import math
 import re
 import threading
+import time
+from collections import deque
 from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -32,6 +40,10 @@ from . import boxes as bx
 from .backtest import boxes as bb
 from .models import utcnow
 from .moomoo_indicators import NX_MIN_BARS, nx
+from .providers import _safe_float
+from .shadow_exits import spread
+
+logger = logging.getLogger(__name__)
 
 _NEW_YORK = ZoneInfo("America/New_York")
 INTERVALS = {"1m": "K_1M", "5m": "K_5M", "15m": "K_15M", "1d": "K_DAY"}
@@ -39,6 +51,11 @@ MAX_BARS = 1000  # OpenD's most per get_cur_kline
 MAX_CHARTS = 5
 IDLE = timedelta(minutes=10)
 VARIANTS = {(1.0, False), (0.6, False), (1.0, True), (0.6, True)}
+SWEEP_SECONDS = 60
+TOUCH = timedelta(seconds=30)  # an open stream marks its ticker used this often
+CLOSE_GRACE = timedelta(seconds=3)  # after a 15-minute bar's end, before the page reloads the snapshot
+SILENT = timedelta(seconds=60)  # no push this long while a chart is open in the session: a warning
+SAMPLES = 5000
 # The 2026-11-05 backtest (docs/strategy-backtest.md): each trade against the same trade at random
 # times; t by month in period A (2020-11 to 2023-11) and period B (to 2026-11).
 GRADES = {
@@ -88,26 +105,154 @@ def _next_bar_day(now: datetime) -> date:
     return day
 
 
+def _validate(ticker: str, interval: str, impulse_t: float = 1.0, tidy: bool = False) -> str:
+    ticker = str(ticker or "").strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z.\-]{0,9}", ticker):
+        raise ValueError("Choose a US ticker")
+    if interval not in INTERVALS:
+        raise ValueError(f"Intervals are {', '.join(INTERVALS)}")
+    if (impulse_t, tidy) not in VARIANTS:
+        raise ValueError("Only the backtested boxes: impulse 1.0 or 0.6 T, normal or tidy")
+    return ticker
+
+
+def _push_time(text: Any) -> Optional[datetime]:
+    """OpenD's US push times are New York time."""
+    try:
+        return datetime.fromisoformat(str(text).strip()).replace(tzinfo=_NEW_YORK)
+    except ValueError:
+        return None
+
+
 class Charts:
     def __init__(self, service: Any, provider: Any = None):
         self.service = service
         self._provider = provider
-        self._used: Dict[Tuple[str, str], datetime] = {}  # (code, K-line type) -> last request
+        self._used: Dict[Tuple[str, str], datetime] = {}  # (code, subscription type) -> last use
         self._lock = threading.Lock()
+        # Pushed state, written on the SDK's thread: the latest bar per (code, K-line type) and quote per code.
+        self._bars: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._quotes: Dict[str, Dict[str, Any]] = {}
+        self._seq = 0
+        self._streams: Dict[str, int] = {}
+        self.pushes = {"bar": 0, "quote": 0}
+        self.lags: deque = deque(maxlen=SAMPLES)  # quote arrival minus its exchange time, seconds
+        self.handler_ms: deque = deque(maxlen=SAMPLES)
+        self.last_push: Optional[datetime] = None
+        self.error: Optional[str] = None
+        self._stop = threading.Event()
+        self._sweeper: Optional[threading.Thread] = None
 
     def _connection(self) -> Any:
         with self._lock:
             if self._provider is None:
-                self._provider = self.service.provider_factory("live")
+                provider = self.service.provider_factory("live")
+                listen = getattr(provider, "listen_bars", None)
+                try:
+                    if callable(listen):  # before any pushed subscription: the SDK's own handler is slow
+                        listen(self._on_bar, self._on_quote)
+                except Exception:
+                    provider.close()
+                    raise
+                self._provider = provider
+                self._stop.clear()
+                self._sweeper = threading.Thread(target=self._sweep, name="chart-sweep", daemon=True)
+                self._sweeper.start()
             return self._provider
 
     def close(self) -> None:
+        self._stop.set()
         with self._lock:
             provider, self._provider = self._provider, None
         if provider is not None:
             provider.close()
 
-    def _upkeep(self, records: List[Tuple[str, str]], now: datetime) -> None:
+    def _sweep(self) -> None:
+        """Releases idle subscriptions every minute, so a closed page frees them without a next request."""
+        while not self._stop.wait(SWEEP_SECONDS):
+            try:
+                self._upkeep([], utcnow(), connect=False)
+            except Exception as exc:  # the next sweep tries again
+                logger.info("Chart subscription sweep: %s", type(exc).__name__)
+
+    # -- pushes, on the SDK's callback thread -------------------------------------------------
+    def _on_bar(self, row: Dict[str, Any]) -> None:
+        started = time.thread_time()
+        try:
+            stamp = _push_time(row.get("time_key"))
+            values = {name: _safe_float(row.get(name)) for name in ("open", "high", "low", "close")}
+            if stamp is None or any(value is None for value in values.values()):
+                return
+            bar = {"time": stamp.isoformat(), **values, "volume": int(_safe_float(row.get("volume")) or 0)}
+            with self._lock:
+                self._seq += 1
+                self._bars[(str(row.get("code") or ""), str(row.get("k_type") or ""))] = {**bar, "seq": self._seq}
+                self.pushes["bar"] += 1
+                self.last_push = utcnow()
+                self.handler_ms.append((time.thread_time() - started) * 1000)
+        except Exception as exc:  # the SDK's thread keeps delivering; Status shows this
+            self.error = type(exc).__name__
+
+    def _on_quote(self, row: Dict[str, Any]) -> None:
+        started = time.thread_time()
+        try:
+            price = _safe_float(row.get("last_price"))
+            if not price or price <= 0:
+                return
+            arrived = utcnow()
+            data_at = _push_time(f"{row.get('data_date')} {row.get('data_time')}")
+            with self._lock:
+                self._seq += 1
+                previous = self._quotes.get(str(row.get("code") or ""))
+                self._quotes[str(row.get("code") or "")] = {
+                    "price": price, "at": data_at.isoformat() if data_at else None, "seq": self._seq}
+                self.pushes["quote"] += 1
+                self.last_push = arrived
+                # The first push is only the last known state, and a quote without a new trade says nothing of delay.
+                if previous and data_at and previous.get("at") != data_at.isoformat():
+                    self.lags.append(max(0.0, (arrived - data_at).total_seconds()))
+                self.handler_ms.append((time.thread_time() - started) * 1000)
+        except Exception as exc:
+            self.error = type(exc).__name__
+
+    def stream(self, ticker: str, interval: str = "15m") -> "ChartStream":
+        """Subscribes the quote and the bars with push and returns what the page's stream reads."""
+        ticker = _validate(ticker, interval)
+        code = f"US.{ticker}"
+        types = ["QUOTE", "K_15M"] + ([INTERVALS[interval]] if interval != "15m" else [])
+        self._connection().watch_pushes(code, types)
+        records = [(code, kind) for kind in types]
+        with self._lock:
+            self._streams[code] = self._streams.get(code, 0) + 1
+        self._upkeep(records, utcnow())
+        return ChartStream(self, code, interval, records)
+
+    def _end_stream(self, code: str) -> None:
+        with self._lock:
+            self._streams[code] = self._streams.get(code, 1) - 1
+            if self._streams[code] <= 0:
+                del self._streams[code]
+
+    def health(self, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """The Status page's line: open charts, pushes, delay and handler time."""
+        now = now or utcnow()
+        with self._lock:
+            streams = sum(self._streams.values())
+            tickers = len({code for code, _ in self._used})
+            pushes, last = dict(self.pushes), self.last_push
+            lag, cost = spread(self.lags), spread(self.handler_ms)
+        if self.error:
+            return {"state": "error", "detail": f"push handler failed: {self.error}"}
+        if not streams:
+            return {"state": "off", "detail": f"no chart open ({tickers} tickers still subscribed)" if tickers else "no chart open"}
+        detail = (f"{streams} chart{'s' if streams != 1 else ''} open, {pushes['bar']} bar and {pushes['quote']} quote pushes"
+                  + (f", quote delay median {lag['median']} s (p95 {lag['p95']})" if lag else "")
+                  + (f", {cost['median']:.2f} ms per push" if cost else ""))
+        if _session_open(now) and (last is None or now - last > SILENT):
+            return {"state": "warn", "detail": f"no push for over {int(SILENT.total_seconds())} s; " + detail}
+        return {"state": "ok", "detail": detail}
+
+    def _upkeep(self, records: List[Tuple[str, str]], now: datetime, *, connect: bool = True) -> None:
         """Mark ``records`` used, then release what is beyond the newest ``MAX_CHARTS`` tickers or idle."""
         with self._lock:
             for record in records:
@@ -118,23 +263,20 @@ class Charts:
             keep = set(sorted(latest, key=latest.get, reverse=True)[:MAX_CHARTS])
             self._used = {r: when for r, when in self._used.items() if r[0] in keep and now - when <= IDLE}
             wanted = set(self._used)
-        self._connection().keep_subscriptions(wanted)
+            provider = self._provider
+        if provider is not None or connect:
+            (provider or self._connection()).keep_subscriptions(wanted)
 
     def chart(self, ticker: str, interval: str = "15m", *, impulse_t: float = 1.0, tidy: bool = False,
               now: Optional[datetime] = None) -> Dict[str, Any]:
-        ticker = str(ticker or "").strip().upper()
-        if not re.fullmatch(r"[A-Z][A-Z.\-]{0,9}", ticker):
-            raise ValueError("Choose a US ticker")
-        if interval not in INTERVALS:
-            raise ValueError(f"Intervals are {', '.join(INTERVALS)}")
-        if (impulse_t, tidy) not in VARIANTS:
-            raise ValueError("Only the backtested boxes: impulse 1.0 or 0.6 T, normal or tidy")
+        ticker = _validate(ticker, interval, impulse_t, tidy)
         now = now or utcnow()
         code, subtype = f"US.{ticker}", INTERVALS[interval]
         self._upkeep(sorted({(code, "K_15M"), (code, subtype)}), now)
         provider = self._connection()
-        rows15 = provider.kline(code, "K_15M", MAX_BARS)
-        shown = rows15 if subtype == "K_15M" else provider.kline(code, subtype, MAX_BARS)
+        # Subscribed with push, so the page's stream needs no second subscription.
+        rows15 = provider.kline(code, "K_15M", MAX_BARS, push=True)
+        shown = rows15 if subtype == "K_15M" else provider.kline(code, subtype, MAX_BARS, push=True)
         if subtype != "K_DAY":
             shown = [row for row in shown if _regular(row)]
         warnings: List[str] = []
@@ -178,6 +320,69 @@ class Charts:
                             "label": f"Your alert: {holdings.RULE_KINDS[rule['kind']]} {rule['value']:g}"
                                      + (f" ({rule['note']})" if rule.get("note") else "")})
         return out
+
+
+class ChartStream:
+    """One page's live view of a chart: what changed since its last read, from memory."""
+
+    def __init__(self, charts: Charts, code: str, interval: str, records: List[Tuple[str, str]]):
+        self.charts, self.code, self.interval, self.records = charts, code, interval, records
+        self._kind = INTERVALS[interval]
+        self._seen: Dict[Any, int] = {}
+        self._signalled: Optional[str] = None
+        self._opened = self._touched = utcnow()
+        self.closed = False
+
+    def touch(self, now: Optional[datetime] = None) -> bool:
+        """Keeps the subscriptions; False once the ticker was released (more than ``MAX_CHARTS`` charts)."""
+        now = now or utcnow()
+        self._touched = now
+        with self.charts._lock:
+            kept = all(record in self.charts._used for record in self.records)
+        if kept:
+            self.charts._upkeep(self.records, now)
+        return kept
+
+    def due(self, now: datetime) -> bool:
+        return now - self._touched >= TOUCH
+
+    def poll(self, now: Optional[datetime] = None) -> List[Tuple[str, Dict[str, Any]]]:
+        """``bar`` (the shown interval's latest bar), ``quote`` and ``closed`` (a 15-minute bar ended)."""
+        now = now or utcnow()
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        with self.charts._lock:
+            bar = self.charts._bars.get((self.code, self._kind))
+            bar15 = self.charts._bars.get((self.code, "K_15M"))
+            quote = self.charts._quotes.get(self.code)
+        if bar and bar["seq"] != self._seen.get("bar") and (self.interval == "1d" or _regular(bar)):
+            self._seen["bar"] = bar["seq"]
+            row = {key: value for key, value in bar.items() if key != "seq"}
+            end = datetime.fromisoformat(bar["time"])
+            partial = end > now if self.interval != "1d" else _session_open(now)
+            out.append(("bar", {"interval": self.interval, "bar": {**row, "start": _start(row, self.interval), "partial": partial}}))
+        if quote and quote["seq"] != self._seen.get("quote"):
+            self._seen["quote"] = quote["seq"]
+            out.append(("quote", {"price": quote["price"], "at": quote["at"]}))
+        if bar15 and _regular(bar15) and bar15["time"] != self._signalled:
+            ended = datetime.fromisoformat(bar15["time"]) + CLOSE_GRACE
+            if now >= ended:
+                self._signalled = bar15["time"]
+                if ended > self._opened:  # one that ended before the page connected is in its snapshot
+                    out.append(("closed", {"bar_end": bar15["time"]}))
+        return out
+
+    def close(self) -> None:
+        """Last use now: the sweep releases the subscriptions after ``IDLE`` unless the page comes back.
+
+        No OpenD call, so the server can run it as the page disconnects."""
+        if not self.closed:
+            self.closed = True
+            self.charts._end_stream(self.code)
+            now = utcnow()
+            with self.charts._lock:
+                for record in self.records:
+                    if record in self.charts._used:
+                        self.charts._used[record] = now
 
 
 def _p(price: Any) -> float:

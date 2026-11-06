@@ -1,14 +1,21 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChartSnapshot } from '../../../types/tradeDesk';
 
 const chart = vi.hoisted(() => {
-  const state = { loader: null as null | { getBars: (params: { type: string; callback: (data: unknown[], more?: boolean) => void }) => void }, overlays: [] as Array<{ name: string; groupId?: string; points: unknown[]; extendData: Record<string, unknown> }>, bars: [] as unknown[] };
+  type Loader = { getBars: (params: { type: string; callback: (data: unknown[], more?: boolean) => void }) => void;
+    subscribeBar?: (params: { callback: (bar: unknown) => void }) => void };
+  const state = { loader: null as null | Loader, overlays: [] as Array<{ name: string; groupId?: string; points: unknown[]; extendData: Record<string, unknown> }>,
+    bars: [] as unknown[], pushed: [] as unknown[] };
+  // Like KLineChart: an init load, then the loader's subscribeBar receives the update callback.
+  const reload = () => state.loader?.getBars({ type: 'init', callback: (data) => {
+    state.bars = data;
+    state.loader?.subscribeBar?.({ callback: (bar) => { state.pushed.push(bar); } });
+  } });
   const instance = {
     setDataLoader: vi.fn((loader) => { state.loader = loader; }),
     createIndicator: vi.fn(), overrideIndicator: vi.fn(), setStyles: vi.fn(), resize: vi.fn(),
-    setSymbol: vi.fn(() => state.loader?.getBars({ type: 'init', callback: (data) => { state.bars = data; } })),
-    setPeriod: vi.fn(), resetData: vi.fn(() => state.loader?.getBars({ type: 'init', callback: (data) => { state.bars = data; } })),
+    setSymbol: vi.fn(reload), setPeriod: vi.fn(), resetData: vi.fn(reload),
     removeOverlay: vi.fn((filter?: { groupId?: string }) => { state.overlays = state.overlays.filter((item) => filter?.groupId && item.groupId !== filter.groupId); }),
     createOverlay: vi.fn((items) => { state.overlays.push(...items); }),
   };
@@ -16,7 +23,8 @@ const chart = vi.hoisted(() => {
 });
 vi.mock('klinecharts', () => ({ init: vi.fn(() => chart.instance), dispose: vi.fn(), registerOverlay: vi.fn(), registerIndicator: vi.fn() }));
 
-const api = vi.hoisted(() => ({ getChart: vi.fn(), getHoldings: vi.fn(), getTrackRecord: vi.fn() }));
+const api = vi.hoisted(() => ({ getChart: vi.fn(), getHoldings: vi.fn(), getTrackRecord: vi.fn(),
+  getChartStreamUrl: (ticker: string, interval: string) => `/api/v1/trade-desk/chart/${ticker}/stream?interval=${interval}` }));
 vi.mock('../../../api/tradeDesk', async (original) => ({ ...(await original<typeof import('../../../api/tradeDesk')>()), tradeDeskApi: api }));
 vi.mock('../../../api/systemConfig', () => ({ systemConfigApi: { getWatchlist: vi.fn().mockResolvedValue(['SPY', '600519', 'hk00700']) } }));
 
@@ -95,6 +103,47 @@ describe('ChartPanel', () => {
     api.getChart.mockRejectedValue(new Error('connection_unavailable: OpenD is not reachable'));
     render(<ChartPanel initialTicker="SPY" />);
     expect(await screen.findByText(/OpenD is not reachable/)).toBeInTheDocument();
+  });
+});
+
+class FakeEventSource {
+  static last: FakeEventSource | null = null;
+  url: string;
+  closed = false;
+  onerror: (() => void) | null = null;
+  private listeners: Record<string, Array<(event: MessageEvent) => void>> = {};
+  constructor(url: string) { this.url = url; FakeEventSource.last = this; }
+  addEventListener(name: string, listener: (event: MessageEvent) => void) { (this.listeners[name] ||= []).push(listener); }
+  emit(name: string, data: unknown = {}) { (this.listeners[name] || []).forEach((listener) => listener(new MessageEvent(name, { data: JSON.stringify(data) }))); }
+  close() { this.closed = true; }
+}
+
+describe('ChartPanel live updates', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); chart.state.pushed = []; FakeEventSource.last = null; });
+
+  it('moves the forming candle and the last price with moomoo pushes and reloads the boxes at each 15-minute close', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    api.getHoldings.mockResolvedValue({ view: null });
+    api.getTrackRecord.mockResolvedValue({ recent: [] });
+    api.getChart.mockResolvedValue(snapshot());
+    render(<ChartPanel initialTicker="SPY" />);
+    await screen.findByText('Fade short');
+    const source = FakeEventSource.last as FakeEventSource;
+    expect(source.url).toContain('/api/v1/trade-desk/chart/SPY/stream?interval=15m');
+    act(() => source.emit('ready'));
+    expect(screen.getByTestId('live-state')).toHaveTextContent('waiting for trades');
+    act(() => source.emit('quote', { price: 740.5, at: '2026-11-06T10:02:00-05:00' }));
+    expect(screen.getByTestId('live-state')).toHaveTextContent('Live · last trade Nov 6, 10:02 ET');
+    expect(screen.getByText('740.50')).toBeInTheDocument();
+    act(() => source.emit('bar', { interval: '15m', bar: { time: '2026-11-06T10:15:00-05:00', start: '2026-11-06T10:00:00-05:00', open: 739, high: 741, low: 738, close: 740.5, volume: 5, partial: true } }));
+    expect(chart.state.pushed).toEqual([{ timestamp: Date.parse('2026-11-06T10:00:00-05:00'), open: 739, high: 741, low: 738, close: 740.5, volume: 5 }]);
+    act(() => source.emit('bar', { interval: '5m', bar: { time: '2026-11-06T10:05:00-05:00', start: '2026-11-06T10:00:00-05:00', open: 1, high: 1, low: 1, close: 1, volume: 1, partial: true } }));
+    expect(chart.state.pushed).toHaveLength(1);  // another interval's bar is not drawn
+    act(() => source.emit('closed', { bar_end: '2026-11-06T10:15:00-05:00' }));
+    await vi.waitFor(() => expect(api.getChart).toHaveBeenCalledTimes(2));
+    act(() => source.emit('evicted', { reason: 'more than five charts are open' }));
+    expect(screen.getByTestId('live-state')).toHaveTextContent('paused: more than five charts are open');
+    expect(source.closed).toBe(true);
   });
 });
 
