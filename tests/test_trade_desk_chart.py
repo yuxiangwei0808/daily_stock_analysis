@@ -215,6 +215,26 @@ def test_pushes_reach_the_stream_and_a_15_minute_close_asks_the_page_to_reload(m
     assert charts.health()["state"] == "off" and charts._streams == {}
 
 
+def test_a_close_is_signalled_although_the_next_bar_is_pushed_within_the_grace(monkeypatch):
+    # In market hours (2026-11-06) OpenD pushed the next 15-minute bar's first trade about 0.4 s after each boundary.
+    now = _clock(monkeypatch, datetime(2026, 11, 6, 10, 14, 50, tzinfo=NY))
+    monkeypatch.setattr(ch, "_session_open", lambda when: True)
+    charts, fake = _charts({})
+    stream = charts.stream("spy", "15m")
+    on_bar, _ = fake.listeners
+    row = {"code": "US.SPY", "k_type": "K_15M", "time_key": "2026-11-06 10:15:00", "open": 1, "high": 2, "low": 0.5,
+           "close": 1.5, "volume": 7}
+    on_bar(row)
+    assert [name for name, _ in stream.poll()] == ["bar"]
+    now[0] = datetime(2026, 11, 6, 10, 15, 0, 400000, tzinfo=NY)
+    on_bar({**row, "time_key": "2026-11-06 10:30:00", "volume": 1})
+    assert [name for name, _ in stream.poll()] == ["bar"]
+    now[0] += timedelta(seconds=3)
+    assert stream.poll() == [("closed", {"bar_end": "2026-11-06T10:15:00-05:00"})]
+    now[0] = datetime(2026, 11, 6, 10, 30, 3, tzinfo=NY)  # no trade since; the forming bar's close is still signalled
+    assert stream.poll() == [("closed", {"bar_end": "2026-11-06T10:30:00-05:00"})] and stream.poll() == []
+
+
 def test_a_sixth_chart_ends_the_oldest_stream_and_a_closed_page_is_released_after_ten_minutes(monkeypatch):
     start = datetime(2026, 11, 6, 11, tzinfo=NY)
     now = _clock(monkeypatch, start)

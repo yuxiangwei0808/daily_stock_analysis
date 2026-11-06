@@ -410,7 +410,10 @@ class ChartStream:
         self.charts, self.code, self.interval, self.records = charts, code, interval, records
         self._kind = INTERVALS[interval]
         self._seen: Dict[Any, int] = {}
-        self._signalled: Optional[str] = None
+        # 15-minute bars seen forming, by end, until their close is signalled: OpenD pushes the next bar's
+        # first trade well inside the grace, so the latest pushed bar has moved on when a close is due.
+        self._ends: List[datetime] = []
+        self._signalled: Optional[datetime] = None
         self._opened = self._touched = utcnow()
         self.closed = False
 
@@ -444,12 +447,15 @@ class ChartStream:
         if quote and quote["seq"] != self._seen.get("quote"):
             self._seen["quote"] = quote["seq"]
             out.append(("quote", {"price": quote["price"], "at": quote["at"]}))
-        if bar15 and _regular(bar15) and bar15["time"] != self._signalled:
-            ended = datetime.fromisoformat(bar15["time"]) + CLOSE_GRACE
-            if now >= ended:
-                self._signalled = bar15["time"]
-                if ended > self._opened:  # one that ended before the page connected is in its snapshot
-                    out.append(("closed", {"bar_end": bar15["time"]}))
+        if bar15 and _regular(bar15):
+            end = datetime.fromisoformat(bar15["time"])
+            if (self._signalled is None or end > self._signalled) and end not in self._ends:
+                self._ends.append(end)
+        for end in [end for end in self._ends if now >= end + CLOSE_GRACE]:
+            self._ends.remove(end)
+            self._signalled = end
+            if end + CLOSE_GRACE > self._opened:  # one that ended before the page connected is in its snapshot
+                out.append(("closed", {"bar_end": end.isoformat()}))
         return out
 
     def close(self) -> None:
