@@ -1056,6 +1056,26 @@ export interface AssistantPlan {
   model?: string;
 }
 
+export interface AssistantNote {
+  at: string;
+  kind: 'note' | 'answer' | 'held';
+  text: string;
+  question?: string;
+  model?: string;
+  seconds?: number | null;
+  call?: string | null;
+}
+
+export interface AssistantModelUse {
+  callsToday: number;
+  cap: number;
+  failed: number;
+  medianSeconds: number | null;
+  by: Record<string, number>;
+  lastError: string | null;
+  noteMinutes: number;
+}
+
 export interface AssistantTicker {
   ticker: string;
   price: number | null;
@@ -1067,6 +1087,7 @@ export interface AssistantTicker {
   contracts: { expiry: string | null; rows: AssistantContract[]; asOf: string | null; error: string | null };
   positions: AssistantPosition[];
   plans: AssistantPlan[];
+  notes: AssistantNote[];
   loaded: boolean;
   error: string | null;
 }
@@ -1082,5 +1103,16 @@ export interface AssistantState {
   events: AssistantEvent[];
   seq: number;
   note: string;
+  model?: AssistantModelUse;
+}
+
+export interface InPlayList {
+  day: string;
+  madeAt: string;
+  top: number;
+  rows: Array<{ ticker: string; s: number; gapPct: number; firstRange: number; t: number; rank: number }>;
+  failed: string[];
+  verdict: string;
+  label: string;
 }
 

@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantPanel } from '../AssistantPanel';
 
 const api = vi.hoisted(() => ({
-  getAssistant: vi.fn(), startAssistant: vi.fn(), stopAssistant: vi.fn(),
+  getAssistant: vi.fn(), startAssistant: vi.fn(), stopAssistant: vi.fn(), askAssistant: vi.fn(), getInPlay: vi.fn(),
+  parseAssistantPlan: vi.fn(), addAssistantPlan: vi.fn(), removeAssistantPlan: vi.fn(),
   getAssistantStreamUrl: () => '/assistant/stream', readAssistant: (raw: unknown) => raw,
 }));
 vi.mock('../../../api/tradeDesk', () => ({ tradeDeskApi: api }));
@@ -28,8 +29,13 @@ const spy = {
     bid: 1, ask: 1.1, mid: 1.05, spreadPct: 9.5, iv: 20, delta: 0.5, volume: 100, openInterest: 500, breakevenMovePct: 0.15,
     minutesLeft: 370, thetaPerMin: -0.004, atLevels: [{ id: 'stop:SPY', label: 'SPY shares stop', price: 728, now: 0.05, in30m: 0.04 }] }] },
   positions: [{ key: 'SPY|C735', ticker: 'SPY', type: 'option', label: 'SPY 11/09 735C', pnlPct: 12.5, weightPct: 1.2, daysLeft: 0, source: 'live feed' }],
+  plans: [],
+  notes: [{ at: '2026-11-09T09:50:05-05:00', kind: 'note', text: 'SPY 736 sits under the pre-market high 738.03, an untested level.',
+    model: 'Claude Code (claude-sonnet-5-5)', seconds: 5, call: 'short now, stop 738.03, target 735, out by 11:00' },
+  { at: '2026-11-09T09:49:00-05:00', kind: 'held', text: 'A note was held back: it quoted 741.37, which the system does not show.' }],
 };
 const running = { ...idle, running: true, horizon: '0dte', startedAt: '2026-11-09T09:50:00-05:00', tickers: [spy], seq: 1,
+  model: { callsToday: 4, cap: 150, failed: 0, medianSeconds: 6.2, by: { 'Claude Code (claude-sonnet-5-5)': 4 }, lastError: null, noteMinutes: 3 },
   events: [{ seq: 1, at: '2026-11-09T09:50:00-05:00', ticker: null, kind: 'session', title: 'Watching SPY', detail: '0DTE options' }] };
 
 describe('AssistantPanel', () => {
@@ -79,6 +85,38 @@ describe('AssistantPanel', () => {
     expect(notifications).toEqual(['SPY above Pre-market high 738.03']);
     fireEvent.click(screen.getByRole('button', { name: /Stop/ }));
     expect(await screen.findByText(/Last session: stopped from the page/)).toBeInTheDocument();
+  });
+
+  it('shows the notes, takes a question and keeps notes silent', async () => {
+    api.getAssistant.mockResolvedValue(running);
+    api.askAssistant.mockResolvedValue({ at: '2026-11-09T09:52:00-05:00', kind: 'answer', text: 'ok' });
+    render(<AssistantPanel current="SPY" onShow={() => undefined} />);
+    expect(await screen.findByText(/sits under the pre-market high 738.03/)).toBeInTheDocument();
+    expect(screen.getByText(/Call: short now, stop 738.03/)).toBeInTheDocument();
+    expect(screen.getByText(/untested model call, graded against random timing/)).toBeInTheDocument();
+    expect(screen.getByText(/A note was held back/)).toBeInTheDocument();
+    expect(screen.getByText(/Model today: 4 of 150 calls/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Ask the assistant'), { target: { value: 'take profit here?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+    await waitFor(() => expect(api.askAssistant).toHaveBeenCalledWith('SPY', 'take profit here?'));
+    await waitFor(() => expect(FakeEventSource.last).not.toBeNull());
+    act(() => FakeEventSource.last!.emit('alert', { seq: 5, at: '2026-11-09T09:53:00-05:00', ticker: 'SPY', kind: 'note', title: 'SPY: assistant note', detail: '' }));
+    expect(notifications).toEqual([]);
+  });
+
+  it('offers today\'s in-play list and starts on its top three', async () => {
+    api.getAssistant.mockResolvedValue(idle);
+    api.getInPlay.mockResolvedValue({ day: '2026-11-09', madeAt: 'x', top: 5, failed: [], verdict: 'pass',
+      label: 'In play at 09:45: pass as a range selector, not a trade rule',
+      rows: ['TSLA', 'NVDA', 'AMD', 'SPY', 'QQQ'].map((ticker, k) => ({ ticker, s: 3 - k * 0.4, gapPct: 1, firstRange: 1, t: 1, rank: k + 1 })) });
+    api.startAssistant.mockResolvedValue(running);
+    render(<AssistantPanel current="" onShow={() => undefined} />);
+    expect(await screen.findByText(/In play 2026-11-09 \(09:45\)/)).toBeInTheDocument();
+    expect(screen.getByText(/not a trade rule/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /TSLA/ }));
+    expect(screen.getByLabelText('Assistant stocks')).toHaveValue('TSLA');
+    fireEvent.click(screen.getByRole('button', { name: /Start on the top 3/ }));
+    await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['TSLA', 'NVDA', 'AMD'], '0dte'));
   });
 
   it('shows nothing when the desk is unavailable', async () => {

@@ -2125,6 +2125,36 @@ class MoomooProvider:
             for subtype in subtypes:
                 self._subscribe([code], subtype, push=True)
 
+    def history_bars(self, code: str, start: str, end: str, subtype: str = "K_15M") -> list[dict[str, Any]]:
+        """Forward-adjusted regular-session bars from moomoo's history (``request_history_kline``), oldest first.
+
+        Read only and no subscription; each new stock uses one history allowance for 30 days (1,000 stocks).
+        ``time_key`` is the bar's end, New York time. A rate limit or timeout is waited out once, not truncated.
+        """
+        sdk = self._load_sdk()
+        rows: list[dict[str, Any]] = []
+        key = None
+        with self._lock:
+            ctx = self._ensure_context()
+            while True:
+                for attempt in range(3):
+                    ret, data, key_next = ctx.request_history_kline(
+                        code, start=start, end=end, ktype=self._enum("KLType", subtype, subtype),
+                        autype=self._enum("AuType", "QFQ", "qfq"), max_count=1000, page_req_key=key)
+                    if _ret_ok(ret, sdk):
+                        break
+                    message = _text(data).lower()
+                    if attempt == 2 or not any(word in message for word in ("timed out", "freq", "limit", "频率")):
+                        raise ProviderError(self._classify_error(_text(data)), f"request_history_kline: {_text(data)[:160]}")
+                    time.sleep(31 if "freq" in message or "频率" in message or "limit" in message else 2)
+                rows += [{"time_key": _text(_row_get(row, "time_key")), **{name: _safe_float(_row_get(row, name))
+                                                                         for name in ("open", "high", "low", "close", "volume")}}
+                         for row in _rows(data)]
+                key = key_next
+                if key is None:
+                    break
+        return rows
+
     def quiet_sdk_log(self) -> None:
         """The SDK's file log in the home folder from debug to info: at debug it writes every request and push."""
         sdk = self._load_sdk()

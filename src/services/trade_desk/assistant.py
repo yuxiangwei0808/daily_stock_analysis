@@ -53,6 +53,10 @@ PNL_STEP = {"option": 10.0, "stock": 2.0}  # an alert each time P&L on cost cros
 CLOSE_WARNINGS = (30, 15)  # minutes before the close, for a position expiring today
 EVENTS = 300
 SILENT = timedelta(seconds=60)
+NOTES_KEPT = 12
+NOTE_KINDS = ("level", "flag", "position", "pnl", "close_soon", "plan")  # events that ask for a note
+URGENT = ("position", "plan")  # a fill, a plan's trigger, stop, target or time stop: a note without waiting
+NOTES_SECONDS = 1.0
 MINUTES_A_YEAR = 365 * 24 * 60
 # What each level rests on, for its label (register.py); your own levels carry none.
 LEVEL_RULES = {"val": "value_area_levels", "vah": "value_area_levels", "prior_high": "prior_day_levels",
@@ -113,6 +117,7 @@ class _Ticker:
         self.loaded = False
         self.warned: set = set()
         self.plans: List[Dict[str, Any]] = []  # today's plans and calls on this stock (assistant_grades.py)
+        self.notes: deque = deque(maxlen=NOTES_KEPT)  # the model's notes and answers, newest first
         self.error: Optional[str] = None
 
     # -- levels --------------------------------------------------------------------------------
@@ -175,6 +180,10 @@ class Assistant:
         self._seq = 0
         self._next: Dict[str, float] = {}
         self._dirty: Dict[str, Dict[str, Any]] = {}  # plan records to save, by id
+        self._wants: Dict[str, List[str]] = {}  # why each stock wants a note
+        self._last_note: Dict[str, datetime] = {}
+        self._usage: Dict[str, Any] = {"day": None, "calls": 0, "failed": 0, "by": {}, "seconds": deque(maxlen=200),
+                                       "last_error": None}
 
     # -- start and stop ----------------------------------------------------------------------------
     @property
@@ -197,7 +206,7 @@ class Assistant:
             self._tickers = {name: _Ticker(name) for name in names}
             self.horizon, self.started_at, self.stopped = horizon, now, None
             self._events.clear()
-            self._next = {}
+            self._next, self._wants, self._last_note = {}, {}, {}
         for item in self._tickers.values():
             item.stream = self.charts.stream(item.ticker, "1m")  # quote, 1- and 15-minute bars, with push
         self._load_plans(now)
@@ -205,7 +214,9 @@ class Assistant:
         if threads:
             self._stop.clear()
             self._threads = [threading.Thread(target=self._loop, args=(self.check, CHECK_SECONDS), name="assistant-check", daemon=True),
-                             threading.Thread(target=self._loop, args=(self.io, IO_SECONDS), name="assistant-io", daemon=True)]
+                             threading.Thread(target=self._loop, args=(self.io, IO_SECONDS), name="assistant-io", daemon=True),
+                             threading.Thread(target=self._loop, args=(self.notes_step, NOTES_SECONDS), name="assistant-notes",
+                                              daemon=True)]
             for thread in self._threads:
                 thread.start()
         return self.state(now)
@@ -254,11 +265,14 @@ class Assistant:
         return True
 
     # -- events --------------------------------------------------------------------------------
-    def _event(self, ticker: Optional[str], kind: str, title: str, detail: str, now: datetime, **extra: Any) -> None:
+    def _event(self, ticker: Optional[str], kind: str, title: str, detail: str, now: datetime, *, wants_note: bool = True,
+               **extra: Any) -> None:
         with self._lock:
             self._seq += 1
             self._events.append({"seq": self._seq, "at": now.isoformat(), "ticker": ticker, "kind": kind,
                                  "title": title, "detail": detail, **extra})
+            if ticker and wants_note and kind in NOTE_KINDS:
+                self._wants.setdefault(ticker, []).append(f"{kind}: {title}")
 
     def events_after(self, seq: int) -> List[Dict[str, Any]]:
         with self._lock:
@@ -380,6 +394,8 @@ class Assistant:
                 item.price = _num(snap.get("last_price"))
         self._load_chain(item, provider)
         item.loaded = True
+        with self._lock:
+            self._wants.setdefault(item.ticker, []).append("session: started, first look at the stock")
 
     def _load_chart(self, item: _Ticker, now: datetime, *, alert: bool) -> None:
         snapshot = self.charts.chart(item.ticker, "15m", now=now)
@@ -591,7 +607,8 @@ class Assistant:
         when = "now" if trigger["kind"] == "now" else f"{trigger['kind'].replace('_', ' ')} {trigger['price']:g}" + (
             f" on a {trigger['bar_minutes']}-minute bar" if trigger["bar_minutes"] else "")
         self._event(item.ticker, "plan", f"{whose} watched: {item.ticker} {side} {when}",
-                    f"Stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}.", now, plan=rec["id"])
+                    f"Stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}.", now, plan=rec["id"],
+                    wants_note=False)
         return ag.view(rec)
 
     def remove_plan(self, record_id: str, now: Optional[datetime] = None) -> bool:
@@ -605,7 +622,7 @@ class Assistant:
                         return False
                     with self._lock:
                         item.plans.remove(rec)
-                    self._event(item.ticker, "plan", f"Plan removed on {item.ticker}", "", now)
+                    self._event(item.ticker, "plan", f"Plan removed on {item.ticker}", "", now, wants_note=False)
                     return True
         return False
 
@@ -616,43 +633,169 @@ class Assistant:
         item = self._item(ticker)
         with self._lock:
             ticker_state = {"ticker": item.ticker, "price": item.price, "levels": item.levels()}
+        self._check_cap(now)
         try:
-            return assistant_notes.parse_plan(text, ticker_state, now)
+            out = assistant_notes.parse_plan(text, ticker_state, now)
         except RuntimeError as exc:  # every backend failed: the page says so, and the form still works
+            self._failed(exc)
             raise ValueError(assistant_notes.answer_failed(exc)) from exc
+        self._count(out.get("model", ""), out.get("seconds"))
+        return out
 
     # -- what the page shows ---------------------------------------------------------------------------
+    def _ticker_state(self, item: _Ticker, now: datetime) -> Dict[str, Any]:
+        levels = item.levels()
+        price = item.price
+        return {
+            "ticker": item.ticker, "price": price, "price_at": item.price_at,
+            "change_pct": _pct(price, item.prev_close),
+            "quote_age_s": round((now - item.received).total_seconds(), 1) if item.received else None,
+            "levels": sorted(({**{k: level[k] for k in ("id", "kind", "label", "price")},
+                               "distance_pct": _pct(level["price"], price),
+                               "verdict": register.get(level["rule"]).verdict if level.get("rule") else None,
+                               "verdict_label": register.label(level["rule"]) if level.get("rule") else "Your level"}
+                              for level in levels), key=lambda level: -level["price"]),
+            "flags": [{k: flag.get(k) for k in ("kind", "box", "direction", "state", "price", "stop", "target", "time")}
+                      | {"grade": flag["grade"]["label"]} for flag in item.flags],
+            "contracts": {"expiry": item.expiry.isoformat() if item.expiry else None, "rows": list(item.contracts),
+                          "as_of": item.contracts_at.isoformat() if item.contracts_at else None,
+                          "error": item.chain_error},
+            "positions": list(item.positions), "loaded": item.loaded, "error": item.error,
+            "plans": [ag.view(rec) for rec in item.plans][::-1],
+            "notes": [dict(note) for note in item.notes],
+        }
+
     def state(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         now = now or self._clock()
         with self._lock:
-            tickers = []
-            for item in self._tickers.values():
-                levels = item.levels()
-                price = item.price
-                tickers.append({
-                    "ticker": item.ticker, "price": price, "price_at": item.price_at,
-                    "change_pct": _pct(price, item.prev_close),
-                    "quote_age_s": round((now - item.received).total_seconds(), 1) if item.received else None,
-                    "levels": sorted(({**{k: level[k] for k in ("id", "kind", "label", "price")},
-                                       "distance_pct": _pct(level["price"], price),
-                                       "verdict": register.get(level["rule"]).verdict if level.get("rule") else None,
-                                       "verdict_label": register.label(level["rule"]) if level.get("rule") else "Your level"}
-                                      for level in levels), key=lambda level: -level["price"]),
-                    "flags": [{k: flag.get(k) for k in ("kind", "box", "direction", "state", "price", "stop", "target", "time")}
-                              | {"grade": flag["grade"]["label"]} for flag in item.flags],
-                    "contracts": {"expiry": item.expiry.isoformat() if item.expiry else None, "rows": list(item.contracts),
-                                  "as_of": item.contracts_at.isoformat() if item.contracts_at else None,
-                                  "error": item.chain_error},
-                    "positions": list(item.positions), "loaded": item.loaded, "error": item.error,
-                    "plans": [ag.view(rec) for rec in item.plans][::-1],
-                })
+            tickers = [self._ticker_state(item, now) for item in self._tickers.values()]
+            seconds = sorted(self._usage["seconds"])
+            model = {"calls_today": self._usage["calls"], "cap": _daily_cap(), "failed": self._usage["failed"],
+                     "median_seconds": seconds[len(seconds) // 2] if seconds else None, "by": dict(self._usage["by"]),
+                     "last_error": self._usage["last_error"], "note_minutes": _note_gap().total_seconds() / 60}
             return {"running": self.running, "horizon": self.horizon, "horizons": HORIZONS,
                     "started_at": self.started_at.isoformat() if self.started_at else None, "stopped": self.stopped,
                     "max_tickers": MAX_TICKERS, "tickers": tickers, "events": [dict(e) for e in list(self._events)[-60:]][::-1],
-                    "seq": self._seq,
+                    "seq": self._seq, "model": model,
                     "note": "Levels and contract values are computed; none of these levels has passed a test. "
                             "Contract values at a level are Black-Scholes estimates at the quoted implied volatility. "
+                            "The assistant's calls are untested model calls, graded against random timing. "
                             "Nothing is sent to moomoo."}
+
+    # -- notes, calls and questions (assistant_notes.py; your plans first, the API last) -----------------------
+    def _roll_usage(self, now: datetime) -> None:
+        day = _local(now).date()
+        if self._usage["day"] != day:
+            self._usage.update(day=day, calls=0, failed=0, by={}, last_error=None)
+
+    def _check_cap(self, now: datetime) -> None:
+        self._roll_usage(now)
+        if self._usage["calls"] >= _daily_cap():
+            raise ValueError(f"The assistant's {_daily_cap()} model calls for today are used (TRADE_ASSISTANT_DAILY_CALLS)")
+
+    def _count(self, label: str, seconds: Optional[float]) -> None:
+        with self._lock:
+            self._usage["calls"] += 1
+            self._usage["by"][label or "model"] = self._usage["by"].get(label or "model", 0) + 1
+            if seconds is not None:
+                self._usage["seconds"].append(float(seconds))
+
+    def _failed(self, exc: Exception) -> None:
+        with self._lock:
+            self._usage["failed"] += 1
+            self._usage["last_error"] = str(exc)[:300]
+
+    def _context(self, item: _Ticker, now: datetime, reasons: List[str]) -> Dict[str, Any]:
+        from . import assistant_notes
+        _, closing = _session_bounds(_local(now).date())
+        with self._lock:
+            state = self._ticker_state(item, now)
+            events = [dict(e) for e in self._events if e.get("ticker") == item.ticker]
+        return assistant_notes.context(state, horizon=self.horizon or "0dte", now=now, closing=closing, events=events,
+                                       reasons=reasons)
+
+    def notes_step(self, now: datetime) -> None:
+        """At most one note a pass: the stock that waited longest, each stock at most every few minutes unless urgent."""
+        if not self.running:
+            return
+        self._roll_usage(now)
+        for item in list(self._tickers.values()):
+            with self._lock:
+                reasons = list(self._wants.get(item.ticker) or [])
+            if not reasons or not item.loaded or item.price is None:
+                continue
+            last = self._last_note.get(item.ticker)
+            urgent = any(reason.split(":")[0] in URGENT for reason in reasons)
+            if last is not None and now - last < _note_gap() and not urgent:
+                continue
+            with self._lock:
+                self._wants[item.ticker] = []
+            self._last_note[item.ticker] = now
+            if self._usage["calls"] >= _daily_cap():
+                return
+            self._write_note(item, reasons, now)
+            return
+
+    def _write_note(self, item: _Ticker, reasons: List[str], now: datetime) -> None:
+        from . import assistant_notes
+        ctx = self._context(item, now, reasons)
+        try:
+            result = assistant_notes.ask_model(assistant_notes.NOTE_SYSTEM, ctx)
+        except RuntimeError as exc:
+            self._failed(exc)
+            return
+        self._count(result.get("label", ""), result.get("seconds"))
+        entry = {"at": now.isoformat(), "kind": "note", "model": result.get("label", ""), "seconds": result.get("seconds"),
+                 "call": None}
+        try:
+            note = assistant_notes.read_note(result["data"], ctx)
+        except ValueError as exc:  # it quoted a price the system doesn't show: the page says so, not what it wrote
+            entry.update(kind="held", text=f"A note was held back: {exc}.")
+            with self._lock:
+                item.notes.appendleft(entry)
+            return
+        entry["text"] = note["text"]
+        call = note["call"]
+        if call:
+            try:
+                fields = {"direction": call.get("direction"), "trigger": call.get("trigger") or {"kind": "now"},
+                          "stop": call.get("stop"), "target": call.get("target"), "time_stop": call.get("time_stop")}
+                plan = self.add_plan(item.ticker, fields, source="assistant", why=str(call.get("why") or ""),
+                                     model=entry["model"], now=now)
+                entry["call"] = (f"{plan['direction']} {plan['trigger']['kind'].replace('_', ' ')}"
+                                 + (f" {plan['trigger']['price']:g}" if plan["trigger"].get("price") else "")
+                                 + f", stop {plan['stop']:g}, target {plan['target']:g}, out by {plan['time_stop']}")
+            except ValueError as exc:
+                entry["text"] += f" (Its call was not recorded: {exc}.)"
+        with self._lock:
+            item.notes.appendleft(entry)
+        self._event(item.ticker, "note", f"{item.ticker}: assistant note", entry["text"][:240], now, wants_note=False)
+
+    def ask(self, ticker: str, question: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Your question about a stock in the session, answered from its computed state."""
+        from . import assistant_notes
+        now = now or self._clock()
+        item = self._item(ticker)
+        question = (question or "").strip()[:500]
+        if not question:
+            raise ValueError("Ask a question")
+        self._check_cap(now)
+        ctx = self._context(item, now, ["question"])
+        try:
+            result = assistant_notes.ask_model(assistant_notes.ASK_SYSTEM, ctx, question)
+        except RuntimeError as exc:
+            self._failed(exc)
+            raise ValueError(assistant_notes.answer_failed(exc)) from exc
+        self._count(result.get("label", ""), result.get("seconds"))
+        entry = {"at": now.isoformat(), "kind": "answer", "question": question, "model": result.get("label", ""),
+                 "seconds": result.get("seconds"), "call": None}
+        try:
+            entry["text"] = assistant_notes.read_note(result["data"], ctx, answer=True)["text"]
+        except ValueError as exc:
+            entry.update(kind="held", text=f"The answer was held back: {exc}. Ask again.")
+        with self._lock:
+            item.notes.appendleft(entry)
+        return entry
 
     def health(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         now = now or self._clock()
@@ -695,6 +838,22 @@ class AssistantStream:
             self._state_at, self._running = clock, running
             out.append(("state", self.assistant.state(now)))
         return out
+
+
+def _daily_cap() -> int:
+    import os
+    try:
+        return max(0, int(os.getenv("TRADE_ASSISTANT_DAILY_CALLS", "150")))
+    except ValueError:
+        return 150
+
+
+def _note_gap() -> timedelta:
+    import os
+    try:
+        return timedelta(minutes=max(0.5, float(os.getenv("TRADE_ASSISTANT_NOTE_MINUTES", "3"))))
+    except ValueError:
+        return timedelta(minutes=3)
 
 
 def _flag_key(flag: Dict[str, Any]) -> str:

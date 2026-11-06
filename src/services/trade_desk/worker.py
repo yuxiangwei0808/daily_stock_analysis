@@ -99,6 +99,18 @@ class TradeDeskWorker:
         from . import option_recorder
         self._option_recorder = (option_recorder.OptionRecorder(service, leader=lambda: self._leader)
                                  if option_recorder.enabled() else None)
+        from . import in_play
+        self._in_play = (in_play.InPlayJob(self.repo, service.provider_factory, self._in_play_names, leader=lambda: self._leader)
+                         if os.getenv("IN_PLAY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+                         and getattr(service, "provider_factory", None) is not None else None)
+
+    def _in_play_names(self):
+        from . import in_play, pulse
+        try:
+            held = self.service.holdings.tickers()
+        except Exception:
+            held = []
+        return in_play.universe(pulse.watch_tickers(), held)
 
     def _watched(self):
         """The watchlist plus held stocks and option underlyings."""
@@ -280,7 +292,8 @@ class TradeDeskWorker:
                  ("social", self._social, lambda: self._social.tick(now)),
                  ("breakouts", self._breakouts, lambda: self._breakouts.tick(now, session, quotes=quotes, shared=True)),
                  ("opportunities", self._opportunities, lambda: self._opportunities.tick(regular_session)),
-                 ("chart_grades", getattr(self.service, "charts", None), lambda: self.service.charts.grade_due(now))]
+                 ("chart_grades", getattr(self.service, "charts", None), lambda: self.service.charts.grade_due(now)),
+                 ("in_play", self._in_play, lambda: self._in_play.tick(now))]
         for name, part, call in parts:
             if part is None:
                 continue

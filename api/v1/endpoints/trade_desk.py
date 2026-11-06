@@ -583,6 +583,13 @@ class AssistantStart(Model):
     horizon: Literal["0dte", "intraday", "swing"] = "0dte"
 
 
+@router.get("/in-play")
+async def in_play_list(request: Request):
+    """Today's in-play list (after 09:45): the stocks by the rule that passed as a range selector, not a trade rule."""
+    from src.services.trade_desk.in_play import SETTING
+    return {"list": await invoke(get_service(request).repo.setting, SETTING, None)}
+
+
 @router.get("/assistant")
 async def assistant_state(request: Request):
     """The trading assistant's session: each stock's levels, contracts, positions and the alerts so far."""
@@ -638,6 +645,17 @@ async def assistant_plan_add(body: AssistantPlanInput, request: Request):
 async def assistant_plan_remove(record_id: str, request: Request):
     if not await invoke(get_service(request).assistant.remove_plan, record_id):
         raise HTTPException(409, detail="Only a plan that has not triggered can be removed")
+
+
+class AssistantQuestion(Model):
+    ticker: str
+    question: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/assistant/ask")
+async def assistant_ask(body: AssistantQuestion, request: Request):
+    """Your question about a stock in the session, answered from its computed state (your plans' models first)."""
+    return await invoke(get_service(request).assistant.ask, body.ticker, body.question)
 
 
 @router.get("/assistant/stream")

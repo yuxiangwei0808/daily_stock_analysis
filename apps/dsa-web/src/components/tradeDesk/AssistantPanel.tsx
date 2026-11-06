@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BellRing, Play, Square } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { Badge, Button, Card } from '../common';
-import type { AssistantContract, AssistantEvent, AssistantHorizon, AssistantState, AssistantTicker } from '../../types/tradeDesk';
+import type { AssistantContract, AssistantEvent, AssistantHorizon, AssistantState, AssistantTicker, InPlayList } from '../../types/tradeDesk';
 import { AssistantPlans } from './AssistantPlans';
 import { nyTime, price } from './chartOverlays';
 import { errorMessage } from './deskFormat';
@@ -53,12 +53,45 @@ function ContractRows({ rows }: { rows: AssistantContract[] }) {
   );
 }
 
+function Notes({ item }: { item: AssistantTicker }) {
+  const [question, setQuestion] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const ask = async () => {
+    if (!question.trim()) return;
+    setBusy(true); setError('');
+    try { await tradeDeskApi.askAssistant(item.ticker, question); setQuestion(''); } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
+  };
+  const notes = item.notes || [];
+  return (
+    <div data-testid="assistant-notes">
+      <h4 className="pb-1 text-xs font-semibold text-foreground">Assistant</h4>
+      <form className="flex flex-wrap gap-2 text-xs" onSubmit={(event) => { event.preventDefault(); void ask(); }}>
+        <input aria-label="Ask the assistant" value={question} onChange={(event) => setQuestion(event.target.value)}
+          placeholder={`Ask about ${item.ticker}: "take profit here?", "where is the risk?"`}
+          className="input-surface h-8 min-w-[16rem] flex-1 rounded-md border px-2 text-foreground" />
+        <Button type="submit" size="xsm" variant="outline" isLoading={busy}>Ask</Button>
+      </form>
+      {error ? <p role="alert" className="pt-1 text-xs text-danger">{error}</p> : null}
+      {notes.length ? <ul className="mt-2 max-h-48 space-y-1.5 overflow-y-auto text-xs">{notes.map((note) => <li key={`${note.at}-${note.kind}`}
+        className={note.kind === 'held' ? 'text-muted-text' : 'text-secondary-text'}>
+        <span className="font-mono text-muted-text">{nyTime(note.at)}</span>{' '}
+        {note.question ? <span className="text-foreground">You: {note.question} · </span> : null}
+        <span className={note.kind === 'held' ? '' : 'text-foreground'}>{note.text}</span>
+        {note.call ? <span className="block text-warning">Call: {note.call} (untested model call, graded against random timing)</span> : null}
+        {note.model ? <span className="text-muted-text"> · {note.model}{note.seconds != null ? `, ${note.seconds.toFixed(0)} s` : ''}</span> : null}
+      </li>)}</ul> : <p className="pt-1 text-xs text-muted-text">Notes appear when something changes, at most every few minutes a stock, and right away for a fill, a stop or a target.</p>}
+    </div>
+  );
+}
+
 function TickerDetail({ item }: { item: AssistantTicker }) {
   return (
     <div className="space-y-3">
       <p className="text-sm text-foreground"><span className="font-semibold">{item.ticker}</span> <span className="font-mono">{item.price == null ? '—' : price(item.price)}</span>
         <span className="text-secondary-text"> {signed(item.changePct)}{item.quoteAgeS != null ? ` · last trade ${item.quoteAgeS.toFixed(1)} s ago` : ''}</span>
         {!item.loaded ? <span className="text-muted-text"> · loading levels…</span> : null}{item.error ? <span className="text-danger"> · {item.error}</span> : null}</p>
+      <Notes item={item} />
       <div className="grid gap-3 lg:grid-cols-2">
         <div>
           <h4 className="pb-1 text-xs font-semibold text-foreground">Levels</h4>
@@ -105,12 +138,14 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [permission, setPermission] = useState(canNotify() ? Notification.permission : 'unsupported');
+  const [inPlay, setInPlay] = useState<InPlayList | null>(null);
   const audio = useRef<AudioContext | null>(null);
   const seen = useRef(0);
 
   useEffect(() => {
     const load = async () => {
       try { setState(await tradeDeskApi.getAssistant()); } catch { setState(null); }  // the desk is optional
+      try { setInPlay(await tradeDeskApi.getInPlay()); } catch { setInPlay(null); }
     };
     void load();
   }, []);
@@ -119,7 +154,7 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
   const announce = useCallback((event: AssistantEvent) => {
     if (event.seq <= seen.current) return;
     seen.current = event.seq;
-    if (event.kind === 'session') return;
+    if (event.kind === 'session' || event.kind === 'note') return;  // notes show on the page without a sound
     beep(audio.current);
     if (canNotify() && Notification.permission === 'granted') {
       try { new Notification(event.title, { body: event.detail, tag: `dsa-assistant-${event.seq}` }); } catch { /* the page's feed still shows it */ }
@@ -138,8 +173,8 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
     return () => source.close();
   }, [announce, available]);
 
-  const start = async () => {
-    const tickers = names.split(/[\s,]+/).map((name) => name.trim().toUpperCase()).filter(Boolean);
+  const start = async (chosen?: string[]) => {
+    const tickers = chosen || names.split(/[\s,]+/).map((name) => name.trim().toUpperCase()).filter(Boolean);
     if (!tickers.length) { setError('Enter one to three stocks'); return; }
     if (!audio.current && typeof window !== 'undefined' && 'AudioContext' in window) {
       try { audio.current = new AudioContext(); } catch { audio.current = null; }  // created on the click, so it may play
@@ -188,6 +223,18 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
         <Button type="submit" size="xsm" variant="outline" isLoading={busy}><Play className="h-3.5 w-3.5" />Start</Button>
       </form> : null}
       {error ? <p role="alert" className="pt-1 text-xs text-danger">{error}</p> : null}
+      {!running && inPlay?.rows.length ? <div className="mt-2 text-xs" data-testid="in-play">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-secondary-text">In play {inPlay.day} (09:45):</span>
+          {inPlay.rows.slice(0, inPlay.top).map((row) => <button key={row.ticker} type="button" onClick={() => setNames((value) =>
+            Array.from(new Set([...value.split(/[\s,]+/).filter(Boolean), row.ticker])).slice(-state.maxTickers).join(', '))}
+            className="rounded-md border border-border/50 px-2 py-0.5 font-mono text-secondary-text hover:text-foreground">
+            {row.ticker} <span className="text-muted-text">{row.s.toFixed(1)}×</span></button>)}
+          <Button size="xsm" variant="ghost" isLoading={busy} onClick={() => void start(inPlay.rows.slice(0, state.maxTickers).map((row) => row.ticker))}>
+            <Play className="h-3.5 w-3.5" />Start on the top {Math.min(state.maxTickers, inPlay.rows.length)}</Button>
+        </div>
+        <p className="pt-1 text-[11px] text-muted-text">{inPlay.label}. It says which stocks will move more today, not which way.</p>
+      </div> : null}
       {!running ? <p className="pt-2 text-[11px] text-muted-text">Nothing runs until you press Start. It watches the stocks until you stop it or 15 minutes after the close: the day's levels, the option contracts around the price, your positions on them, and an alert with a sound on this page when something changes.{state.stopped ? ` Last session: ${state.stopped.reason} at ${nyTime(state.stopped.at)} ET.` : ''}</p> : null}
       {running ? <>
         <div className="mt-3 flex flex-wrap gap-1.5 text-xs" role="group" aria-label="Assistant stocks shown">
@@ -203,6 +250,10 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
         <ul className="max-h-56 space-y-1 overflow-y-auto text-xs">{state.events.slice(0, 30).map((event) => <li key={event.seq} className="text-secondary-text">
           <span className="font-mono text-muted-text">{nyTime(event.at)}</span> <span className="text-foreground">{event.title}</span>{event.detail ? ` · ${event.detail}` : ''}</li>)}</ul>
       </div> : null}
+      {state.model && running ? <p className="pt-2 text-[11px] text-muted-text">Model today: {state.model.callsToday} of {state.model.cap} calls
+        {Object.keys(state.model.by).length ? ` (${Object.entries(state.model.by).map(([name, count]) => `${name} ${count}`).join(', ')})` : ''}
+        {state.model.medianSeconds != null ? `, median ${state.model.medianSeconds.toFixed(0)} s` : ''}{state.model.failed ? `, ${state.model.failed} failed` : ''}.
+        Your Claude Code plan first, then Codex, the API last.</p> : null}
       <p className="pt-2 text-[11px] text-muted-text">{state.note}</p>
     </Card>
   );

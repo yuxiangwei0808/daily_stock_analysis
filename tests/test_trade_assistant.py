@@ -374,3 +374,91 @@ def test_after_the_close_open_plans_of_the_day_are_graded_and_older_ones_expire(
     assert asst.settle_open_plans(repo, provider, at(16, 20)) == 2
     assert repo.rows["you|SPY|plan|a"]["status"] == "closed" and repo.rows["you|SPY|plan|a"]["how"] == "time"
     assert repo.rows["you|SPY|plan|old"]["status"] == "expired"
+
+
+def _model(answers):
+    """A fake model chain: each call takes the next answer (a dict, or an exception to raise)."""
+    calls = []
+
+    def generate(prompt, system):
+        calls.append({"prompt": prompt, "system": system})
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return {"data": answer, "label": "Claude Code (claude-sonnet-5-5)", "seconds": 5.0}
+    return generate, calls
+
+
+def _running(monkeypatch, answers, repo=None):
+    from src.services.trade_desk import assistant_model
+    generate, calls = _model(answers)
+    monkeypatch.setattr(assistant_model, "generate", generate)
+    a, charts, clock = _assistant(SimpleNamespace(repo=repo or FakeRepo()))
+    a.start(["SPY"], "0dte", at(9, 50), threads=False)
+    a.io(at(9, 50))
+    charts.push_quote("US.SPY", 736.0, at(9, 50, 1))
+    a.check(at(9, 50, 1))
+    return a, charts, calls
+
+
+def test_notes_come_on_events_at_most_every_few_minutes_and_at_once_for_a_plan(monkeypatch):
+    a, charts, calls = _running(monkeypatch, [
+        {"note": "SPY 736 is just under the pre-market high 738.03, an untested level.", "call": None},
+        {"note": "Above the pre-market high 738.03 now.", "call": None},
+        {"note": "Your plan is in at 737.2.", "call": None}])
+    a.notes_step(at(9, 50, 2))  # the first look after the start
+    note = a.state()["tickers"][0]["notes"][0]
+    assert note["kind"] == "note" and "738.03" in note["text"] and note["model"].startswith("Claude Code")
+    assert "first look" in calls[0]["prompt"] and "Never compute, round or invent a price" in calls[0]["system"]
+    assert a.state()["model"]["calls_today"] == 1 and a.state()["model"]["by"] == {"Claude Code (claude-sonnet-5-5)": 1}
+    charts.push_quote("US.SPY", 738.5, at(9, 51))
+    a.check(at(9, 51))
+    a.notes_step(at(9, 51))
+    assert len(calls) == 1  # a level crossed, but the last note is a minute old
+    a.notes_step(at(9, 53, 30))
+    assert len(calls) == 2 and "level: SPY above Pre-market high" in calls[1]["prompt"]
+    a.add_plan("SPY", {"direction": "long", "trigger": {"kind": "above", "price": 739}, "stop": 737, "target": 742}, now=at(9, 54))
+    a.notes_step(at(9, 54, 1))
+    assert len(calls) == 2  # watching a plan asks for nothing
+    charts.push_quote("US.SPY", 739.1, at(9, 54, 30))
+    a.check(at(9, 54, 30))
+    a.notes_step(at(9, 54, 31))
+    assert len(calls) == 3  # it triggered: a note at once, inside the gap
+
+
+def test_a_call_becomes_a_graded_assistant_call_and_an_invented_price_is_held_back(monkeypatch):
+    a, charts, calls = _running(monkeypatch, [
+        {"note": "Rejected at the pre-market high 738.03 twice.", "call": {"direction": "short", "trigger": {"kind": "now"},
+                                                                       "stop": 738.03, "target": 735.0, "time_stop": "11:00",
+                                                                       "why": "Two rejections at the level"}},
+        {"note": "Watch 741.37 for a breakout.", "call": None}])
+    a._tickers["SPY"].contracts = [{"code": "x", "right": "put", "strike": 735.0, "bid": 1.0, "ask": 1.1, "breakeven": 733.9}]
+    a.notes_step(at(9, 50, 2))
+    plans = a.state()["tickers"][0]["plans"]
+    assert plans[0]["source"] == "assistant" and plans[0]["kind"] == "call" and plans[0]["status"] == "open"
+    assert plans[0]["why"] == "Two rejections at the level" and plans[0]["model"].startswith("Claude Code")
+    assert a.state()["tickers"][0]["notes"][0]["call"].startswith("short now")
+    assert any(e["title"].startswith("Assistant call watched: SPY short now") for e in a.events_after(0))
+    charts.push_quote("US.SPY", 739.0, at(10, 0))
+    a.check(at(10, 0))
+    a.notes_step(at(10, 0, 1))  # its stop: an urgent note, which quotes a price nobody showed
+    held = a.state()["tickers"][0]["notes"][0]
+    assert held["kind"] == "held" and "741.37" in held["text"] and "Watch" not in held["text"]
+
+
+def test_questions_are_answered_from_the_state_and_the_daily_cap_holds(monkeypatch):
+    monkeypatch.setenv("TRADE_ASSISTANT_DAILY_CALLS", "2")
+    a, charts, calls = _running(monkeypatch, [
+        {"answer": "At 736 you are 0.3% under the pre-market high 738.03; your stop is 728.", "note": "", "call": None},
+        RuntimeError("no model answered: claude_code_cli usage limit; codex_cli timeout; litellm no key")])
+    out = a.ask("SPY", "where is the risk?", at(9, 51))
+    assert out["kind"] == "answer" and out["question"] == "where is the risk?" and "728" in out["text"]
+    assert '"question": "where is the risk?"' in calls[0]["prompt"] and "The trader asks you a question" in calls[0]["system"]
+    with pytest.raises(ValueError, match="No model answered"):
+        a.ask("SPY", "and now?", at(9, 52))
+    assert a.state()["model"]["failed"] == 1
+    a._usage["calls"] = 2
+    with pytest.raises(ValueError, match="2 model calls for today are used"):
+        a.ask("SPY", "again?", at(9, 53))
+    a.notes_step(at(9, 55))
+    assert len(calls) == 2  # the cap stops notes too

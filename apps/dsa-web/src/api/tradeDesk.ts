@@ -9,10 +9,12 @@ import type {
   HoldingsResponse,
   PortfolioSummary,
   AssistantHorizon,
+  AssistantNote,
   AssistantPlan,
   AssistantPlanDraft,
   AssistantState,
   AssistantTrigger,
+  InPlayList,
   RecentIdeas,
   TrackRecord,
   PaperFillRequest,
@@ -429,6 +431,11 @@ export const tradeDeskApi = {
   },
 
   /** Server-sent events for an open chart: ``bar``, ``quote``, ``closed`` (reload the snapshot) and ``evicted``. */
+  async getInPlay(): Promise<InPlayList | null> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/in-play`);
+    return toCamelCase<{ list: InPlayList | null }>(response.data).list;
+  },
+
   async getAssistant(): Promise<AssistantState> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/assistant`);
     return toCamelCase<AssistantState>(response.data);
@@ -463,6 +470,11 @@ export const tradeDeskApi = {
 
   async removeAssistantPlan(id: string): Promise<void> {
     await apiClient.delete(`${BASE_PATH}/assistant/plans/${encodeURIComponent(id)}`);
+  },
+
+  async askAssistant(ticker: string, question: string): Promise<AssistantNote> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/ask`, { ticker, question }, { timeout: 180000 });
+    return toCamelCase<AssistantNote>(response.data);
   },
 
   getAssistantStreamUrl(): string {

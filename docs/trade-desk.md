@@ -909,6 +909,14 @@ to three stocks with a horizon (0DTE options, intraday or swing); **Stop**, or 1
 close, ends it (a session started after the close runs until you stop it). Read only: nothing is sent
 to moomoo, and its alerts go to this page only, never to Discord.
 
+- **In play today** (`trade_desk/in_play.py`, `GET /in-play`; on with `IN_PLAY_ENABLED`, default true): after
+  09:46 on trading days the server holding the monitor lease scores SPY, QQQ, IWM, DIA, the 20 large caps of
+  the test, your watchlist and what you hold (at most 80) by the rule that passed as a range selector
+  ([strategy-backtest.md](strategy-backtest.md#which-stocks-move-today-the-in-play-range-test-scriptsbacktest_in_playpy)):
+  S = (|open − prior close| + the first 15-minute bar's range) / T, from moomoo's 15-minute history (read
+  only; a new stock uses one history allowance for 30 days). The card shows the top five before you start,
+  each with its S; a click adds one to the stocks, and **Start on the top 3** is the "let the agent pick"
+  start. It says which stocks will move more today, not which way.
 - **Levels** for each stock, with the price's distance and the register verdict of each
   ([trading-methodology.md](trading-methodology.md) §11; none has passed): the chart's prior-day high,
   low and close and the two prior weeks' value areas, your plan stops and targets and price alerts, the
@@ -943,6 +951,18 @@ to moomoo, and its alerts go to this page only, never to Discord.
   past it; else the last trade before the time stop; in R after 0.05 % per round trip) against the same
   trade at 20 random minutes of that session, and shows in **Forward grades** as *Your plans*, clustered
   by day. A session stopped early, or a restart, leaves open plans to the daily pass after 16:20.
+- **Notes, calls and questions** (`trade_desk/assistant_notes.py`, `POST /assistant/ask`): when something
+  changes (a level crossed, a flag, a position, a P&L step, the close coming, a plan's step) the model writes
+  a short note on that stock from its computed state: what changed, where the price sits against the levels,
+  what your position or plan means now. At most one note a stock every `TRADE_ASSISTANT_NOTE_MINUTES` (3),
+  at once for a fill or a plan's trigger, stop, target or time stop, and one at the start; notes show on the
+  page without a sound. A note may carry a call (long or short, a trigger, a stop, a target, a time stop and
+  why): it is labelled an untested model call, watched like your plans, alerted on, and graded the same way
+  as *Assistant calls*. **Ask** answers a question about the stock from the same state. Every price a
+  note, call or answer writes must be one the state shows (within 0.05 %); otherwise it is held back and the
+  page says only that. `TRADE_ASSISTANT_DAILY_CALLS` (150) caps the day's model calls, notes, plan readings
+  and questions together; the card shows the day's count, by model, and the median time. A test on live data
+  wrote a note in about 4 seconds and answered a question in 5, through Claude Code on Sonnet 5.5.
 - **The model** (`trade_desk/assistant_model.py`): your Claude Code plan first, then Codex, and the API
   only as a fallback (`TRADE_ASSISTANT_BACKENDS`, default `claude_code_cli,codex_cli,litellm`), each with
   the assistant's own light settings: `TRADE_ASSISTANT_CLAUDE_CODE_CLI_MODEL` and `_EFFORT` (default the
@@ -1108,7 +1128,9 @@ and `kept` (id → reason). `POST
 `GET /outcomes` returns `paper`, `paper_replay` and `manual_live` buckets.
 `GET /holdings`, `POST /holdings/refresh` and the `/holdings/rules` routes serve
 the read-only broker holdings and your alerts (409 when no account is set).
-`GET /assistant`, `POST /assistant/start` (`{"tickers": [..], "horizon": "0dte|intraday|swing"}`, one to three
+`GET /in-play` returns today's in-play list (`{"list": null}` before 09:46).
+`POST /assistant/plans/parse`, `POST /assistant/plans`, `DELETE /assistant/plans/{id}` and `POST /assistant/ask`
+serve the assistant's plans and questions. `GET /assistant`, `POST /assistant/start` (`{"tickers": [..], "horizon": "0dte|intraday|swing"}`, one to three
 US stocks; another session is stopped first), `POST /assistant/stop` and the event stream `GET /assistant/stream`
 (`state` once a second while a session runs, `alert` as each happens) serve the trading assistant.
 `GET /ideas?days=7` (1–30) lists the trend scan's reviewed ideas and the breakout alerts, newest first,

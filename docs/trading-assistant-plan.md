@@ -5,7 +5,8 @@ recorder, on with `OPTION_RECORDER_ENABLED=true`; the session engine, contract p
 alerts in the Chart tab; your typed plans, watched and graded; see
 [trade-desk.md](trade-desk.md#trading-assistant)). The in-play test of phase 5 passed as a range
 selector. Decision 5 (2026-11-06): model calls go through your Claude Code plan first, then Codex, and
-the API only as a fallback. Phases 4, 5's live list and 6 next. It builds on the Chart tab
+the API only as a fallback. Phase 4 (notes, calls and questions) and phase 5's live in-play list built
+the same day. Phase 6 waits for about 60 sessions of recorded quotes. It builds on the Chart tab
 ([live-chart-plan.md](live-chart-plan.md)) and follows
 [trading-methodology.md](trading-methodology.md), which is the main source for how we trade and how
 we find stocks.
