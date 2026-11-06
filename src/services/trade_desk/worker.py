@@ -96,6 +96,9 @@ class TradeDeskWorker:
         from .shadow_watch import ShadowWatch
         self._shadow_watch = (ShadowWatch(service.holdings, self._holdings, leader=lambda: self._leader)
                               if self._holdings is not None else None)
+        from . import option_recorder
+        self._option_recorder = (option_recorder.OptionRecorder(service, leader=lambda: self._leader)
+                                 if option_recorder.enabled() else None)
 
     def _watched(self):
         """The watchlist plus held stocks and option underlyings."""
@@ -200,6 +203,8 @@ class TradeDeskWorker:
         self._status_thread.start()
         if self._shadow_watch is not None:
             self._shadow_watch.start()
+        if self._option_recorder is not None:
+            self._option_recorder.start()
 
     def status(self):
         return {"running": bool(self._thread and self._thread.is_alive()), "leader": self._leader,
@@ -214,8 +219,8 @@ class TradeDeskWorker:
             self._thread.join(timeout=5)
         if self._status_thread:
             self._status_thread.join(timeout=5)
-        for part in (self._shadow_watch, self._pulse, self._breakouts, self._opportunities, self._holdings, self._tracker,
-                     self._youtube, self._social):
+        for part in (self._shadow_watch, self._option_recorder, self._pulse, self._breakouts, self._opportunities,
+                     self._holdings, self._tracker, self._youtube, self._social):
             if part is not None:
                 part.stop()
         self.repo.release(self.owner)

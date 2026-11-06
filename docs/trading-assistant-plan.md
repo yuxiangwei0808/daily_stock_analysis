@@ -1,6 +1,7 @@
 # Plan: real-time trading assistant
 
-Status: draft of 2026-11-06, not started. It builds on the Chart tab
+Status: phases 0 and 1 built on 2026-11-06 (the register and strict trade ideas; the 0DTE quote
+recorder, on with `OPTION_RECORDER_ENABLED=true`). Phases 2 to 6 not started. It builds on the Chart tab
 ([live-chart-plan.md](live-chart-plan.md)) and follows
 [trading-methodology.md](trading-methodology.md), which is the main source for how we trade and how
 we find stocks.
@@ -216,9 +217,10 @@ on the page. A background tab keeps alerting while it is open. Discord and moomo
   - the nearest expiry within a band around the price;
   - bid, ask, implied volatility, greeks and volume, every 15 seconds, through
     `get_market_snapshot` (no subscription needed, within its rate limit);
-  - the stock's 1-minute bars.
-- **Storage:** compressed daily files on the local data disk, not the home folder and not SQLite
-  on NFS. The size gets measured in the first week.
+  - the stock's own quote in the same snapshot. Its 1-minute bars can be downloaded from moomoo's
+    history when a test needs them, so the recorder doesn't store them.
+- **Storage:** compressed daily files next to the database (not the home folder, and not SQLite
+  on NFS): about 100 MB a day at 12 underlyings in a first test, to be checked in the first week.
 - **Then:** after about 60 sessions, your setups and the assistant's calls get tested on real
   quotes.
 

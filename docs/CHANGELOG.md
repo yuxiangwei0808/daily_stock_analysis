@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [改进] 交易想法遵循交易方法论（第 8 阶段）：趋势扫描想法、期权跟进与突破提醒只有在其依据的规则全部通过检验后才发送到 Discord；在此之前只在 Trade Desk「Ask」页的「Trade ideas」卡片显示（`GET /api/v1/trade-desk/ideas`），标注规则结论并照常前瞻跟踪。目前没有规则通过，因此 Discord 暂不再收到交易想法
 - [改进] 想法登记表 `trade_desk/register.py` 统一保存每条规则的检验结论；`docs/trading-methodology.md` 的登记表由它生成（测试校验一致），图表信号评级也改读该表；方法论新增选股（第 13 节）、日内与 0DTE 期权（第 14 节）以及看板/Discord/助手可显示内容（第 15 节）
+- [新功能] 0DTE 期权报价记录（`OPTION_RECORDER_ENABLED=true`，默认关闭）：交易日开盘前读取最近到期日期权链，开盘至收盘后 15 分钟每 15 秒记录标的与离现价最近 24 个行权价的看涨/看跌报价、隐含波动率与希腊值，写入 `option_quotes/<日期>/<代码>.csv.gz`，供日后检验 0DTE 规则；只读，不订阅、不下单；状态页新增「0DTE quote recorder」
 - [文档] 实时交易助手计划 `docs/trading-assistant-plan.md`
 - [chore] 移除本 fork 不使用的上游附加内容：Electron 桌面端与打包脚本、Docker 与云部署文件及文档、只在上游仓库运行的 GitHub workflow（发布、Docker 推送、auto-tag、PR AI 审查、stale、network-smoke）、agent 轨迹评测 `evals/`、OpenClaw / Grok Bot 集成示例、`webui.py`、`CITATION.cff` 与运行诊断阶段规划文档；同步更新 CI、契约测试、AGENTS.md 与文档索引。后端运行、Web 构建与 Trade Desk 不受影响。
 - [新功能] moomoo 自定义指标脚本 `scripts/moomoo_box_indicator.txt`（Python 指标）：在 moomoo 自己的 15 分钟图上画出与回测相同规则的区间箱与基础箱，并标记冲击 K 线；只画图

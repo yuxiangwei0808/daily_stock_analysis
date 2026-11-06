@@ -900,6 +900,31 @@ once; a sixth pauses the oldest, which then refreshes every minute. A closed pag
 subscriptions are released after 10 minutes. The Status page's "Chart live bars" line shows the
 open charts, pushes, quote delay and the time spent per push.
 
+## 0DTE quote recorder
+
+With `OPTION_RECORDER_ENABLED=true` the server holding the monitor lease records option quotes for
+later 0DTE tests (`trade_desk/option_recorder.py`; [trading-methodology.md](trading-methodology.md)
+§14): there is no option history to backtest on otherwise. Read only: no subscriptions, orders or
+database writes, on a moomoo connection and a thread of its own.
+
+- **What:** from 10 minutes before the open it reads each underlying's nearest expiry (0DTE where
+  there is one) and that expiry's chain, once a day, 3.5 seconds apart. From the open to 15 minutes
+  after the close (SPY and QQQ options trade until 16:15), every 15 seconds on round times: the
+  underlying, then the calls and puts of the 24 strikes nearest its price, with bid, ask, their
+  sizes, last, volume, open interest, implied volatility, delta, gamma, theta, vega and moomoo's
+  update time.
+- **Which:** `OPTION_RECORDER_TICKERS` (default `SPY,QQQ`), then the option underlyings you hold and
+  the stocks of your trade journal, at most 12; the list is re-read every 10 minutes. A stock without
+  listed options is skipped for the day; a chain that fails to load is retried after 5 minutes.
+- **Where:** `OPTION_RECORDER_DIR` (default `option_quotes/` next to the database), one
+  `<day>/<TICKER>.csv.gz` per underlying (`right` is `S` for the underlying's own row), appended so a
+  restart keeps the day's rows. A test run wrote about 50 bytes per row: roughly 100 MB a day at 12
+  underlyings, so keep it off a small home folder.
+- **Load:** one `get_market_snapshot` for the underlyings and one per 400 contracts every 15 seconds,
+  within OpenD's 60 requests per 30 seconds.
+- **Status page:** "0DTE quote recorder" shows the underlyings, rows today and the last snapshot's
+  age; a warning when a chain failed, an error when no snapshot came for over a minute in the session.
+
 ## Your trades (journal from moomoo fills)
 
 The Journal tab's **Your trades** card reads a year of your filled trades from moomoo

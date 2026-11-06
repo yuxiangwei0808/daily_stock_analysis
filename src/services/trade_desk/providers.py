@@ -2125,6 +2125,34 @@ class MoomooProvider:
             for subtype in subtypes:
                 self._subscribe([code], subtype, push=True)
 
+    def quiet_sdk_log(self) -> None:
+        """The SDK's file log in the home folder from debug to info: at debug it writes every request and push."""
+        sdk = self._load_sdk()
+        if hasattr(sdk, "logger"):
+            sdk.logger.file_level = logging.INFO
+
+    def nearest_chain(self, code: str) -> tuple[Optional[date], list[dict[str, Any]]]:
+        """The nearest expiry on or after today and its standard contracts (``code``, ``right``, ``strike``).
+
+        Two rate-limited requests (expiry dates, then that expiry's chain); no subscription.
+        """
+        with self._lock:
+            upcoming = self._upcoming_expiries(code, self._now())
+            if not upcoming:
+                return None, []
+            contracts = self._fetch_chain(code, upcoming[0])
+        return upcoming[0], [{"code": item.contract_id, "right": item.right, "strike": item.strike}
+                             for item in contracts if item.expiry_date == upcoming[0] and item.standard]
+
+    def snapshot_rows(self, codes: Sequence[str]) -> list[dict[str, Any]]:
+        """Raw ``get_market_snapshot`` rows, at most 400 codes a request; no subscription needed."""
+        codes = list(codes)
+        rows: list[dict[str, Any]] = []
+        with self._lock:
+            for start in range(0, len(codes), 400):
+                rows += self._snapshot_rows(codes[start:start + 400])
+        return rows
+
     def keep_subscriptions(self, wanted: Iterable[tuple[str, str]]) -> None:
         """Release this provider's other subscriptions once they are past OpenD's one-minute minimum."""
 

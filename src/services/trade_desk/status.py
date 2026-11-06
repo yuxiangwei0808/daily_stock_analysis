@@ -194,6 +194,9 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
         charts = getattr(service, "charts", None)
         if charts is not None:
             add("chart_feed", "Chart live bars", **charts.health(now))
+        recorder = getattr(worker, "_option_recorder", None)
+        if recorder is not None:
+            add("option_recorder", "0DTE quote recorder", **recorder.health(now))
         for key, label, attr in (("pulse", "Market pulse", "_pulse"), ("opportunities", "Trade opportunities", "_opportunities"),
                                  ("breakouts", "Breakout watch", "_breakouts")):
             part = getattr(worker, attr, None)
