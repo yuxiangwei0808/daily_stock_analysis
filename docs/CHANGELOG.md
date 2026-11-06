@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 止损风险面板（`GET /api/v1/trade-desk/holdings/stop-risk`）：每个持仓触及计划止损时的亏损、全部止损同时触发的合计，以及跳空至两倍止损距离的情景，均以账户百分比显示；持仓页与图表页共用同一组止损与价格
 - [新功能] 图表前瞻评分：系统信号只有在成交前已在图表上显示过才计入；可在图表上标记「此处做多/做空」（含止损/目标）或画框保存，按回测的出场规则跟踪，并与随机时点的同类交易对比；每类满 30 笔后给出结论（`GET /api/v1/trade-desk/chart-grades`）；只记录，不下单
 - [新功能] 图表实时更新：打开的图表通过 moomoo 推送实时更新当前 K 线与最新成交价（SSE `GET /api/v1/trade-desk/chart/{ticker}/stream`），每根 15 分钟 K 线收盘后重新计算箱体与信号；最多同时 5 个图表，关闭后 10 分钟释放订阅；状态页新增「Chart live bars」
 - [新功能] Trade Desk 新增「图表」标签页（KLineChart）：选择任意美股或持仓/自选/交易想法，显示 K 线、成交量、NX 通道、回测规则下的箱体、价值区与前日高低收、你的止损/目标/价格提醒，以及带回测结论的信号列表；只读，不下单

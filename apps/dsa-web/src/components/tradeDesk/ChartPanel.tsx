@@ -10,6 +10,7 @@ import { NX_INDICATOR, PERIODS, alpha, flagTitle, nxByTime, nyTime, overlaysFor,
 import type { ChartColors } from './chartOverlays';
 import { errorMessage, formatDate } from './deskFormat';
 import { GradesCard, YoursCard } from './ChartYours';
+import { StopRiskCard } from './StopRiskCard';
 
 const INTERVALS: ChartInterval[] = ['1m', '5m', '15m', '1d'];
 const VARIANTS = [
@@ -340,6 +341,7 @@ export function ChartPanel({ initialTicker = '' }: { initialTicker?: string }) {
                   selected={selected === flag} onSelect={() => setSelectedKey(flagKey(flag))} />)}</div> : null}
               </div> : null}
             </Card>
+            <StopRiskCard ticker={snapshot.ticker} />
             <YoursCard ticker={snapshot.ticker} lastPrice={lastPrice} yours={snapshot.yours || []} chart={chartHandle}
               onChanged={() => { void load(true); setGradesVersion((value) => value + 1); }} />
             <Card variant="bordered" padding="sm">

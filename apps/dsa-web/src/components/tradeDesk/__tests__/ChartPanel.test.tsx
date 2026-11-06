@@ -25,6 +25,7 @@ vi.mock('klinecharts', () => ({ init: vi.fn(() => chart.instance), dispose: vi.f
 
 const api = vi.hoisted(() => ({ getChart: vi.fn(), getHoldings: vi.fn(), getTrackRecord: vi.fn(),
   getChartGrades: vi.fn(() => Promise.resolve({ kinds: [], recent: [], minTrades: 30 })),
+  getStopRisk: vi.fn(() => Promise.reject(new Error('Set TRADE_DESK_BROKER_ACCOUNT'))),
   getChartStreamUrl: (ticker: string, interval: string) => `/api/v1/trade-desk/chart/${ticker}/stream?interval=${interval}` }));
 vi.mock('../../../api/tradeDesk', async (original) => ({ ...(await original<typeof import('../../../api/tradeDesk')>()), tradeDeskApi: api }));
 vi.mock('../../../api/systemConfig', () => ({ systemConfigApi: { getWatchlist: vi.fn().mockResolvedValue(['SPY', '600519', 'hk00700']) } }));
@@ -72,7 +73,8 @@ describe('ChartPanel', () => {
     expect(api.getChart).toHaveBeenCalledWith('SPY', '15m', 1, false);
     expect(screen.getByText(/766\.81 · stop 768\.82 · target 762\.79 · 2:1 · \+4\.61% from last/)).toBeInTheDocument();
     expect(screen.getByText(/No edge shown in backtest \(t -1\.78/)).toBeInTheDocument();
-    expect(chart.state.bars).toHaveLength(2);
+    await vi.waitFor(() => expect(chart.state.bars).toHaveLength(2));  // the canvas is filled by effects after the render
+    await vi.waitFor(() => expect(chart.state.overlays.length).toBeGreaterThan(0));
     const names = chart.state.overlays.map((item) => `${item.name}:${item.extendData.label}`);
     expect(names).toContain('dsaBox:Range 764.15–768.25');
     expect(names).toContain('dsaLevel:VAH −1w 773.34');
@@ -94,7 +96,7 @@ describe('ChartPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '1d' }));
     expect(await screen.findByText(/Boxes come from 15-minute bars/)).toBeInTheDocument();
     expect(api.getChart).toHaveBeenLastCalledWith('SPY', '1d', 0.6, true);
-    expect(chart.state.overlays.some((item) => item.name === 'dsaBox')).toBe(false);
+    await vi.waitFor(() => expect(chart.state.overlays.some((item) => item.name === 'dsaBox')).toBe(false));
     expect(chart.state.overlays.some((item) => item.name === 'dsaLevel')).toBe(true);
   });
 
@@ -129,6 +131,7 @@ describe('ChartPanel live updates', () => {
     api.getChart.mockResolvedValue(snapshot());
     render(<ChartPanel initialTicker="SPY" />);
     await screen.findByText('Fade short');
+    await vi.waitFor(() => expect(FakeEventSource.last).not.toBeNull());  // opened by an effect after the render
     const source = FakeEventSource.last as FakeEventSource;
     expect(source.url).toContain('/api/v1/trade-desk/chart/SPY/stream?interval=15m');
     act(() => source.emit('ready'));

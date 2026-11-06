@@ -97,7 +97,7 @@ export function YoursCard({ ticker, lastPrice, yours, chart, onChanged }: { tick
             {item.r != null ? <p className="mt-0.5 text-muted-text">{item.status === 'closed' ? `${item.how} · ` : 'now '}<strong className="text-foreground">{signedR(item.r)}</strong>
               {item.twinR != null ? ` · random timing ${signedR(item.twinR)}` : item.status === 'closed' ? ' · random timing after its five sessions' : ''}</p> : null}
           </div>
-          {item.status === 'waiting' ? <button type="button" aria-label="Remove" title="Remove (only before it trades)" className="shrink-0 text-muted-text hover:text-danger"
+          {item.status === 'waiting' ? <button type="button" aria-label="Remove" className="shrink-0 text-muted-text hover:text-danger"
             onClick={() => void run(() => tradeDeskApi.deleteChartYours(item.id))}><Trash2 className="h-3.5 w-3.5" /></button> : null}
         </li>))}</ul> : null}
     </Card>

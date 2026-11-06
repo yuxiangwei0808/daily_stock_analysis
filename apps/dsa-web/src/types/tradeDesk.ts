@@ -905,3 +905,29 @@ export interface ChartGradeTable {
     r?: number; twinR?: number; entryTime?: string; how?: string }>;
   minTrades: number;
 }
+
+/** GET /holdings/stop-risk: what each position loses at its plan stop, as % of the account. */
+export interface StopRiskRow {
+  key: string;
+  ticker: string;
+  label: string;
+  type: 'stock' | 'option';
+  exposure: string;
+  weightPct?: number | null;
+  stop?: number | null;
+  stopNote?: string;
+  stopDistancePct?: number | null;
+  atStopPct: number | null;
+  atGapPct: number | null;
+  pastStop: boolean;
+  unavailable: 'no stop' | 'no price' | 'option not priced' | null;
+}
+
+export interface StopRisk {
+  asOf: string;
+  rows: StopRiskRow[];
+  gapMultiple: number;
+  totals: { atStopsPct: number | null; atGapsPct: number | null };
+  withoutStop: string[];
+  unpriced: string[];
+}

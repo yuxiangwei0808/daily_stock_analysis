@@ -103,3 +103,52 @@ def test_after_the_close_the_latest_prices_still_give_an_estimate():
                            download=lambda *a, **kw: {}, now=NOW)
     assert out["complete"] and out["totals"]["delta_dollars"] == 1000
     assert r.summary_line(out).startswith("Risk (estimate): if SPY -3%")
+
+
+from tests.test_broker_holdings import repo, store  # noqa: E402,F401
+
+
+def test_stop_risk_is_the_loss_at_each_plan_stop_and_in_a_gap_through_it_as_percent_of_the_account(monkeypatch):
+    from src.services.trade_desk import risk as rk
+    from tests.test_broker_holdings import MIDDAY
+    view = {"total_assets": 10000.0,
+            "stocks": [{"key": "NVDA", "ticker": "NVDA", "qty": 5.0, "price": 200.0},
+                       {"key": "SOXS", "ticker": "SOXS", "qty": 10.0, "price": 30.0},
+                       {"key": "MU", "ticker": "MU", "qty": -4.0, "price": 100.0}],
+            "options": [{"key": "USO 2026-10-16", "underlying": "USO", "underlying_price": 150.0, "expiry": "2026-10-16",
+                         "legs": [{"qty": 3.0, "strike": 160.0, "right": "call", "mark": 3.4},
+                                  {"qty": -3.0, "strike": 170.0, "right": "call", "mark": 1.6}]},
+                        {"key": "XYZ 2026-10-16", "underlying": "XYZ", "underlying_price": 50.0, "expiry": "2026-10-16",
+                         "legs": [{"qty": 1.0, "strike": 40.0, "right": "call", "mark": None}]}]}
+    plan = lambda key, ticker, label, price, stop, exposure="long", weight=1.0: {  # noqa: E731
+        "key": key, "ticker": ticker, "label": label, "price": price, "stop": stop, "exposure": exposure,
+        "weight_pct": weight, "stop_source": "review", "stop_distance_pct": None}
+    rows = [plan("NVDA", "NVDA", "NVDA shares", 200.0, 190.0), plan("SOXS", "SOXS", "SOXS shares", 30.0, 33.0),
+            plan("MU", "MU", "MU short", 100.0, 105.0, "short"), plan("USO 2026-10-16", "USO", "USO spread", 150.0, 145.0),
+            plan("XYZ 2026-10-16", "XYZ", "XYZ call", 50.0, 45.0), plan("OLD", "OLD", "gone", 1.0, 1.0)]
+    rows.append({**plan("NVDA", "NVDA", "NVDA again", 200.0, None)})
+    result = rk.stop_risk(view, rows, now=MIDDAY)
+    by = {row["label"]: row for row in result["rows"]}
+    assert (by["NVDA shares"]["at_stop_pct"], by["NVDA shares"]["at_gap_pct"]) == (-0.5, -1.0)  # 5 × −10, 5 × −20 of 10,000
+    assert by["SOXS shares"]["past_stop"] and by["SOXS shares"]["at_stop_pct"] == 0.0  # selling now is the exit
+    assert (by["MU short"]["at_stop_pct"], by["MU short"]["at_gap_pct"]) == (-0.2, -0.4)
+    uso = by["USO spread"]
+    years = rk._years_to("2026-10-16", MIDDAY)
+    spread = lambda spot, ivs: sum(q * 100 * rk._bs(spot, k, years, iv, "call") for (q, k), iv in zip(((3, 160), (-3, 170)), ivs))  # noqa: E731
+    ivs = [rk.implied_vol(3.4, 150, 160, years, "call"), rk.implied_vol(1.6, 150, 170, years, "call")]
+    assert uso["at_stop_pct"] == round((spread(145, ivs) - spread(150, ivs)) / 100, 2) < 0
+    assert by["XYZ call"]["unavailable"] == "option not priced" and by["NVDA again"]["unavailable"] == "no stop"
+    assert "gone" not in by
+    assert result["totals"]["at_stops_pct"] == round(-0.5 + 0 - 0.2 + uso["at_stop_pct"], 2)
+    assert result["without_stop"] == ["NVDA again"] and result["unpriced"] == ["XYZ call"] and result["gap_multiple"] == 2.0
+    assert rk.stop_risk(view, [], now=MIDDAY)["totals"] == {"at_stops_pct": None, "at_gaps_pct": None}
+
+
+def test_the_holdings_stop_risk_uses_the_plans_and_view_of_the_holdings_page(store):  # noqa: F811
+    from tests.test_broker_holdings import MIDDAY
+    store.mutate_plans(lambda stored: {**stored, "plans": {"NVDA": {
+        "key": "NVDA", "ticker": "NVDA", "type": "stock", "exposure": "long", "stop": 190.0, "stop_source": "review"}}})
+    result = store.stop_risk(now=MIDDAY)
+    nvda = next(row for row in result["rows"] if row["key"] == "NVDA")
+    assert (nvda["at_stop_pct"], nvda["weight_pct"], nvda["stop_note"]) == (-0.5, 10.0, "review")
+    assert set(result["without_stop"]) == {"SOXS shares", "USO 10/16 160/170C spread"}

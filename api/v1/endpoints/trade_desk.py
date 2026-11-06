@@ -420,6 +420,12 @@ async def holdings_risk(request: Request):
     return await invoke(get_service(request).holdings.risk)
 
 
+@router.get("/holdings/stop-risk")
+async def holdings_stop_risk(request: Request):
+    """Loss at each position's plan stop, the total if every stop is hit, and a gap through every stop (% of the account)."""
+    return await invoke(_holdings(request).stop_risk)
+
+
 @router.post("/holdings/refresh")
 async def holdings_refresh(request: Request):
     store = _holdings(request)

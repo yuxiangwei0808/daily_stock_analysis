@@ -1,7 +1,7 @@
 # Plan: live chart with boxes, levels and graded suggestions
 
-Status: phases 1 to 5 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
-the Chart tab, live updates, forward grades); later phases not built.
+Status: phases 1 to 6 done (boxes module, `scripts/backtest_boxes.py`, `GET /chart/{ticker}`,
+the Chart tab, live updates, forward grades, the stop risk panel); phase 7 not built.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
 
@@ -107,8 +107,11 @@ Each phase ships on its own with tests. Phase 0 is a precondition.
    - Records move on every chart read and once a day after 16:20 New York (up to 30 stocks).
    - The twin refactor left the backtest unchanged: rerun on the 49 cached stocks, identical
      to the 2026-11-05 reproduction including the shuffled-data control.
-6. **Risk panel.** Loss at each stop as a percentage of the account, the total if every stop is
-   hit, and a gap scenario. Percentages only.
+6. **Risk panel** (done, `risk.stop_risk`, `GET /holdings/stop-risk`, `StopRiskCard`). Loss at
+   each plan stop as a percentage of the account, the total if every stop is hit, and a gap
+   through every stop to twice its distance. Percentages only. It uses the Holdings page's view
+   and plan rows, so the stops, prices and weights match it; options are re-priced at the stop
+   with their implied volatility, as the Portfolio risk card does.
 7. **moomoo add-on.**
    - A custom indicator script that draws the boxes on moomoo's own charts. You paste it into
      the app and check it, since moomoo's drawing functions are not documented in the API.

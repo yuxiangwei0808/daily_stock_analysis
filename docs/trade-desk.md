@@ -829,6 +829,20 @@ pause custom P&L rules as well as default profit/loss alerts. Discord names the 
 risk line leaves out, and says the estimate is unavailable when nothing could be priced; an
 unpriced holding is never reported as zero.
 
+### Risk at your stops
+
+The **Risk at your stops** card (`GET /holdings/stop-risk`, `risk.stop_risk`) sits under Portfolio
+risk on the Holdings tab, and on the Chart tab for the charted stock's positions. It shows, as a
+percentage of the account only:
+
+- each position's loss if its plan stop is hit (the same stops, prices and weights as the
+  Holdings page; options re-priced at the stop with their current implied volatility);
+- the total if every stop is hit;
+- a gap scenario: each position opens past its stop at twice the stop's distance.
+
+A position already past its stop would sell at today's price, so it adds nothing more. One
+without a stop, or an option whose price cannot be used, is named and left out of the totals.
+
 ## Chart
 
 The **Chart** tab (`/trade-desk?view=chart&ticker=SPY`) shows a stock with what the system

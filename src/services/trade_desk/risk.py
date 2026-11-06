@@ -208,6 +208,77 @@ def portfolio_risk(view: Dict[str, Any], *, download: Optional[Callable[..., Dic
     }
 
 
+GAP_MULTIPLE = 2.0  # the gap scenario: each position opens past its stop, at twice the stop's distance
+
+
+def _position_pnl(position: Dict[str, Any], kind: str, spot: float, moved: float, now: datetime) -> Optional[float]:
+    """Dollar change of one position for an instant move of its (underlying) price; None when an option leg
+    cannot be priced (no usable mark, so no implied volatility)."""
+    if kind == "stock":
+        return float(position["qty"]) * (moved - spot)
+    pnl = 0.0
+    for leg in position["legs"]:
+        years = _years_to(position["expiry"], now)
+        iv = None if leg.get("wide") else implied_vol(leg.get("mark") or 0, spot, float(leg["strike"]), years, leg["right"])
+        if iv is None:
+            return None
+        pnl += float(leg["qty"]) * 100 * (_bs(moved, leg["strike"], years, iv, leg["right"]) - _bs(spot, leg["strike"], years, iv, leg["right"]))
+    return pnl
+
+
+def stop_risk(view: Dict[str, Any], plan_rows: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """What each position loses at its plan stop, the total if every stop is hit, and a gap through every stop.
+
+    Percentages of total assets only. A move is instant at today's prices: options keep their implied
+    volatility and time (as in ``portfolio_risk``). A position already past its stop would sell at today's
+    price, so it adds nothing more; one without a stop, or an option that cannot be priced, is named and
+    left out of the totals.
+    """
+    now = now or datetime.now(timezone.utc)
+    total_assets = view.get("total_assets") or 0
+    positions = {row["key"]: (row, "stock") for row in view.get("stocks") or []}
+    positions.update({row["key"]: (row, "option") for row in view.get("options") or [] if not row.get("expired")})
+
+    def pct(value):
+        return round(value / total_assets * 100, 2) if value is not None and total_assets else None
+    rows, at_stops, at_gaps, counted = [], 0.0, 0.0, 0
+    missing, unpriced = [], []
+    for plan in plan_rows:
+        position, kind = positions.get(plan["key"], (None, None))
+        if position is None:
+            continue
+        spot, stop = plan.get("price"), plan.get("stop")
+        row = {"key": plan["key"], "ticker": plan["ticker"], "label": plan["label"], "type": kind, "exposure": plan["exposure"],
+               "weight_pct": plan.get("weight_pct"), "stop": stop, "stop_note": plan.get("stop_source", ""),
+               "stop_distance_pct": plan.get("stop_distance_pct"), "at_stop_pct": None, "at_gap_pct": None,
+               "past_stop": False, "unavailable": None}
+        if stop is None or not spot:
+            row["unavailable"] = "no stop" if stop is None else "no price"
+            missing.append(plan["label"])
+            rows.append(row)
+            continue
+        loss_at_stop = _position_pnl(position, kind, spot, stop, now)
+        gap_price = max(0.0, spot + GAP_MULTIPLE * (stop - spot))
+        loss_at_gap = _position_pnl(position, kind, spot, gap_price, now)
+        if loss_at_stop is None or loss_at_gap is None:
+            row["unavailable"] = "option not priced"
+            unpriced.append(plan["label"])
+            rows.append(row)
+            continue
+        if loss_at_stop > 0:  # already past its stop: selling now is the exit, nothing more to lose at it
+            row["past_stop"] = True
+            loss_at_stop, loss_at_gap = 0.0, min(0.0, loss_at_gap)
+        row.update(at_stop_pct=pct(loss_at_stop), at_gap_pct=pct(loss_at_gap))
+        at_stops += loss_at_stop
+        at_gaps += loss_at_gap
+        counted += 1
+        rows.append(row)
+    rows.sort(key=lambda item: (item["at_stop_pct"] is None, item["at_stop_pct"] or 0))
+    return {"as_of": now.isoformat(), "rows": rows, "gap_multiple": GAP_MULTIPLE,
+            "totals": {"at_stops_pct": pct(at_stops) if counted else None, "at_gaps_pct": pct(at_gaps) if counted else None},
+            "without_stop": missing, "unpriced": unpriced}
+
+
 def summary_line(risk: Dict[str, Any]) -> str:
     """Percent-only risk line for Discord: index moves and time decay as a share of the account."""
     missing = risk.get("unavailable_tickers") or []

@@ -28,6 +28,7 @@ import type {
   ChartInterval,
   ChartSnapshot,
   ChartYours,
+  StopRisk,
   SystemStatus,
   TradePreferences,
   TradePreferencesUpdate,
@@ -315,6 +316,11 @@ export const tradeDeskApi = {
   async getHoldingsRisk(): Promise<PortfolioRisk> {
     const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/risk`);
     return toCamelCase<PortfolioRisk>(response.data);
+  },
+
+  async getStopRisk(): Promise<StopRisk> {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE_PATH}/holdings/stop-risk`);
+    return toCamelCase<StopRisk>(response.data);
   },
 
   async getHoldings(): Promise<HoldingsResponse> {

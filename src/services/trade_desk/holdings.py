@@ -559,6 +559,13 @@ class Holdings:
         from .risk import portfolio_risk
         return portfolio_risk(self.view(now=now), download=download, now=now)
 
+    def stop_risk(self, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Loss at each plan stop, at all of them, and in a gap through them, as % of the account (risk.py)."""
+        from . import position_plans
+        from .risk import stop_risk
+        view = self.view(now=now)
+        return stop_risk(view, position_plans.panel_rows(view, self.plans()["plans"], self.rules()), now=now)
+
     # plans: one action, stop and target per position --------------------------------
     def plans(self) -> Dict[str, Any]:
         """{"plans": {position key: plan}, "review": the last daily review's state}."""
