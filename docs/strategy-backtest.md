@@ -201,3 +201,40 @@ month. All variants are shown.
   variant passes.
 - **Not tested:** order flow (the video's footprint and delta need tick history), the trader's
   own choice of which boxes to trade, DAX futures, and options (with options the costs are higher).
+
+## Which stocks move today: the in-play range test (`scripts/backtest_in_play.py`)
+
+Frozen on 2026-11-06, before any run on real data ([trading-methodology.md](trading-methodology.md) §3).
+Results are added after this part; the rules in it don't change.
+
+- **Question:** does ranking stocks at 09:45 by how far they have already moved today, against their
+  own normal, pick the stocks that move most over the rest of the session, more than the other
+  stocks that day? Options pay for movement, so this is what a day list must do first (methodology §13).
+- **Data:** the 49 cached stocks and ETFs of the box test (`reports/backtests/bars_15m`: SPY, QQQ, IWM,
+  DIA, 20 large caps and the watchlist of 2026-11-05), moomoo 15-minute bars, forward-adjusted, regular
+  session. Period A is 2020-11-05 to 2023-11-04, period B 2023-11-05 to 2026-11-05. A day counts when at
+  least 20 stocks have the bars it needs.
+- **Normal:** T, the median session range (high − low) of the 10 prior sessions, as in `boxes.py`.
+- **Score at 09:45**, after the first 15-minute bar: S = (|open − prior close| + that bar's high − low) / T.
+- **Picks:** the 5 stocks with the highest S each day.
+- **Outcome:** the rest of the session's range / T: the highest high minus the lowest low of the bars
+  from 09:45–10:00 to the close.
+- **Twins:** every other stock that day, so picks and twins differ only in the stock. The edge of a day
+  is the picks' mean outcome minus the others'.
+- **Statistics and pass bar:** t over days (day clusters), in each period. It passes when the edge is
+  above 0 with t ≥ 2 in both periods (section 6's critical value with hundreds of clusters). Section 6's
+  absolute check, money after costs, doesn't apply: this picks what to watch, not a trade, and its
+  verdict says so.
+- **Random-data checks:** (1) the same days with the scores shuffled among each day's stocks, 200
+  times: the edge must be about 0; (2) the whole procedure on random walks built from each stock's own
+  15-minute moves in shuffled order: the edge must be about 0.
+- **Secondary checks**, reported and never used to choose: top 3 instead of 5; the gap alone; the
+  first bar's range alone; S times the first bar's volume over its 10-session median; up and down
+  gaps apart; week clusters instead of days.
+- **Seed:** 7 for every random draw.
+
+**Addendum, 2026-11-06, before any real-data result.** The random-walk check on synthetic bars (the
+engine's own test) "passed" the frozen design: +0.11 T a day, t 2.5 and 3.6. The score and the outcome
+were both divided by T, so a stock-day whose T happened to be low got a high score and a high outcome
+alike. The outcome is now divided by T2, the median session range of the sessions 11 to 20 before, which
+shares no session with T. A day needs 20 prior sessions. Nothing else changes.
