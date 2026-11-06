@@ -6,6 +6,7 @@ optional moomoo price alerts are not built: they change account settings and nee
 time.
 Owner decision 2026-11-05: build it on the dashboard with KLineChart.
 A moomoo indicator script is a small add-on at the end.
+Next: the real-time trading assistant on top of this chart, [trading-assistant-plan.md](trading-assistant-plan.md).
 
 ## What it is for
 
