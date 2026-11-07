@@ -2,7 +2,7 @@
 
 Read only; nothing is traded. Bars come from ``get_cur_kline`` on a moomoo connection of the
 chart's own, so its subscriptions never clash with the advice snapshots' (each trims what it does
-not use) or with shadow mode's live feed. The chart keeps the subscriptions of its ``MAX_CHARTS``
+not use) or with the exit test's live feed. The chart keeps the subscriptions of its ``MAX_CHARTS``
 most recent tickers and releases the rest, and any idle for ``IDLE``, at the next request or the
 minute's sweep (OpenD holds a new subscription for at least a minute).
 

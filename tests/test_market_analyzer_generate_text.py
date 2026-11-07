@@ -253,6 +253,23 @@ class TestAnalyzerGenerateText:
         assert result.provider == "anthropic"
         assert result.usage["provider"] == "anthropic"
 
+    def test_an_attached_image_goes_with_the_user_message_as_an_image_part(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.litellm_model = "openai/gemini-flash"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = []
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"note": "ok"}'))], usage=None)
+        image = {"mime_type": "image/png", "data": "QUJD"}
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as dispatch:
+            analyzer._call_litellm_impl("the state", {"images": [image]}, system_prompt="rules")
+        messages = dispatch.call_args.args[1]["messages"]
+        assert messages[0] == {"role": "system", "content": "rules"}
+        assert messages[1]["content"] == [{"type": "text", "text": "the state"},
+                                          {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as dispatch:
+            analyzer._call_litellm_impl("text only", {}, system_prompt="rules")
+        assert dispatch.call_args.args[1]["messages"][1] == {"role": "user", "content": "text only"}
+
     def test_generate_text_with_metadata_prefers_actual_response_model(self):
         analyzer = self._make_analyzer()
         analyzer._config_override.generation_backend = "litellm"

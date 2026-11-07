@@ -65,6 +65,7 @@ from src.llm.generation_backend import (
     GenerationError,
     GenerationErrorCode,
     GenerationResult,
+    generation_images,
 )
 from src.llm.usage import (
     attach_legacy_message_stability_audit,
@@ -3502,6 +3503,11 @@ class GeminiAnalyzer:
         last_provider: Optional[str] = None
         last_usage: Dict[str, Any] = {}
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
+        images = generation_images(generation_config)  # a chart for the trading assistant, say
+        user_content: Union[str, List[Dict[str, Any]]] = prompt if not images else [
+            {"type": "text", "text": prompt},
+            *({"type": "image_url", "image_url": {"url": f"data:{image['mime_type']};base64,{image['data']}"}}
+              for image in images)]
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             last_model = model
@@ -3547,7 +3553,7 @@ class GeminiAnalyzer:
                     "model": model,
                     "messages": [
                         {"role": "system", "content": effective_system_prompt},
-                        {"role": "user", "content": prompt},
+                        {"role": "user", "content": user_content},
                     ],
                     "max_tokens": max_tokens,
                 }

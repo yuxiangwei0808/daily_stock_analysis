@@ -83,6 +83,8 @@ Rules:
   lean on are untested, not after each one.
 - Leave out what is missing: don't say there is no position, no plan or no risk figure.
 - A plan's "state" says whether it is waiting for its trigger, in the trade, or done; take it as given.
+- When a chart image comes with the state, read the shape from it (the trend, ranges, how the price reached a
+  level); every price you write still comes from the state, never from the picture's axis.
 - Make a call only when the state gives a clear reason; most notes have none. It is an untested model call: it is
   recorded and graded against the same trade at random times. Never size a position.
 - The trader places every order; never say an order was or will be placed."""
@@ -201,6 +203,8 @@ def read_note(data: Dict[str, Any], ctx: Dict[str, Any], *, answer: bool = False
 
 
 def ask_model(system: str, ctx: Dict[str, Any], question: Optional[str] = None, *,
+              images: Optional[List[Dict[str, str]]] = None,
               generate: Optional[Callable[..., Dict[str, Any]]] = None) -> Dict[str, Any]:
     payload = {**ctx, "question": question} if question else ctx
-    return (generate or assistant_model.generate)(json.dumps(payload, ensure_ascii=False, default=str), system)
+    kwargs = {"images": images} if images else {}
+    return (generate or assistant_model.generate)(json.dumps(payload, ensure_ascii=False, default=str), system, **kwargs)

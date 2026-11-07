@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 
 class GenerationErrorCode(str, Enum):
@@ -102,3 +102,26 @@ class GenerationBackend(Protocol):
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> GenerationResult:
         """Generate text with the backend."""
+
+
+IMAGE_MIME_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
+MAX_GENERATION_IMAGES = 4
+
+
+def generation_images(generation_config: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Images attached to a request: ``generation_config["images"]``, each ``{"mime_type", "data"}`` (base64).
+
+    Backends that can read images send them with the prompt (Claude Code and Codex CLIs, LiteLLM);
+    a request without the key is text only, as before. Malformed entries raise ValueError.
+    """
+    raw = (generation_config or {}).get("images") or []
+    if not isinstance(raw, (list, tuple)) or len(raw) > MAX_GENERATION_IMAGES:
+        raise ValueError(f"images must be a list of at most {MAX_GENERATION_IMAGES}")
+    out: List[Dict[str, str]] = []
+    for item in raw:
+        mime = str((item or {}).get("mime_type") or "")
+        data = str((item or {}).get("data") or "")
+        if mime not in IMAGE_MIME_TYPES or not data:
+            raise ValueError("each image needs a supported mime_type and base64 data")
+        out.append({"mime_type": mime, "data": data})
+    return out

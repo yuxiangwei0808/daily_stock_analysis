@@ -1,4 +1,5 @@
 """The trading assistant's session engine (assistant.py): levels, contracts, positions and alerts."""
+import base64
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -357,7 +358,7 @@ def test_a_typed_plan_is_read_by_the_model_for_you_to_confirm(monkeypatch):
     from src.services.trade_desk import assistant_model
     seen = {}
 
-    def fake_generate(prompt, system):
+    def fake_generate(prompt, system, **kwargs):
         seen["prompt"], seen["system"] = prompt, system
         return {"data": {"direction": "long", "trigger": {"kind": "close_above", "price": 738.03, "bar_minutes": 5},
                          "stop": 736, "target": 740, "time_stop": "15:30", "questions": ["Which strike?"]},
@@ -372,7 +373,7 @@ def test_a_typed_plan_is_read_by_the_model_for_you_to_confirm(monkeypatch):
     assert '"Pre-market high"' in seen["prompt"] and "Never invent a price" in seen["system"]
     assert a.events_after(0)[-1]["kind"] == "session"  # reading a plan watches nothing
 
-    def failing(prompt, system):
+    def failing(prompt, system, **kwargs):
         raise RuntimeError("no model answered: claude_code_cli usage limit; codex_cli timeout; litellm error")
     monkeypatch.setattr(assistant_model, "generate", failing)
     with pytest.raises(ValueError, match="No model answered"):
@@ -398,8 +399,8 @@ def _model(answers):
     """A fake model chain: each call takes the next answer (a dict, or an exception to raise)."""
     calls = []
 
-    def generate(prompt, system):
-        calls.append({"prompt": prompt, "system": system})
+    def generate(prompt, system, **kwargs):
+        calls.append({"prompt": prompt, "system": system, "images": kwargs.get("images")})
         answer = answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -545,3 +546,76 @@ def test_minutes_the_pushes_missed_are_read_again_from_opend():
     charts.provider.n_bars = 23  # OpenD has them
     a.io(at(9, 52, 31))
     assert not item.bars_stale and [b["time"][11:16] for b in item.bars[-4:]] == ["09:50", "09:51", "09:52", "09:53"]
+
+
+# -- shadow mode's models, the chart picture, the close ---------------------------------------------------
+def test_notes_and_answers_carry_todays_chart_unless_switched_off(monkeypatch):
+    a, charts, calls = _running(monkeypatch, [{"note": "SPY 736 sits under the pre-market high 738.03.", "call": None},
+                                              {"answer": "At 736.", "note": "", "call": None},
+                                              {"answer": "At 736.", "note": "", "call": None}])
+    a.notes_step(at(9, 50, 2))
+    images = calls[0]["images"]
+    assert len(images) == 1 and images[0]["mime_type"] == "image/png"
+    assert base64.b64decode(images[0]["data"])[:8] == b"\x89PNG\r\n\x1a\n"
+    a.ask("SPY", "where?", at(9, 51))
+    assert calls[1]["images"] and "never from the picture's axis" in calls[1]["system"]
+    monkeypatch.setenv("TRADE_DESK_CHART_IMAGES", "false")
+    a.ask("SPY", "and now?", at(9, 52))
+    assert calls[2]["images"] is None
+
+
+def test_after_the_close_the_session_keeps_the_days_levels():
+    a, charts, _ = _assistant()
+    a.start(["SPY"], "0dte", at(9, 50), threads=False)
+    a.io(at(9, 50))
+    item = a._tickers["SPY"]
+    before = list(item.chart_levels)
+    charts.chart = lambda ticker, interval, now=None: {"levels": [{"kind": "prior_close", "price": 736.0,
+                                                                  "label": "Prior day close (Nov 9)"}], "flags": []}
+    a._load_chart(item, at(16, 0, 5), alert=True)
+    assert item.chart_levels == before  # the chart moved on to tomorrow, where today is the prior day
+    a._load_chart(item, at(15, 45, 5), alert=True)
+    assert item.chart_levels[0]["label"] == "Prior day close (Nov 9)"  # in the session it still reloads
+
+
+def test_the_model_order_is_tried_in_turn_with_the_chart(monkeypatch):
+    from src.services.trade_desk import assistant_model as am
+    monkeypatch.setenv("TRADE_ASSISTANT_MODELS", "claude_code_cli:claude-sonnet-5-5:xhigh, codex_cli:gpt-6.1-sol:xhigh,"
+                                                 "claude_code_cli:claude-opus-5-5:xhigh,litellm")
+    entries = am.entries("assistant")
+    assert [(e.backend, e.model, e.effort) for e in entries] == [
+        ("claude_code_cli", "claude-sonnet-5-5", "xhigh"), ("codex_cli", "gpt-6.1-sol", "xhigh"),
+        ("claude_code_cli", "claude-opus-5-5", "xhigh"), ("litellm", "", "")]
+    seen = []
+
+    class Backend:
+        def __init__(self, entry):
+            self.entry = entry
+
+        def generate(self, prompt, config, system_prompt=None):
+            seen.append((self.entry.model, config.get("images")))
+            if self.entry.backend == "claude_code_cli":
+                raise RuntimeError("usage limit")
+            return SimpleNamespace(text='{"note": "ok"}', model="", usage={})
+
+    analyzer_for = lambda entry: SimpleNamespace(_get_generation_backend=lambda backend_id: Backend(entry))
+    image = {"mime_type": "image/png", "data": "QUJD"}
+    out = am.generate("state", "rules", images=[image], analyzer_for=analyzer_for)
+    assert out["data"] == {"note": "ok"} and out["label"] == "Codex (gpt-6.1-sol, xhigh)"
+    assert seen == [("claude-sonnet-5-5", [image]), ("gpt-6.1-sol", [image])]
+    assert out["tried"][0]["backend"] == "claude_code_cli" and out["tried"][0]["model"] == "claude-sonnet-5-5"
+    assert am.describe("assistant").startswith("Claude Code (claude-sonnet-5-5, xhigh), then Codex (gpt-6.1-sol, xhigh), then ")
+
+    for bad, words in (("gpt:x", "backend:model:effort"), ("codex_cli:gpt-6.1-sol:max", "effort for codex_cli"),
+                       ("litellm:m:high", "effort for litellm")):
+        monkeypatch.setenv("TRADE_ASSISTANT_MODELS", bad)
+        with pytest.raises(ValueError, match=words):
+            am.entries("assistant")
+        with pytest.raises(RuntimeError, match="TRADE_ASSISTANT_MODELS"):
+            am.generate("state", "rules", analyzer_for=analyzer_for)
+    monkeypatch.delenv("TRADE_ASSISTANT_MODELS")
+    monkeypatch.setenv("TRADE_ASSISTANT_BACKENDS", "codex_cli,litellm")
+    assert [(e.backend, e.legacy) for e in am.entries("assistant")] == [("codex_cli", True), ("litellm", True)]
+    assert not am.configured("questions")
+    with pytest.raises(ValueError, match="TRADE_DESK_QUESTION_MODELS is not set"):
+        am.entries("questions")

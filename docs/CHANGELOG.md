@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 影子模式（Shadow mode）：交易助手改名为影子模式，作为常规模式（Discord 提醒照常）之上的附加功能，只在你看着页面时提供实时提醒；Trade Desk 各标签页下方显示当前模式，可随时关闭；整个页面共用一条事件流，切换标签页时提醒照样响起。原「Shadow exits」卡片改名为「Exit test」以免混淆
+- [新功能] 模型按顺序调用：`TRADE_ASSISTANT_MODELS`（影子模式）与 `TRADE_DESK_QUESTION_MODELS`（持仓提问与每日持仓复盘）按 `backend:model:effort` 依次尝试（如 Sonnet 5.5 → GPT-6.1-Sol → Opus 5.5 → API，均为 xhigh）；未设置时保持原行为
+- [新功能] 图表图片随提问发送给模型（`trade_desk/chart_image.py`，Pillow 绘制 K 线、VWAP 与各价位）：影子模式的点评与问答附当日图，持仓提问附权重最大的 4 只的日线图；Claude Code 走 stream-json、Codex 走 `--image`、API 走 image part；价格仍只取自数值（`TRADE_DESK_CHART_IMAGES=false` 可关闭）
+- [修复] 交易助手收盘后（16:00–16:15）不再把当天当作「前一日」重新载入价位
 - [修复] 交易助手（回放 2026-11-06 整日实测后修正）：开盘前价格改用盘前最新成交（moomoo 的 last_price 在开盘前仍是昨收），盘前高低点读到开盘后 30 秒；漏收的 1 分钟 K 线自动从 moomoo 补回，避免开盘区间与 VWAP 算错；发给模型的事件时间改为纽约时间（之前是 UTC）；计划状态以文字说明（之前「open」被模型读成「未触发」）
 - [改进] 交易助手提醒降噪：价位需越过 0.05% 才算突破；持仓盈亏只在创本时段新高（每 10 个百分点，或上次新高的四分之一）、跌破成本后创新低、或回吐一半最佳盈利时提醒，且仅限常规时段。回放当日：价位提醒 118→65 条，盈亏提醒 388→28 条
 - [修复] 交易助手页面：标题的周期显示为「undefined」、模型用量名称被改写、合约「30 分钟后」估值始终为「–」（均因字段名经 camelCase 转换后不匹配）

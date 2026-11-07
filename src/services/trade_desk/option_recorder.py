@@ -197,7 +197,7 @@ class OptionRecorder:
         if self._provider is None:
             provider = self.service.provider_factory("live")
             quiet = getattr(provider, "quiet_sdk_log", None)
-            if callable(quiet):  # before shadow mode's feed does it at 9:25
+            if callable(quiet):  # before the exit test's feed does it at 9:25
                 quiet()
             self._provider = provider
         return self._provider

@@ -1,33 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BellRing, Play, Square } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { Badge, Button, Card } from '../common';
-import type { AssistantContract, AssistantEvent, AssistantHorizon, AssistantState, AssistantTicker, InPlayList } from '../../types/tradeDesk';
+import type { AssistantContract, AssistantHorizon, AssistantTicker, InPlayList } from '../../types/tradeDesk';
 import { AssistantPlans } from './AssistantPlans';
 import { nyTime, price } from './chartOverlays';
 import { errorMessage } from './deskFormat';
+import { ShadowModeProvider } from './shadowMode';
+import { useShadowMode } from './shadowModeContext';
+import type { ShadowMode } from './shadowModeContext';
 
 const HORIZONS: Array<[AssistantHorizon, string]> = [['0dte', '0DTE options'], ['intraday', 'Intraday'], ['swing', 'Swing']];
 const signed = (value?: number | null, digits = 2) => (value == null ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(digits)}%`);
 const num = (value?: number | null, digits = 2) => (value == null ? '—' : value.toFixed(digits));
-
-function canNotify() {
-  return typeof window !== 'undefined' && 'Notification' in window;
-}
-
-function beep(context: AudioContext | null) {
-  if (!context) return;
-  try {
-    const tone = context.createOscillator();
-    const gain = context.createGain();
-    tone.frequency.value = 880;
-    gain.gain.setValueAtTime(0.15, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.25);
-    tone.connect(gain).connect(context.destination);
-    tone.start();
-    tone.stop(context.currentTime + 0.25);
-  } catch { /* sound is a courtesy */ }
-}
 
 function ContractRows({ rows }: { rows: AssistantContract[] }) {
   return (
@@ -109,7 +94,7 @@ function TickerDetail({ item }: { item: AssistantTicker }) {
               <span className="text-foreground">{row.label}</span> · {signed(row.pnlPct, 1)} on cost · {row.weightPct == null ? '—' : `${row.weightPct.toFixed(1)}%`} of the account
               {row.stop != null ? ` · stop ${price(row.stop)}` : ''}{row.target != null ? ` · target ${price(row.target)}` : ''}
               {row.daysLeft === 0 ? ' · expires today' : ''} <span className="text-muted-text">({row.source})</span></li>)}</ul>
-              : <p className="text-xs text-muted-text">None on {item.ticker}. A fill shows here within seconds while shadow mode's feed is live.</p>}
+              : <p className="text-xs text-muted-text">None on {item.ticker}. A fill shows here within seconds while the live position feed runs (regular hours).</p>}
           </div>
           {item.flags.length ? <div>
             <h4 className="pb-1 text-xs font-semibold text-foreground">Box flags</h4>
@@ -130,59 +115,40 @@ function TickerDetail({ item }: { item: AssistantTicker }) {
 }
 
 /** The trading assistant: start it on one to three stocks; levels, contracts, your positions and alerts, live. */
-export function AssistantPanel({ current, onShow }: { current: string; onShow: (ticker: string) => void }) {
-  const [state, setState] = useState<AssistantState | null>(null);
+/** Shadow mode's controls and feed on the Chart tab; the Trade Desk page shares one stream (shadowMode.tsx). */
+export function AssistantPanel(props: { current: string; onShow: (ticker: string) => void }) {
+  const shadow = useShadowMode();
+  if (shadow) return <ShadowModePanel {...props} shadow={shadow} />;
+  return <ShadowModeProvider><StandalonePanel {...props} /></ShadowModeProvider>;
+}
+
+function StandalonePanel(props: { current: string; onShow: (ticker: string) => void }) {
+  const shadow = useShadowMode();
+  return shadow ? <ShadowModePanel {...props} shadow={shadow} /> : null;
+}
+
+function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow: (ticker: string) => void; shadow: ShadowMode }) {
+  const { state, setState, permission } = shadow;
   const [names, setNames] = useState(current);
   const [horizon, setHorizon] = useState<AssistantHorizon>('0dte');
   const [focus, setFocus] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [permission, setPermission] = useState(canNotify() ? Notification.permission : 'unsupported');
   const [inPlay, setInPlay] = useState<InPlayList | null>(null);
-  const audio = useRef<AudioContext | null>(null);
-  const seen = useRef(0);
 
   useEffect(() => {
-    const load = async () => {
-      try { setState(await tradeDeskApi.getAssistant()); } catch { setState(null); }  // the desk is optional
-      try { setInPlay(await tradeDeskApi.getInPlay()); } catch { setInPlay(null); }
-    };
-    void load();
+    void (async () => { try { setInPlay(await tradeDeskApi.getInPlay()); } catch { setInPlay(null); } })();
   }, []);
   useEffect(() => { if (current) setNames((value) => value || current); }, [current]);
-
-  const announce = useCallback((event: AssistantEvent) => {
-    if (event.seq <= seen.current) return;
-    seen.current = event.seq;
-    if (event.kind === 'session' || event.kind === 'note') return;  // notes show on the page without a sound
-    beep(audio.current);
-    if (canNotify() && Notification.permission === 'granted') {
-      try { new Notification(event.title, { body: event.detail, tag: `dsa-assistant-${event.seq}` }); } catch { /* the page's feed still shows it */ }
-    }
-  }, []);
-
-  const available = state !== null;
-  useEffect(() => {
-    if (!available || typeof EventSource === 'undefined') return undefined;  // only once the desk answered
-    const source = new EventSource(tradeDeskApi.getAssistantStreamUrl(), { withCredentials: true });
-    const read = <T,>(event: Event): T | null => {
-      try { return tradeDeskApi.readAssistant<T>(JSON.parse((event as MessageEvent<string>).data)); } catch { return null; }
-    };
-    source.addEventListener('state', (event) => { const next = read<AssistantState>(event); if (next) setState(next); });
-    source.addEventListener('alert', (event) => { const next = read<AssistantEvent>(event); if (next) announce(next); });
-    return () => source.close();
-  }, [announce, available]);
 
   const start = async (chosen?: string[]) => {
     const tickers = chosen || names.split(/[\s,]+/).map((name) => name.trim().toUpperCase()).filter(Boolean);
     if (!tickers.length) { setError('Enter one to three stocks'); return; }
-    if (!audio.current && typeof window !== 'undefined' && 'AudioContext' in window) {
-      try { audio.current = new AudioContext(); } catch { audio.current = null; }  // created on the click, so it may play
-    }
+    shadow.prime();  // created on the click, so the alerts may play
     setBusy(true); setError('');
     try {
       const next = await tradeDeskApi.startAssistant(tickers, horizon);
-      seen.current = next.seq;
+      shadow.markSeen(next.seq);
       setState(next); setFocus(next.tickers[0]?.ticker || '');
       if (next.tickers[0]) onShow(next.tickers[0].ticker);
     } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
@@ -191,10 +157,6 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
     setBusy(true); setError('');
     try { setState(await tradeDeskApi.stopAssistant()); } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
   };
-  const allow = async () => {
-    if (!canNotify()) return;
-    try { setPermission(await Notification.requestPermission()); } catch { setPermission(Notification.permission); }
-  };
 
   if (!state) return null;
   const running = state.running;
@@ -202,11 +164,11 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
   return (
     <Card variant="bordered" padding="md" data-testid="assistant-panel">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-foreground">Trading assistant{running ? `: ${state.tickers.map((item) => item.ticker).join(', ')} · ${HORIZONS.find(([key]) => key === (state.horizon || '0dte'))?.[1]}${state.startedAt ? ` · since ${nyTime(state.startedAt)} ET` : ''}` : ''}</h3>
+        <h3 className="text-sm font-semibold text-foreground">Shadow mode{running ? `: ${state.tickers.map((item) => item.ticker).join(', ')} · ${HORIZONS.find(([key]) => key === (state.horizon || '0dte'))?.[1]}${state.startedAt ? ` · since ${nyTime(state.startedAt)} ET` : ''}` : ' (off)'}</h3>
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          {permission === 'default' ? <Button size="xsm" variant="ghost" onClick={() => void allow()}><BellRing className="h-3.5 w-3.5" />Allow notifications</Button> : null}
+          {permission === 'default' ? <Button size="xsm" variant="ghost" onClick={() => void shadow.allow()}><BellRing className="h-3.5 w-3.5" />Allow notifications</Button> : null}
           {permission === 'denied' ? <span className="text-muted-text">Notifications are blocked in this browser; alerts still sound here.</span> : null}
-          {running ? <Button size="xsm" variant="outline" isLoading={busy} onClick={() => void stop()}><Square className="h-3.5 w-3.5" />Stop</Button> : null}
+          {running ? <Button size="xsm" variant="outline" isLoading={busy} onClick={() => void stop()}><Square className="h-3.5 w-3.5" />Turn off shadow mode</Button> : null}
         </div>
       </div>
       {!running ? <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={(event) => { event.preventDefault(); void start(); }}>
@@ -220,7 +182,7 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
             {HORIZONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select>
         </label>
-        <Button type="submit" size="xsm" variant="outline" isLoading={busy}><Play className="h-3.5 w-3.5" />Start</Button>
+        <Button type="submit" size="xsm" variant="outline" isLoading={busy}><Play className="h-3.5 w-3.5" />Turn on shadow mode</Button>
       </form> : null}
       {error ? <p role="alert" className="pt-1 text-xs text-danger">{error}</p> : null}
       {!running && inPlay?.rows.length ? <div className="mt-2 text-xs" data-testid="in-play">
@@ -231,11 +193,11 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
             className="rounded-md border border-border/50 px-2 py-0.5 font-mono text-secondary-text hover:text-foreground">
             {row.ticker} <span className="text-muted-text">{row.s.toFixed(1)}×</span></button>)}
           <Button size="xsm" variant="ghost" isLoading={busy} onClick={() => void start(inPlay.rows.slice(0, state.maxTickers).map((row) => row.ticker))}>
-            <Play className="h-3.5 w-3.5" />Start on the top {Math.min(state.maxTickers, inPlay.rows.length)}</Button>
+            <Play className="h-3.5 w-3.5" />Shadow the top {Math.min(state.maxTickers, inPlay.rows.length)}</Button>
         </div>
         <p className="pt-1 text-[11px] text-muted-text">{inPlay.label}. It says which stocks will move more today, not which way.</p>
       </div> : null}
-      {!running ? <p className="pt-2 text-[11px] text-muted-text">Nothing runs until you press Start. It watches the stocks until you stop it or 15 minutes after the close: the day's levels, the option contracts around the price, your positions on them, and an alert with a sound on this page when something changes.{state.stopped ? ` Last session: ${state.stopped.reason} at ${nyTime(state.stopped.at)} ET.` : ''}</p> : null}
+      {!running ? <p className="pt-2 text-[11px] text-muted-text">Shadow mode is an add-on to normal mode, for when you watch this page: nothing runs until you turn it on. It watches the stocks until you turn it off or 15 minutes after the close: the day's levels, the option contracts around the price, your positions on them, notes from the model, and an alert with a sound on this page when something changes. Close the page and you simply don't see them; your Discord alerts work the same either way.{state.stopped ? ` Last session: ${state.stopped.reason} at ${nyTime(state.stopped.at)} ET.` : ''}</p> : null}
       {running ? <>
         <div className="mt-3 flex flex-wrap gap-1.5 text-xs" role="group" aria-label="Assistant stocks shown">
           {state.tickers.map((item) => <button key={item.ticker} type="button" aria-pressed={item.ticker === shown?.ticker}
@@ -253,7 +215,7 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
       {state.model && running ? <p className="pt-2 text-[11px] text-muted-text">Model today: {state.model.callsToday} of {state.model.cap} calls
         {state.model.by.length ? ` (${state.model.by.map((use) => `${use.label} ${use.calls}`).join(', ')})` : ''}
         {state.model.medianSeconds != null ? `, median ${state.model.medianSeconds.toFixed(0)} s` : ''}{state.model.failed ? `, ${state.model.failed} failed` : ''}.
-        Your Claude Code plan first, then Codex, the API last.</p> : null}
+        {state.model.order ? ` In order: ${state.model.order}.` : ' Your Claude Code plan first, then Codex, the API last.'}</p> : null}
       <p className="pt-2 text-[11px] text-muted-text">{state.note}</p>
     </Card>
   );

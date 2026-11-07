@@ -38,6 +38,7 @@ from src.llm.generation_backend import (
     GenerationError,
     GenerationErrorCode,
     GenerationResult,
+    generation_images,
 )
 
 logger = logging.getLogger(__name__)
@@ -1836,6 +1837,21 @@ def _has_sensitive_url_params(params_text: str) -> bool:
     return False
 
 
+def _last_stream_result(raw: str) -> Optional[Dict[str, Any]]:
+    """The last ``result`` event of Claude Code's stream-json output (one JSON object per line)."""
+    for line in reversed(raw.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            return event
+    return None
+
+
 def _extract_claude_code_json(result: LocalCliExecutionResult, *, schema_mode: bool) -> str:
     raw = (result.stdout or "").strip()
     if not raw:
@@ -1846,11 +1862,13 @@ def _extract_claude_code_json(result: LocalCliExecutionResult, *, schema_mode: b
     try:
         envelope = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise LocalCliExtractionError(
-            GenerationErrorCode.INVALID_JSON,
-            "invalid_json",
-            details={"error": redact_diagnostic_text(str(exc), limit=200)},
-        ) from exc
+        envelope = _last_stream_result(raw)  # --output-format stream-json (a request with images)
+        if envelope is None:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.INVALID_JSON,
+                "invalid_json",
+                details={"error": redact_diagnostic_text(str(exc), limit=200)},
+            ) from exc
     if not isinstance(envelope, dict):
         raise LocalCliExtractionError(
             GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
@@ -2189,6 +2207,7 @@ class LocalCliGenerationBackend(GenerationBackend):
         prompt_text = prompt
         if system_prompt:
             prompt_text = f"{system_prompt.strip()}\n\n{prompt}"
+        images = self._request_images(generation_config)
 
         diagnostics: Dict[str, Any] = {
             "preset_id": self._preset.preset_id,
@@ -2199,6 +2218,8 @@ class LocalCliGenerationBackend(GenerationBackend):
             "max_output_bytes": max_output_bytes,
             "concurrency_limit": concurrency_limit,
         }
+        if images:
+            diagnostics["images"] = len(images)
 
         stdout = ""
         stderr = ""
@@ -2224,7 +2245,7 @@ class LocalCliGenerationBackend(GenerationBackend):
                     prompt_path = cwd_path / "prompt.txt"
                     stdout_path = cwd_path / "stdout.txt"
                     stderr_path = cwd_path / "stderr.txt"
-                    prompt_path.write_text(prompt_text, encoding="utf-8")
+                    prompt_path.write_text(self._prompt_with_images(prompt_text, images), encoding="utf-8")
                     try:
                         prompt_path.chmod(0o600)
                     except OSError:
@@ -2235,6 +2256,7 @@ class LocalCliGenerationBackend(GenerationBackend):
                         cwd,
                         prompt_path=prompt_path,
                     )
+                    command_argv = self._argv_with_images(command_argv, images, cwd_path)
                     with ExitStack() as stack:
                         if self._preset.prompt_transport == "stdin":
                             stdin_handle = stack.enter_context(
@@ -2598,6 +2620,55 @@ class LocalCliGenerationBackend(GenerationBackend):
                 },
             )
         return resolved, list(self._preset.argv), _executable_summary(resolved)
+
+    def _request_images(self, generation_config: Optional[Dict[str, Any]]) -> list:
+        """Images for this request; only Claude Code and Codex read them (others refuse, so a fallback answers)."""
+        try:
+            images = generation_images(generation_config)
+        except ValueError as exc:
+            raise self._error(
+                GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={"reason": "invalid_images", "error": redact_diagnostic_text(str(exc), limit=200)},
+            ) from exc
+        if images and self._preset.preset_id not in {CLAUDE_CODE_CLI_BACKEND_ID, CODEX_CLI_BACKEND_ID}:
+            raise self._error(
+                GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                stage="configuration",
+                retryable=False,
+                fallbackable=True,
+                details={"reason": "images_unsupported", "preset_id": self._preset.preset_id},
+            )
+        return images
+
+    def _prompt_with_images(self, prompt_text: str, images: list) -> str:
+        """Claude Code reads images only from a stream-json user message on stdin; Codex takes files (--image)."""
+        if not images or self._preset.preset_id != CLAUDE_CODE_CLI_BACKEND_ID:
+            return prompt_text
+        content = [{"type": "image", "source": {"type": "base64", "media_type": image["mime_type"], "data": image["data"]}}
+                   for image in images]
+        content.append({"type": "text", "text": prompt_text})
+        return json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False) + "\n"
+
+    def _argv_with_images(self, argv: list, images: list, cwd: Path) -> list:
+        """The checked command plus what reading images needs; the safety flags are left as they are."""
+        if not images:
+            return argv
+        if self._preset.preset_id == CLAUDE_CODE_CLI_BACKEND_ID:
+            at = argv.index("--output-format")
+            return [*argv[:at], "--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
+                    *argv[at + 2:]]
+        import base64
+        files = []
+        for number, image in enumerate(images, start=1):
+            suffix = image["mime_type"].split("/")[-1].replace("jpeg", "jpg")
+            path = cwd / f"image-{number}.{suffix}"
+            path.write_bytes(base64.b64decode(image["data"], validate=True))
+            files.append(f"--image={path}")
+        at = argv.index("exec") + 1
+        return [*argv[:at], *files, *argv[at:]]
 
     def _build_runtime_argv(
         self,

@@ -1,4 +1,4 @@
-"""Shadow mode for exits: what the system would have sold, when and at what quote. Nothing is sent.
+"""The exit test (shadow exits): what the system would have sold, when and at what quote. Nothing is sent.
 
 This module grades; it holds no broker connection and no order code, and ``tests/test_shadow_exits.py``
 fails if order calls appear anywhere in the app. ``shadow_watch.py`` hands it the live quotes and
@@ -47,7 +47,7 @@ MIN_FINISHED = 30
 MAX_EXITS = 1000
 MAX_LEVEL_CHANGES = 5000
 RECENT = 12
-NOTE = "Shadow mode: nothing is sent to moomoo. This is what the system would have sold."
+NOTE = "Exit test: nothing is sent to moomoo. This is what the system would have sold."
 BASIS = {"stop": "price", "target": "price", "trend": "trend", "pnl_stop": "pnl", "pnl_target": "pnl",
          "rule_loss": "pnl", "rule_profit": "pnl"}  # what a level is judged on; a review's action needs no quote
 KINDS = {"stop": "Stop", "target": "Target", "pnl_stop": "P&L cut", "pnl_target": "P&L take-profit",

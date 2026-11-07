@@ -20,7 +20,7 @@ describe('ShadowExitsCard', () => {
 
   it('says nothing is sent, and that it is too early, with the results so far', async () => {
     api.getShadowExits.mockResolvedValue({
-      enabled: true, note: 'Shadow mode: nothing is sent to moomoo.', recorded: 4, carried: 5, levelChanges: 11, since: '2026-11-04T15:00:00+00:00',
+      enabled: true, note: 'Exit test: nothing is sent to moomoo.', recorded: 4, carried: 5, levelChanges: 11, since: '2026-11-04T15:00:00+00:00',
       verdict: 'too_early', finished: 2, needed: 30, months: 1, rows: [row], byTrigger: [{ ...row, label: 'Stop' }],
       recent: [
         { label: 'AAPL 11/20 300C', ticker: 'AAPL', kind: 'stop', kindLabel: 'Stop', at: '2026-11-04T15:00:00+00:00', problems: ['wide_quote'], ifSoldPct: null },
@@ -43,7 +43,7 @@ describe('ShadowExitsCard', () => {
     expect(card).toHaveTextContent('the first live version would skip it');
     expect(card).toHaveTextContent('no order: closed or expired first');
     expect(card).toHaveTextContent('11 plan level changes');
-    expect(card).toHaveTextContent("5 levels were already crossed when shadow mode started, so they aren't graded.");
+    expect(card).toHaveTextContent("5 levels were already crossed when the exit test started, so they aren't graded.");
     expect(screen.getByTestId('shadow-feed')).toHaveTextContent('Live: every quote is checked as it arrives. Last quote 0.4 s ago, positions read 6 s ago.');
     expect(card).toHaveTextContent('Delay today, median: stock quotes 0.61 s, option quotes 1.50 s, order books 0.07 s.');
     expect(card).toHaveTextContent('Crossings: 3 seen on pushed quotes, 1 on snapshots; checked 42 ms after arriving; orders waited 0.50 s (95% within 42 s); 1 gave up with no usable quote (medians).');

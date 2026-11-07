@@ -91,7 +91,7 @@ function recentState(item: ShadowExitRecent) {
   return item.finished ? `${sold}, held ${pct(item.ifHeld10Pct)}` : sold;
 }
 
-/** Shadow mode: what the system would have sold, compared with holding. Nothing is sent to the broker. */
+/** The exit test (named shadow exits before shadow mode meant the live page): what the system would have sold, compared with holding. Nothing is sent to the broker. */
 export function ShadowExitsCard() {
   const [data, setData] = useState<ShadowExits | null>(null);
   const [error, setError] = useState('');
@@ -111,7 +111,7 @@ export function ShadowExitsCard() {
     <Card variant="bordered" padding="md">
       <div data-testid="shadow-exits" className="space-y-3">
         <div>
-          <h2 className="text-lg font-semibold text-foreground">Shadow exits</h2>
+          <h2 className="text-lg font-semibold text-foreground">Exit test</h2>
           <p className="text-xs text-secondary-text">{data.note}</p>
           <p data-testid="shadow-feed" className="mt-1 text-xs text-foreground">{feedLine(data)}</p>
           {delayLine(data.feed)
@@ -145,7 +145,7 @@ export function ShadowExitsCard() {
         ) : <p className="text-sm text-secondary-text">No would-be exits yet. It checks every live quote during regular hours.</p>}
         <p className="text-xs text-muted-text">
           {data.levelChanges ?? 0} plan level changes saved for later grading{data.since ? ` since ${new Date(data.since).toLocaleDateString()}` : ''}.
-          {data.carried ? ` ${data.carried} levels were already crossed when shadow mode started, so they aren't graded.` : ''}
+          {data.carried ? ` ${data.carried} levels were already crossed when the exit test started, so they aren't graded.` : ''}
         </p>
       </div>
     </Card>

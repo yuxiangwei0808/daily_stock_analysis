@@ -953,7 +953,7 @@ def test_the_status_page_lists_the_feed():
     service = SimpleNamespace(worker=worker, enabled=True, version=None, started_at=None, health=lambda: {"live": {"available": True}},
                               repo=SimpleNamespace(preferences=lambda: {}, events=lambda **kwargs: []))
     found = {component["key"]: component for component in build(service)["components"]}
-    assert found["shadow_feed"]["state"] == "ok" and found["shadow_feed"]["label"] == "Shadow exits live feed"
+    assert found["shadow_feed"]["state"] == "ok" and found["shadow_feed"]["label"] == "Exit test live feed"
 
 
 # -- the feed itself ------------------------------------------------------------------------------

@@ -1074,6 +1074,8 @@ export interface AssistantModelUse {
   by: Array<{ label: string; calls: number }>;
   lastError: string | null;
   noteMinutes: number;
+  /** The model order in words, e.g. "Claude Code (claude-sonnet-5-5, xhigh), then Codex (gpt-6.1-sol, xhigh)". */
+  order?: string | null;
 }
 
 export interface AssistantTicker {

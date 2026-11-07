@@ -79,8 +79,11 @@ def _ticker(row: Dict[str, Any]) -> str:
 
 def build_context(rows: List[Dict[str, Any]], view: Dict[str, Any], rules: List[Dict[str, Any]], today: date, *,
                   bars: Callable[..., Dict[str, List[Dict[str, Any]]]], geared: Callable[[str], bool], report: Callable[[str, date], str],
-                  earnings_date: Callable[[str, date], Optional[date]]) -> Dict[str, Any]:
-    """What the model sees: positions in prices and percentages, and each ticker's levels."""
+                  earnings_date: Callable[[str, date], Optional[date]],
+                  images: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    """What the model sees: positions in prices and percentages, and each ticker's levels.
+
+    ``images``, when given, receives daily charts of the tickers with the most weight (kept out of the JSON)."""
     from src.services import nx_tunnel
     from .holdings import describe_option, moneyness, option_side
     from .levels import breakout_levels
@@ -135,11 +138,56 @@ def build_context(rows: List[Dict[str, Any]], view: Dict[str, Any], rules: List[
                                "mark": leg.get("mark")} for leg in row["legs"]])
         positions.append(item)
     cash = view.get("cash")
-    return {"as_of": utcnow().isoformat(), "today": today.isoformat(),
+    context = {"as_of": utcnow().isoformat(), "today": today.isoformat(),
             "cash_pct_of_account": _round(cash / total * 100) if cash is not None and total else None,
             "positions": positions,
             "tickers": {ticker: {key: value for key, value in market.items() if not key.startswith("_")}
                         for ticker, market in markets.items()}}
+    if images is not None:
+        images.extend(_charts(history, markets, positions, today))
+    return context
+
+
+CHART_SESSIONS = 90
+
+
+def _charts(history: Dict[str, List[Dict[str, Any]]], markets: Dict[str, Dict[str, Any]],
+            positions: List[Dict[str, Any]], today: date) -> List[Dict[str, str]]:
+    """Daily charts of the tickers with the most weight (chart_image.py); never part of the JSON the model reads."""
+    from . import assistant_model, chart_image
+    from src.llm.generation_backend import MAX_GENERATION_IMAGES
+    if not chart_image.enabled() or not assistant_model.configured("questions"):
+        return []  # only the ordered question models take pictures
+    weight: Dict[str, float] = {}
+    for item in positions:
+        weight[item["ticker"]] = weight.get(item["ticker"], 0.0) + abs(item.get("weight_pct_of_account") or 0.0)
+    out = []
+    for ticker in sorted(weight, key=lambda name: -weight[name]):
+        if len(out) >= MAX_GENERATION_IMAGES:
+            break
+        rows = (history.get(ticker) or history.get(ticker.replace("-", ".")) or [])[-CHART_SESSIONS:]
+        if len(rows) < 2:
+            continue
+        found = markets.get(ticker, {}).get("_levels") or {}
+        levels = [{"label": label, "price": found.get(key), "kind": kind} for key, label, kind in (
+            ("high20", "20-day high", "prior_high"), ("low20", "20-day low", "prior_low"), ("ma50", "50-day average", "ma"))]
+        for item in (p for p in positions if p["ticker"] == ticker):
+            name = item.get("description") or f"{ticker} shares"
+            if item.get("average_cost") is not None and item["type"] == "stock":
+                levels.append({"label": "Your average cost", "price": item["average_cost"], "kind": "cost"})
+            for leg in item.get("legs") or []:
+                levels.append({"label": f"{leg['side'].title()} {leg['right']} strike", "price": leg["strike"], "kind": "strike"})
+            for word, kind in (("stop", "stop"), ("target", "target")):
+                value = (item.get("rule_of_thumb") or {}).get(word)
+                levels.append({"label": f"{name}: rule-of-thumb {word}", "price": value, "kind": kind})
+        try:
+            png = chart_image.render([{**row, "time": row["date"]} for row in rows], levels=levels, vwap=False,
+                                     time_format="%b %d", title=f"{ticker} daily, last {len(rows)} sessions to {today.isoformat()}")
+        except Exception as exc:  # the question goes on without this picture
+            logger.info("Position question chart for %s failed: %s", ticker, type(exc).__name__)
+            continue
+        out.append(chart_image.as_image(png))
+    return out
 
 
 def _round(value: Any, digits: int = 1) -> Optional[float]:
@@ -193,8 +241,16 @@ def parse_answer(raw: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]
     return {"summary": summary, "positions": out}
 
 
-def generate(prompt: str) -> Dict[str, Any]:
-    """The configured generation backend (with its fallback): the JSON answer and the model used."""
+def generate(prompt: str, images: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    """The JSON answer and the model used: TRADE_DESK_QUESTION_MODELS in order (with the charts) when set,
+    else the main generation backend with its fallback (text only, as before)."""
+    from . import assistant_model
+    if assistant_model.configured("questions"):
+        try:
+            result = assistant_model.generate(prompt, "", chain="questions", images=images, max_output_tokens=4096)
+        except RuntimeError as exc:
+            raise ValueError(f"No model answered ({str(exc)[:200]})") from exc
+        return {"data": result["data"], "model": result.get("label", "")}
     from src.agent.runner import try_parse_json
     from src.analyzer import GeminiAnalyzer
     result = GeminiAnalyzer().generate_text_with_metadata(prompt, max_tokens=4096, temperature=0.2)
@@ -204,11 +260,16 @@ def generate(prompt: str) -> Dict[str, Any]:
     return {"data": data, "model": getattr(result, "model", "") or getattr(result, "backend", "")}
 
 
-def answer(question: str, context: Dict[str, Any], *, generate_fn: Callable[[str], Dict[str, Any]] = None) -> Dict[str, Any]:
+def answer(question: str, context: Dict[str, Any], *, generate_fn: Callable[[str], Dict[str, Any]] = None,
+           images: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     import json
-    prompt = (f"{INSTRUCTIONS}\n\nQuestion: {question}\n\nPositions and levels (JSON):\n"
+    from . import assistant_model
+    images = images if images and generate_fn is None and assistant_model.configured("questions") else []
+    pictures = (f"\n\n{len(images)} daily chart(s) come with this: read the trend and ranges from them; take every "
+                "price you write from the JSON, never from a chart's axis." if images else "")
+    prompt = (f"{INSTRUCTIONS}{pictures}\n\nQuestion: {question}\n\nPositions and levels (JSON):\n"
               f"{json.dumps(context, ensure_ascii=False, default=str)}")
-    result = (generate_fn or generate)(prompt)
+    result = generate_fn(prompt) if generate_fn is not None else generate(prompt, images=images)
     return {**parse_answer(result["data"], context), "model": result.get("model", "")}
 
 

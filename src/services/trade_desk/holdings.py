@@ -611,11 +611,13 @@ class Holdings:
             from .opportunities import geared_fund
             names = {row["ticker"]: row.get("name", "") for row in view["stocks"]}
             try:
+                charts: List[Dict[str, str]] = []  # daily charts for the models (TRADE_DESK_QUESTION_MODELS)
                 context = position_questions.build_context(
                     rows, view, self.rules(), day, bars=bars or trend.download_bars,
                     geared=lambda ticker: geared_fund(names.get(ticker, "")),
-                    report=report or position_plan.report_line, earnings_date=earnings_date or earnings.next_earnings)
-                answer = position_questions.answer(position_plans.REVIEW_QUESTION, context, generate_fn=generate)
+                    report=report or position_plan.report_line, earnings_date=earnings_date or earnings.next_earnings,
+                    images=charts)
+                answer = position_questions.answer(position_plans.REVIEW_QUESTION, context, generate_fn=generate, images=charts)
                 when = utcnow().isoformat()
                 self.mutate_plans(lambda stored: {
                     "plans": position_plans.apply_review(stored["plans"], answer, view, day, when),
@@ -633,7 +635,7 @@ class Holdings:
         return self.plans()["review"]
 
     # questions about your positions ---------------------------------------------
-    # shadow mode: what the system would have sold; nothing is sent -------------------
+    # the exit test (shadow exits): what the system would have sold; nothing is sent -------------------
     def shadow(self) -> Dict[str, Any]:
         """The results so far and the live feed's state (Journal tab, ``GET /holdings/shadow``)."""
         days = self.repo.setting(shadow_exits.FEED_SETTING, {}) or {}
@@ -692,11 +694,13 @@ class Holdings:
         from .opportunities import geared_fund
         names = {row["ticker"]: row.get("name", "") for row in view["stocks"]}
         try:
+            charts: List[Dict[str, str]] = []  # daily charts for the models (TRADE_DESK_QUESTION_MODELS)
             context = position_questions.build_context(
                 rows, view, self.rules(), _local(utcnow()).date(), bars=bars or trend.download_bars,
                 geared=lambda ticker: geared_fund(names.get(ticker, "")),
-                report=report or position_plan.report_line, earnings_date=earnings_date or earnings.next_earnings)
-            result = position_questions.answer(item["question"], context, generate_fn=generate)
+                report=report or position_plan.report_line, earnings_date=earnings_date or earnings.next_earnings,
+                images=charts)
+            result = position_questions.answer(item["question"], context, generate_fn=generate, images=charts)
             done = {**item, **result, "status": "done", "answered_at": utcnow().isoformat()}
         except Exception as exc:  # the question stays, with why it has no answer
             logger.warning("Position question failed: %s", type(exc).__name__)

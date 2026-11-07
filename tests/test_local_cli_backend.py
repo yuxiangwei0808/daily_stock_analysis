@@ -3218,3 +3218,87 @@ def test_codex_model_and_effort_follow_the_settings(tmp_path: Path) -> None:
     assert json.loads(plain.text)["argv"] == ["exec", "-"]  # unset: CODEX_HOME/config.toml decides
     with pytest.raises(GenerationError):
         LocalCliGenerationBackend(_config(codex_cli_effort="extreme"), preset=preset).generate("hello", {})
+
+
+# -- chart images (the Trade Desk models) ---------------------------------------------------------
+_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+def test_images_reach_claude_code_as_a_stream_json_message(tmp_path: Path) -> None:
+    seen_path = tmp_path / "seen.json"
+    script = _script(
+        tmp_path,
+        f"""
+import json, pathlib, sys
+pathlib.Path({str(seen_path)!r}).write_text(json.dumps({{"argv": sys.argv[1:], "stdin": sys.stdin.read()}}), encoding="utf-8")
+print(json.dumps({{"type": "system", "subtype": "init"}}))
+print(json.dumps({{"type": "assistant", "message": {{"content": []}}}}))
+print(json.dumps({{"type": "result", "subtype": "success", "result": "{{\\"note\\": \\"read the chart\\"}}"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli", executable=sys.executable, argv=(script, *CLAUDE_CODE_CLI_PRESET.argv),
+        display_name="Mock Claude Code CLI", extractor=CLAUDE_CODE_CLI_PRESET.extractor,
+        contract_args=CLAUDE_CODE_CLI_PRESET.contract_args,
+    )
+    backend = LocalCliGenerationBackend(_config(generation_backend="claude_code_cli"), preset=preset)
+    result = backend.generate("the state", {"images": [{"mime_type": "image/png", "data": _PNG}]}, system_prompt="rules")
+    assert json.loads(result.text) == {"note": "read the chart"}
+    seen = json.loads(seen_path.read_text(encoding="utf-8"))
+    argv = seen["argv"]
+    at = argv.index("--output-format")
+    assert argv[at:at + 5] == ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"]
+    for flag in ("--safe-mode", "--strict-mcp-config", "--no-session-persistence"):
+        assert flag in argv  # the safety flags stay
+    assert argv[argv.index("--tools") + 1] == ""
+    message = json.loads(seen["stdin"])
+    content = message["message"]["content"]
+    assert message["type"] == "user" and content[0]["type"] == "image"
+    assert content[0]["source"] == {"type": "base64", "media_type": "image/png", "data": _PNG}
+    assert content[-1] == {"type": "text", "text": "rules\n\nthe state"}
+    assert result.diagnostics["images"] == 1
+
+    # text only: the first command and stdin, unchanged
+    backend.generate("plain", {})
+    seen = json.loads(seen_path.read_text(encoding="utf-8"))
+    assert "stream-json" not in seen["argv"] and seen["stdin"] == "plain"
+
+
+def test_images_reach_codex_as_image_files_after_exec(tmp_path: Path) -> None:
+    seen_path = tmp_path / "seen.json"
+    script = _script(
+        tmp_path,
+        f"""
+import base64, json, pathlib, sys
+args = sys.argv[1:]
+images = [arg.split("=", 1)[1] for arg in args if arg.startswith("--image=")]
+pathlib.Path({str(seen_path)!r}).write_text(json.dumps({{
+    "argv": args, "bytes": [base64.b64encode(pathlib.Path(path).read_bytes()).decode() for path in images]}}), encoding="utf-8")
+output_path = args[args.index("--output-last-message") + 1]
+pathlib.Path(output_path).write_text(json.dumps({{"note": "ok"}}), encoding="utf-8")
+""",
+    )
+    preset = LocalCliPreset(preset_id="codex_cli", executable=sys.executable, argv=(script, "exec", "--color", "never", "-"),
+                            display_name="Mock Codex CLI", output_last_message_arg="--output-last-message")
+    backend = LocalCliGenerationBackend(_config(), preset=preset)
+    images = [{"mime_type": "image/png", "data": _PNG}, {"mime_type": "image/jpeg", "data": _PNG}]
+    assert json.loads(backend.generate("state", {"images": images}).text) == {"note": "ok"}
+    seen = json.loads(seen_path.read_text(encoding="utf-8"))
+    at = seen["argv"].index("exec")
+    assert seen["argv"][at + 1].startswith("--image=") and seen["argv"][at + 1].endswith("image-1.png")
+    assert seen["argv"][at + 2].endswith("image-2.jpg") and seen["argv"][-1] == "-"
+    assert seen["bytes"] == [_PNG, _PNG]
+
+
+def test_images_are_refused_by_a_cli_that_cannot_read_them_and_bad_images_fail_early(tmp_path: Path) -> None:
+    preset = LocalCliPreset(preset_id=local_cli_backend_module.OPENCODE_CLI_BACKEND_ID, executable=sys.executable,
+                            argv=(_script(tmp_path, "print('never runs')"),), display_name="Mock OpenCode")
+    backend = LocalCliGenerationBackend(_config(), preset=preset)
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("state", {"images": [{"mime_type": "image/png", "data": _PNG}]})
+    assert exc_info.value.error_code == GenerationErrorCode.CAPABILITY_UNSUPPORTED and exc_info.value.fallbackable
+
+    codex = _backend(tmp_path, "print('never runs')")
+    with pytest.raises(GenerationError) as exc_info:
+        codex.generate("state", {"images": [{"mime_type": "text/html", "data": "x"}]})
+    assert exc_info.value.error_code == GenerationErrorCode.CAPABILITY_UNSUPPORTED and not exc_info.value.fallbackable

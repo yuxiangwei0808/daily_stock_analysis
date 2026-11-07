@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantPanel } from '../AssistantPanel';
+import { ShadowModeBar, ShadowModeProvider } from '../shadowMode';
 import { toCamelCase } from '../../../api/utils';
 
 const api = vi.hoisted(() => ({
@@ -57,10 +58,10 @@ describe('AssistantPanel', () => {
     api.startAssistant.mockResolvedValue(running);
     const onShow = vi.fn();
     render(<AssistantPanel current="SPY" onShow={onShow} />);
-    expect(await screen.findByText(/Nothing runs until you press Start/)).toBeInTheDocument();
+    expect(await screen.findByText(/Shadow mode is an add-on to normal mode/)).toBeInTheDocument();
     expect(screen.getByLabelText('Assistant stocks')).toHaveValue('SPY');
     fireEvent.change(screen.getByLabelText('Assistant stocks'), { target: { value: 'spy, qqq' } });
-    fireEvent.click(screen.getByRole('button', { name: /Start/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on shadow mode' }));
     await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['SPY', 'QQQ'], '0dte'));
     expect(onShow).toHaveBeenCalledWith('SPY');
     expect(await screen.findByText('Pre-market high')).toBeInTheDocument();
@@ -76,7 +77,7 @@ describe('AssistantPanel', () => {
     api.getAssistant.mockResolvedValue(running);
     api.stopAssistant.mockResolvedValue({ ...idle, stopped: { at: '2026-11-09T10:00:00-05:00', reason: 'stopped from the page' } });
     render(<AssistantPanel current="" onShow={() => undefined} />);
-    expect(await screen.findByText(/Trading assistant: SPY/)).toBeInTheDocument();
+    expect(await screen.findByText(/Shadow mode: SPY/)).toBeInTheDocument();
     await waitFor(() => expect(FakeEventSource.last).not.toBeNull());
     act(() => {
       FakeEventSource.last!.emit('alert', { seq: 2, at: '2026-11-09T09:51:00-05:00', ticker: 'SPY', kind: 'level', title: 'SPY above Pre-market high 738.03', detail: '' });
@@ -84,7 +85,7 @@ describe('AssistantPanel', () => {
       FakeEventSource.last!.emit('alert', { seq: 2, at: '2026-11-09T09:51:00-05:00', ticker: 'SPY', kind: 'level', title: 'repeat', detail: '' });
     });
     expect(notifications).toEqual(['SPY above Pre-market high 738.03']);
-    fireEvent.click(screen.getByRole('button', { name: /Stop/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off shadow mode' }));
     expect(await screen.findByText(/Last session: stopped from the page/)).toBeInTheDocument();
   });
 
@@ -116,7 +117,7 @@ describe('AssistantPanel', () => {
     expect(screen.getByText(/not a trade rule/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /TSLA/ }));
     expect(screen.getByLabelText('Assistant stocks')).toHaveValue('TSLA');
-    fireEvent.click(screen.getByRole('button', { name: /Start on the top 3/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Shadow the top 3/ }));
     await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['TSLA', 'NVDA', 'AMD'], '0dte'));
   });
 
@@ -133,7 +134,7 @@ describe('AssistantPanel', () => {
       running: true, horizon: '0dte', horizons: { '0dte': '0DTE options', intraday: 'Intraday', swing: 'Swing' },
       started_at: '2026-11-09T14:50:00+00:00', stopped: null, max_tickers: 3, seq: 1, events: [], note: 'Nothing is sent to moomoo.',
       model: { calls_today: 4, cap: 150, failed: 0, median_seconds: 4.2, by: [{ label: 'Claude Code (claude-sonnet-5-5)', calls: 4 }],
-        last_error: null, note_minutes: 3 },
+        last_error: null, note_minutes: 3, order: 'Claude Code (claude-sonnet-5-5, xhigh), then Codex (gpt-6.1-sol, xhigh)' },
       tickers: [{ ticker: 'SPY', price: 736, price_at: null, change_pct: 0.41, quote_age_s: 0.3, loaded: true, error: null, flags: [],
         levels: [{ id: 'vwap', kind: 'vwap', label: 'VWAP', price: 735.1, distance_pct: -0.12, verdict: 'not tested', verdict_label: 'x' }],
         contracts: { expiry: '2026-11-09', as_of: null, error: null, rows: [{ code: 'US.SPY-C736', right: 'call', strike: 736,
@@ -147,9 +148,44 @@ describe('AssistantPanel', () => {
     };
     api.getAssistant.mockResolvedValue(toCamelCase(raw));
     render(<AssistantPanel current="" onShow={() => undefined} />);
-    expect(await screen.findByText(/Trading assistant: SPY · 0DTE options · since/)).toBeInTheDocument();
+    expect(await screen.findByText(/Shadow mode: SPY · 0DTE options · since/)).toBeInTheDocument();
     expect(screen.getByText(/Claude Code \(claude-sonnet-5-5\) 4/)).toBeInTheDocument();
     expect(screen.getByText('0.61 → 0.52')).toBeInTheDocument();
     expect(screen.getByText(/time \+0\.71R, random timing −0\.20R/)).toBeInTheDocument();
+    expect(screen.getByText(/In order: Claude Code \(claude-sonnet-5-5, xhigh\), then Codex \(gpt-6\.1-sol, xhigh\)\./)).toBeInTheDocument();
+  });
+
+  it('names the mode on every tab: normal mode, or shadow mode on with a way to turn it off', async () => {
+    api.getAssistant.mockResolvedValue(idle);
+    const openChart = vi.fn();
+    const { unmount } = render(<ShadowModeProvider><ShadowModeBar onOpenChart={openChart} /></ShadowModeProvider>);
+    expect(await screen.findByText('Normal mode')).toBeInTheDocument();
+    expect(screen.getByText(/Your alerts go to Discord/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Set up shadow mode' }));
+    expect(openChart).toHaveBeenCalled();
+    unmount();
+
+    api.getAssistant.mockResolvedValue(running);
+    api.stopAssistant.mockResolvedValue({ ...idle, stopped: { at: '2026-11-09T10:00:00-05:00', reason: 'stopped from the page' } });
+    render(<ShadowModeProvider><ShadowModeBar onOpenChart={openChart} /></ShadowModeProvider>);
+    expect(await screen.findByText('Shadow mode on')).toBeInTheDocument();
+    expect(screen.getByText(/SPY · since .* ET · alerts sound on this page while it is open; Discord alerts carry on as usual/)).toBeInTheDocument();
+    await waitFor(() => expect(FakeEventSource.last).not.toBeNull());
+    act(() => FakeEventSource.last!.emit('alert', { seq: 4, at: '2026-11-09T09:55:00-05:00', ticker: 'SPY', kind: 'level', title: 'SPY below VWAP', detail: '' }));
+    expect(notifications).toEqual(['SPY below VWAP']);  // the alert sounds with only the bar on the page (another tab)
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }));
+    expect(await screen.findByText('Normal mode')).toBeInTheDocument();
+    expect(api.stopAssistant).toHaveBeenCalled();
+  });
+
+  it('shares one stream between the mode line and the panel on the page', async () => {
+    api.getAssistant.mockResolvedValue(running);
+    const made = vi.fn();
+    class CountingEventSource extends FakeEventSource { constructor() { super(); made(); } }
+    vi.stubGlobal('EventSource', CountingEventSource);
+    render(<ShadowModeProvider><ShadowModeBar onOpenChart={() => undefined} /><AssistantPanel current="" onShow={() => undefined} /></ShadowModeProvider>);
+    expect(await screen.findByText(/Shadow mode: SPY/)).toBeInTheDocument();
+    await waitFor(() => expect(made).toHaveBeenCalledTimes(1));
+    expect(api.getAssistant).toHaveBeenCalledTimes(1);
   });
 });

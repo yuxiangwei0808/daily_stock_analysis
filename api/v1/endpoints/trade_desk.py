@@ -390,7 +390,7 @@ async def position_plans(request: Request):
 
 @router.get("/holdings/shadow")
 async def shadow_exits(request: Request):
-    """Shadow mode: what the system would have sold and how that compares. Nothing is sent to the broker."""
+    """The exit test: what the system would have sold and how that compares. Nothing is sent to the broker."""
     from src.services.trade_desk import holdings
     if not holdings.enabled():
         return {"enabled": False}

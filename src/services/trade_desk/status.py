@@ -190,7 +190,7 @@ def build(service: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
                                                       "detail": f"synced {_ago(synced, now)}"})
         shadow_watch = getattr(worker, "_shadow_watch", None)
         if shadow_watch is not None:
-            add("shadow_feed", "Shadow exits live feed", **shadow_watch.health(now))
+            add("shadow_feed", "Exit test live feed", **shadow_watch.health(now))
         charts = getattr(service, "charts", None)
         if charts is not None:
             add("chart_feed", "Chart live bars", **charts.health(now))

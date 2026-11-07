@@ -5,7 +5,7 @@ the close, ends it. Everything here is computed, never written by a model: the d
 positions on the stocks, the option contracts around the price and the alerts. The model's notes
 come later and never hold up an alert. Read only: DSA never sends, changes or cancels an order.
 
-Two threads, like shadow mode (``shadow_watch.py``):
+Two threads, like the exit test's live feed (``shadow_watch.py``):
 
 - **check**, every ``CHECK_SECONDS``, reads only memory: the chart service's pushed trades and 1- and
   15-minute bars (``chart.py``). It alerts when the price crosses a level, notes a 15-minute close and
@@ -445,6 +445,9 @@ class Assistant:
             item.bars_stale = False
 
     def _load_chart(self, item: _Ticker, now: datetime, *, alert: bool) -> None:
+        _, closing = _session_bounds(_local(now).date())
+        if item.chart_levels and closing is not None and now >= closing:
+            return  # after the close the chart moves on to the next session's levels (today becomes "prior day")
         snapshot = self.charts.chart(item.ticker, "15m", now=now)
         flags = [flag for flag in snapshot.get("flags") or [] if flag["state"] in ("armed", "watching", "open")]
         states = {_flag_key(flag): flag["state"] for flag in snapshot.get("flags") or []}
@@ -746,7 +749,8 @@ class Assistant:
             seconds = sorted(self._usage["seconds"])
             model = {"calls_today": self._usage["calls"], "cap": _daily_cap(), "failed": self._usage["failed"],
                      "median_seconds": seconds[len(seconds) // 2] if seconds else None, "by": [{"label": label, "calls": calls} for label, calls in self._usage["by"].items()],
-                     "last_error": self._usage["last_error"], "note_minutes": _note_gap().total_seconds() / 60}
+                     "last_error": self._usage["last_error"], "note_minutes": _note_gap().total_seconds() / 60,
+                     "order": _model_order()}
             return {"running": self.running, "horizon": self.horizon, "horizons": HORIZONS,
                     "started_at": self.started_at.isoformat() if self.started_at else None, "stopped": self.stopped,
                     "max_tickers": MAX_TICKERS, "tickers": tickers, "events": [dict(e) for e in list(self._events)[-60:]][::-1],
@@ -810,11 +814,44 @@ class Assistant:
             self._write_note(item, reasons, now)
             return
 
+    def _chart_images(self, item: _Ticker) -> Optional[List[Dict[str, str]]]:
+        """Today's chart for the model (chart_image.py): bars, VWAP, the levels, open plans and flags."""
+        from . import chart_image
+        if not chart_image.enabled():
+            return None
+        with self._lock:
+            bars = [dict(bar) for bar in item.bars]
+            levels = [{"label": level["label"], "price": level["price"], "kind": level.get("kind")} for level in item.levels()]
+            plans = [dict(plan) for plan in item.plans if plan.get("status") in ("waiting", "open")]
+            flags = [dict(flag) for flag in item.flags]
+            price = item.price
+        if len(bars) < 2:
+            return None  # before the open: the numbers say it all
+        for plan in plans:
+            who = "Your plan" if plan.get("source") == "you" else "Assistant call"
+            trigger = (plan.get("trigger") or {}).get("price")
+            for kind, value, word in (("trigger", trigger, "trigger"), ("stop", plan.get("stop"), "stop"),
+                                      ("target", plan.get("target"), "target")):
+                if isinstance(value, (int, float)):
+                    levels.append({"label": f"{who} {word}", "price": value, "kind": kind})
+        for flag in flags:
+            levels.append({"label": f"{flag['kind'].replace('_', ' ')} {flag['direction']} flag", "price": flag.get("price"),
+                           "kind": "flag"})
+        minutes = 5 if len(bars) > 90 else 1
+        try:
+            png = chart_image.render(chart_image.aggregate(bars, minutes), levels=levels,
+                                     title=f"{item.ticker} today, {minutes}-minute bars (New York time)"
+                                           + (f", last {price:g}" if price is not None else ""))
+        except Exception as exc:  # the note goes without the picture
+            logger.info("Assistant chart image for %s failed: %s", item.ticker, type(exc).__name__)
+            return None
+        return [chart_image.as_image(png)]
+
     def _write_note(self, item: _Ticker, reasons: List[str], now: datetime) -> None:
         from . import assistant_notes
         ctx = self._context(item, now, reasons)
         try:
-            result = assistant_notes.ask_model(assistant_notes.NOTE_SYSTEM, ctx)
+            result = assistant_notes.ask_model(assistant_notes.NOTE_SYSTEM, ctx, images=self._chart_images(item))
         except RuntimeError as exc:
             self._failed(exc)
             return
@@ -856,7 +893,7 @@ class Assistant:
         self._check_cap(now)
         ctx = self._context(item, now, ["question"])
         try:
-            result = assistant_notes.ask_model(assistant_notes.ASK_SYSTEM, ctx, question)
+            result = assistant_notes.ask_model(assistant_notes.ASK_SYSTEM, ctx, question, images=self._chart_images(item))
         except RuntimeError as exc:
             self._failed(exc)
             raise ValueError(assistant_notes.answer_failed(exc)) from exc
@@ -912,6 +949,11 @@ class AssistantStream:
             self._state_at, self._running = clock, running
             out.append(("state", self.assistant.state(now)))
         return out
+
+
+def _model_order() -> str:
+    from . import assistant_model
+    return assistant_model.describe("assistant")
 
 
 def _daily_cap() -> int:

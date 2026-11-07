@@ -709,9 +709,15 @@ unlocked and nothing is ordered. The snapshot is stored locally
   (price at or below / above, or P&L); nothing is traded. One question runs at a time; the
   last 30 are kept (`trade_desk_settings` id `position_questions`) and never go to Discord.
   A holding's **Ask** opens this box on that position; **Compare option strategies** from
-  there opens the Ask tab with the position attached, as before.
-- **Shadow exits** (`trade_desk/shadow_exits.py`, `shadow_watch.py`, `live_feed.py`, `GET /holdings/shadow`, the
-  Journal tab's card, refreshed every 15 seconds; `trade_desk_settings` ids `shadow_exits`, `shadow_levels`,
+  there opens the Ask tab with the position attached, as before. With `TRADE_DESK_QUESTION_MODELS`
+  set (same `backend:model:effort` list as shadow mode's, e.g. `claude_code_cli:claude-opus-5-5:xhigh,
+  codex_cli:gpt-6.1-sol:xhigh,claude_code_cli:claude-sonnet-5-5:xhigh,litellm`; timeout
+  `TRADE_DESK_QUESTION_TIMEOUT_SECONDS`, 180) these questions and the daily review use that order
+  instead of the generation backend, and carry daily charts (the last 90 sessions with the 20-day
+  high and low, the 50-day average, your average cost or option strikes and the rule-of-thumb levels)
+  of the four tickers with the most weight; the model is told to take every price from the numbers.
+- **Exit test** (named shadow exits until shadow mode came to mean the live page; `trade_desk/shadow_exits.py`,
+  `shadow_watch.py`, `live_feed.py`, `GET /holdings/shadow`, the Journal tab's card, refreshed every 15 seconds; `trade_desk_settings` ids `shadow_exits`, `shadow_levels`,
   `shadow_feed`): what the system would have sold, when and at what quote. **Nothing is sent to moomoo:** there is
   no order code in the app, a test fails if order calls appear, and trading is never unlocked.
 
@@ -735,7 +741,7 @@ unlocked and nothing is ordered. The snapshot is stored locally
   maximum), a held stock's break of its 20-day low, and a review saying trim, take profit or close. Each record says
   how it was seen: pushed quote or snapshot, the quote's age on arrival and the wait for the check. After more than
   60 seconds of not watching (a restart, a lost feed), a level found crossed has no trigger moment until that
-  holding has been priced once: it is counted as carried and not graded, as are levels crossed in shadow mode's first
+  holding has been priced once: it is counted as carried and not graded, as are levels crossed in the exit test's first
   5 minutes and 20-day lows that loaded over 60 seconds late. A holding whose first trigger was carried is not graded
   on later ones either. Closing and reopening a position lets its levels trigger again; adding a contract on the same
   expiry keeps the holding, and replacing all its contracts starts a new one.
@@ -765,7 +771,7 @@ unlocked and nothing is ordered. The snapshot is stored locally
   *Limits.* Fills at the bid or ask are assumed, commissions are ignored, partial trims are not seen, a stock's stop
   is judged on its last trade, so one odd print can trigger it, and it only runs in regular hours (SPY and QQQ options
   trade 15 minutes longer than the last mark). Sizes and amounts are never stored, and nothing goes to Discord except
-  the Status page's usual failure notice: the feed appears there as Shadow exits live feed. Your Discord holding alerts
+  the Status page's usual failure notice: the feed appears there as Exit test live feed. Your Discord holding alerts
   keep their own timers (quotes each minute, positions each 10 minutes). Once the feed is listening, the moomoo SDK's
   file log in the home folder drops from debug to info: at debug it writes two lines per push, over 1 GB a session.
 - **Everywhere else:** held tickers join the market pulse and breakout watch;
@@ -900,14 +906,23 @@ once; a sixth pauses the oldest, which then refreshes every minute. A closed pag
 subscriptions are released after 10 minutes. The Status page's "Chart live bars" line shows the
 open charts, pushes, quote delay and the time spent per push.
 
-## Trading assistant
+## Shadow mode (the trading assistant)
 
-The Chart tab's **Trading assistant** card (`trade_desk/assistant.py`, `GET /assistant`,
-`POST /assistant/start` and `/assistant/stop`, server-sent events at `GET /assistant/stream`; plan in
-[trading-assistant-plan.md](trading-assistant-plan.md)). Nothing runs until you press **Start** on one
-to three stocks with a horizon (0DTE options, intraday or swing); **Stop**, or 15 minutes after the
-close, ends it (a session started after the close runs until you stop it). Read only: nothing is sent
-to moomoo, and its alerts go to this page only, never to Discord.
+Two modes, named on a line under the Trade Desk tabs:
+
+- **Normal mode** is what always runs: your Discord holding alerts (quotes each minute, positions each
+  10 minutes), the daily review and the ideas that passed their rules. Nothing on the page sounds.
+- **Shadow mode** is an add-on for when you watch the page: the trading assistant on up to three stocks,
+  with live alerts on this page (a sound and a browser notification) and notes from the model. It never
+  changes or replaces the Discord alerts; close the page and you simply don't see its alerts.
+
+The Chart tab's **Shadow mode** card (`trade_desk/assistant.py`, `GET /assistant`, `POST /assistant/start`
+and `/assistant/stop`, server-sent events at `GET /assistant/stream`; plan in
+[trading-assistant-plan.md](trading-assistant-plan.md)) sets it up: nothing runs until you **Turn on shadow
+mode** for one to three stocks with a horizon (0DTE options, intraday or swing). **Turn off** (on the card or
+on the mode line, from any tab), or 15 minutes after the close, ends it (a session started after the close
+runs until you turn it off). The page keeps one stream for the whole Trade Desk, so its alerts sound on
+every tab while the page is open. Read only: nothing is sent to moomoo, and its alerts never go to Discord.
 
 - **In play today** (`trade_desk/in_play.py`, `GET /in-play`; on with `IN_PLAY_ENABLED`, default true): after
   09:46 on trading days the server holding the monitor lease scores SPY, QQQ, IWM, DIA, the 20 large caps of
@@ -916,13 +931,14 @@ to moomoo, and its alerts go to this page only, never to Discord.
   S = (|open − prior close| + the first 15-minute bar's range) / T, from moomoo's 15-minute history (read
   only; a new stock uses one history allowance for 30 days). The card shows the top five before you start,
   each with its S; a click adds one to the stocks, and **Start on the top 3** is the "let the agent pick"
-  start. It says which stocks will move more today, not which way.
+  start (**Shadow the top 3**). It says which stocks will move more today, not which way.
 - **Levels** for each stock, with the price's distance and the register verdict of each
   ([trading-methodology.md](trading-methodology.md) §11; none has passed): the chart's prior-day high,
   low and close and the two prior weeks' value areas, your plan stops and targets and price alerts, the
   pre-market high and low (from moomoo's snapshot, read again until 30 seconds after the open), the 5- and
   15-minute opening range and VWAP from today's 1-minute bars, kept up to date from pushes; a minute the
-  pushes missed, and every 15-minute close, reads today's bars from moomoo again.
+  pushes missed, and every 15-minute close, reads today's bars from moomoo again. After the close the session
+  keeps the day's levels: the chart then moves on to the next session's, where today is the "prior day".
 - **Before the open** the price is the last pre-market trade (moomoo's last price stays at the prior close
   until the session trades), read every 5 seconds and marked pre-market; option quotes are the last
   session's. Plans are watched and levels alerted from the open, and a plan that enters "now" needs the
@@ -934,7 +950,7 @@ to moomoo, and its alerts go to this page only, never to Discord.
   level above and below or your stop or target, now and in 30 minutes. Those values are Black-Scholes
   estimates at the contract's quoted implied volatility, not quotes; it never picks a contract.
 - **Your positions** on the stocks: P&L on cost, weight in the account, plan stop and target, days to
-  expiry. They come from shadow mode's live feed (read every 15 seconds, at once after a fill) while it
+  expiry. They come from the exit test's live feed (read every 15 seconds, at once after a fill) while it
   runs, otherwise from the last holdings sync, and the card says which.
 - **Box flags** that are armed, watching or open, reloaded at every 15-minute close, with their grades.
 - **Alerts**, each once, with a sound and a browser notification once allowed (**Allow notifications**):
@@ -974,14 +990,24 @@ to moomoo, and its alerts go to this page only, never to Discord.
   day with three stocks asked for about 100 notes; through Claude Code on Sonnet 5.5 a note took a median of
   4 seconds (at most 15) and an answer 5. The model gets each plan's state in words ("in the trade: triggered
   at 09:54, entry 302.5"), event times in New York time, and is told not to mention what is missing.
-- **The model** (`trade_desk/assistant_model.py`): your Claude Code plan first, then Codex, and the API
-  only as a fallback (`TRADE_ASSISTANT_BACKENDS`, default `claude_code_cli,codex_cli,litellm`), each with
-  the assistant's own light settings: `TRADE_ASSISTANT_CLAUDE_CODE_CLI_MODEL` and `_EFFORT` (default the
-  routine model, effort `low`), `TRADE_ASSISTANT_CODEX_CLI_MODEL` and `_EFFORT` (`low`),
-  `TRADE_ASSISTANT_LITELLM_MODEL` (default `LITELLM_MODEL`; it must be one of a channel's models), and
-  `TRADE_ASSISTANT_TIMEOUT_SECONDS` (90). A backend that fails or is over its usage limit passes to the next;
-  each answer names the model that gave it. A test read of a plan through Claude Code on Sonnet 5.5 took
-  6 seconds.
+- **The models** (`trade_desk/assistant_model.py`): an ordered list in `TRADE_ASSISTANT_MODELS`, entries
+  `backend:model:effort` tried in turn, e.g. `claude_code_cli:claude-sonnet-5-5:xhigh,codex_cli:gpt-6.1-sol:xhigh,
+  claude_code_cli:claude-opus-5-5:xhigh,litellm` (your Claude Code plan, then your Codex plan, then Opus on the
+  Claude plan, the API last). The backend is `claude_code_cli`, `codex_cli` or `litellm`; a model or effort left
+  out comes from that backend's own setting; the API entry uses `TRADE_ASSISTANT_LITELLM_MODEL` (default
+  `LITELLM_MODEL`; it must be one of a channel's models). An entry that fails, is over its plan's usage limit,
+  takes longer than `TRADE_ASSISTANT_TIMEOUT_SECONDS` (90) or gives no readable JSON passes to the next; each
+  answer names the model and effort that gave it, and the card shows the order. Unset, the first settings
+  apply: `TRADE_ASSISTANT_BACKENDS` (default `claude_code_cli,codex_cli,litellm`) with
+  `TRADE_ASSISTANT_CLAUDE_CODE_CLI_MODEL` / `_EFFORT` (the routine model, `low`) and
+  `TRADE_ASSISTANT_CODEX_CLI_MODEL` / `_EFFORT` (`low`). One note with a chart, timed once on 2026-11-07:
+  Sonnet 5.5 at xhigh 13.5 s (4.5 s at low), GPT-6.1-Sol at xhigh 29 s, Opus 5.5 at xhigh 28 s, Fable 5.1 at
+  xhigh 22 s. Level and P&L alerts never wait for a model.
+- **The chart picture** (`trade_desk/chart_image.py`, Pillow): notes and answers carry today's chart (1-minute
+  bars, 5-minute after 90 minutes; VWAP; the levels, open plans and flags, labelled as on the card) so the
+  model sees the shape as well as the numbers; prices still come from the numbers only (the price guard
+  holds back any other). Plan reading is text only. `TRADE_DESK_CHART_IMAGES=false` sends no picture. Claude
+  Code gets it as a stream-json message, Codex as `--image`, the API as an image part.
 - **How:** a check thread reads only memory every 0.25 s (the chart service's pushed trades and 1- and
   15-minute bars, on its own moomoo connection) and steps the plans; an io thread loads each chart at the
   start and after each 15-minute close, today's 1-minute bars, the chain once, the contract quotes and the
