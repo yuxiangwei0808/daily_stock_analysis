@@ -1031,6 +1031,30 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   `TRADE_ASSISTANT_CODEX_CLI_MODEL` / `_EFFORT` (`low`). One note with a chart, timed once on 2026-11-07:
   Sonnet 5.5 at xhigh 13.5 s (4.5 s at low), GPT-6.1-Sol at xhigh 29 s, Opus 5.5 at xhigh 28 s, Fable 5.1 at
   xhigh 22 s. Level and P&L alerts never wait for a model.
+- **Three tiers** (`trade_desk/assistant_watch.py`, after [trading-methodology.md](trading-methodology.md)):
+  1. *Code*, every check: the levels, flags, positions, P&L and plans above, alerted at once; it never waits for a
+     model. It also computes the facts the models get, from completed bars only: for each level within 1.5 % of the
+     price, where the last completed 1- and 5-minute bars closed (a *cross* is a trade 0.05 % past a level, a *break*
+     a completed bar closing 0.05 % past it) and for how many minutes; the last 5 minutes' volume against the
+     session's normal; the range so far and the last 5 and 15 minutes' change; and the stock's in-play rank, the one
+     rule that has passed (as a range selector, never a direction). Every level keeps its register verdict.
+  2. *The watcher* (`TRADE_ASSISTANT_WATCH_MODELS`, e.g. `claude_code_cli:claude-haiku-5-5:low,claude_code_cli:
+     claude-sonnet-5-5:low,codex_cli:gpt-6.1-sol:low,litellm`, with the `TRADE_ASSISTANT_WATCH_FRAMES` picture,
+     default `1m`; timeout `TRADE_ASSISTANT_WATCH_TIMEOUT_SECONDS`, 30; at most `TRADE_ASSISTANT_WATCH_DAILY_CALLS`,
+     400, a day) reads each market event (a level, a flag, a P&L step), at most once every
+     `TRADE_ASSISTANT_NOTE_MINUTES` a stock, writes the short note and says whether the analyst should look now and
+     why. Notes show *Watcher* or *Analyst*, and an escalation reads "→ Analyst: why".
+  3. *The analyst* (`TRADE_ASSISTANT_MODELS`, every picture): your questions, the first look at each stock and your
+     plans', fills' and expiries' events go to it straight away; the watcher's escalations at most
+     `TRADE_ASSISTANT_ANALYST_PER_HOUR` (12) an hour. If no watcher answers, the event goes to the analyst within that
+     limit. Unset `TRADE_ASSISTANT_WATCH_MODELS` and every note goes to the analyst, as before.
+
+  The watcher's escalations are a model's choice, so they are tracked forward with a fixed rule (methodology
+  sections 9 and 13; register: *Shadow mode watcher*): when the session stops, each decision with 30 completed
+  minutes after it gets that range as % of its price (`trade_desk_settings` id `assistant_watch_grades`); on each
+  stock-day with both kinds, escalated decisions are compared with the others, clustered by day; the card shows
+  the result, "too early" before 30 graded days. It grades whether the watcher picks moments that move, not which
+  way; decisions in a session turned off early, or within 30 minutes of the close, are not graded.
 - **The chart pictures** (see *Chart pictures* above): notes and answers carry the `TRADE_ASSISTANT_CHART_FRAMES`
   pictures, by default 1-, 5- and 15-minute: earlier sessions read once from moomoo's history when the session
   starts, today's part from the live 1-minute bars, the 15-minute one the chart's own with its boxes (reloaded

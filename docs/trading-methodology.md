@@ -208,6 +208,7 @@ Tracked forward or shown, without a verdict here (the scoreboard grades the forw
 |---|---|---|---|
 | Stock report calls (buy, watch, sell) | Forward from each day's first report | Tracked forward against the rest of the watchlist | Journal tab, What's working |
 | Social scan and YouTube picks | Forward, 5/10/20 sessions | Tracked forward against same-day stocks | Journal tab, What's working |
+| Shadow mode watcher: which moments go to the analyst | Forward: each decision's next 30-minute range, same stock and day, day clusters | Tracked forward: escalated moments against the same stock's other moments that day | [trade-desk.md](trade-desk.md) |
 | Prior day high, low and close | Shown on the chart | Not tested as levels on their own | [trade-desk.md](trade-desk.md#chart) |
 | Value-area high and low of the two prior weeks | Shown on the chart | Not tested as levels on their own (only as a box filter, above) | [trade-desk.md](trade-desk.md#chart) |
 | Pre-market high and low | Shown by the trading assistant | Not tested | [trading-assistant-plan.md](trading-assistant-plan.md) |
@@ -269,4 +270,10 @@ Tracked forward or shown, without a verdict here (the scoreboard grades the forw
   against the same trade at random times (twins differ only in the time), clustered by day.
 - Every number the assistant writes comes from the system's computations or quotes, never from its
   own estimate.
+- Shadow mode works in three tiers ([trade-desk.md](trade-desk.md)): code watches every quote and alerts on events
+  defined from completed bars (section 2); a fast watcher model reads each market event and decides whether the
+  analyst model should look; the analyst answers your questions and your plans', fills' and expiries' events without
+  waiting for the watcher. The watcher's decisions are a model's choice, so they are tracked forward with a fixed rule
+  (section 9): each decision's next 30-minute range, escalated against the same stock's other decisions that day,
+  clustered by day (section 13: which moments move, not which way).
 

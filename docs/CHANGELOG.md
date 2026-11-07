@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 影子模式三层：代码层按交易方法论（只用已完成的 K 线定义突破、成交量相对常态、在列今日活跃股排名等事实，价位附检验结论）实时提醒；观察者（`TRADE_ASSISTANT_WATCH_MODELS`，快速便宜的模型带 1 分钟图）先读每个行情事件并决定是否交给分析模型；你的计划、成交、到期提醒与提问直接交给分析模型；升级每小时有上限（`TRADE_ASSISTANT_ANALYST_PER_HOUR`）。观察者的升级决定按固定规则前向评估（之后 30 分钟的波动区间，同股同日对比，按日聚类），已登记于方法论注册表
 - [新功能] 图表图片覆盖更多分析：按周期绘制（`trade_desk/chart_frames.py`），含 NX 通道、CD/MACD 及买卖标记、VRVP（成交量分布，POC 与价值区）、箱体、价值区与前日价位；数据取自 moomoo 历史 K 线（无订阅），连不上时用 Yahoo；4 小时线由 1 小时线合成。个股提问 15m/1h/4h/日线，持仓提问、自动扫描与报告（`REPORT_CHART_FRAMES`）15m/1h/4h，影子模式 1m/5m/15m（`TRADE_ASSISTANT_CHART_FRAMES`）
 - [新功能] 个股提问（含 Discord /ask）按 `TRADE_DESK_QUESTION_MODELS` 顺序调用：Opus 先读图与已计算方案作答；需要重新计算的问题交给 Codex（带比较工具、同样的图表，按列表中的模型与推理强度）；第二意见改由另一订阅的模型（如 GPT-6.1-Sol）给出
 - [新功能] 影子模式（Shadow mode）：交易助手改名为影子模式，作为常规模式（Discord 提醒照常）之上的附加功能，只在你看着页面时提供实时提醒；Trade Desk 各标签页下方显示当前模式，可随时关闭；整个页面共用一条事件流，切换标签页时提醒照样响起。原「Shadow exits」卡片改名为「Exit test」以免混淆

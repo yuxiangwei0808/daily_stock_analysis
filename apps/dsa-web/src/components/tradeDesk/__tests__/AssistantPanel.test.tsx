@@ -155,6 +155,25 @@ describe('AssistantPanel', () => {
     expect(screen.getByText(/In order: Claude Code \(claude-sonnet-5-5, xhigh\), then Codex \(gpt-6\.1-sol, xhigh\)\./)).toBeInTheDocument();
   });
 
+  it('shows which tier wrote a note, the escalation and the watcher line', async () => {
+    const watched = { ...spy, notes: [
+      { at: '2026-11-09T09:57:00-05:00', kind: 'note', tier: 'analyst', text: 'Above 738.03 on volume.', model: 'Claude Code (claude-sonnet-5-5, xhigh)', seconds: 12 },
+      { at: '2026-11-09T09:56:50-05:00', kind: 'note', tier: 'watcher', text: 'Closed above 738.03.', escalate: true, why: 'A 1-minute bar closed past it.', model: 'Claude Code (claude-haiku-5-5, low)', seconds: 2 },
+      { at: '2026-11-09T09:53:00-05:00', kind: 'note', tier: 'watcher', text: 'Crossed 738.03.', escalate: false, why: 'No bar confirms it.' }] };
+    api.getAssistant.mockResolvedValue({ ...running, tickers: [watched], model: { ...running.model,
+      watch: { order: 'Claude Code (claude-haiku-5-5, low), then API', callsToday: 9, escalatedToday: 2, analystPerHour: 12,
+        by: [], grade: { days: 3, decisions: 40, meanDifferencePct: 0.12, t: 1.1, verdict: 'too early: 3 of 30 graded days', forwardMinutes: 30 } } } });
+    render(<AssistantPanel current="" onShow={() => undefined} />);
+    expect(await screen.findByText('Closed above 738.03.')).toBeInTheDocument();
+    expect(screen.getByText('→ Analyst: A 1-minute bar closed past it.')).toBeInTheDocument();
+    expect(screen.getByText(/· No bar confirms it\./)).toBeInTheDocument();
+    expect(screen.getAllByText('Watcher')).toHaveLength(2);
+    expect(screen.getByText('Analyst')).toBeInTheDocument();
+    const line = screen.getByTestId('watcher-line');
+    expect(line).toHaveTextContent('Watcher today: 9 reads, 2 sent to the analyst (at most 12 an hour');
+    expect(line).toHaveTextContent('too early: 3 of 30 graded days (+0.12% vs the stock\'s other moments, t 1.1); untested.');
+  });
+
   it('names the mode on every tab: normal mode, or shadow mode on with a way to turn it off', async () => {
     api.getAssistant.mockResolvedValue(idle);
     const openChart = vi.fn();

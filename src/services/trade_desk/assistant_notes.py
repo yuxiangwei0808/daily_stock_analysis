@@ -99,8 +99,9 @@ PRICE = re.compile(r"(?<![\w.%])(\d{1,6}(?:\.\d{1,4})?)(?![\d%]|\s*(?:%|percent|
 
 
 def context(state: Dict[str, Any], *, horizon: str, now: datetime, closing: Optional[datetime], events: List[Dict[str, Any]],
-            reasons: List[str]) -> Dict[str, Any]:
-    """The part of a stock's state the model sees: small, and only computed values."""
+            reasons: List[str], facts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The part of a stock's state the model sees: small, and only computed values (``facts``: what completed bars
+    say, assistant_watch.facts)."""
     price = state.get("price")
     contracts = sorted(state.get("contracts", {}).get("rows") or [], key=lambda r: abs(r["strike"] - (price or 0)))[:6]
     return {
@@ -122,6 +123,7 @@ def context(state: Dict[str, Any], *, horizon: str, now: datetime, closing: Opti
         "recent_events": [{"time": datetime.fromisoformat(e["at"]).astimezone(_NEW_YORK).strftime("%H:%M"), "title": e["title"]}
                           for e in events[-6:]],  # events are stamped in UTC; the model reads New York time
         "asked_because": reasons,
+        **({"facts": facts} if facts else {}),
     }
 
 
@@ -163,6 +165,8 @@ def known_prices(ctx: Dict[str, Any]) -> List[float]:
     for row in ctx["contracts"]:
         for key in ("strike", "bid", "ask", "breakeven"):
             add(row.get(key))
+    for level in (ctx.get("facts") or {}).get("levels_near_price") or []:
+        add(level.get("price"))
     for row in ctx["positions"] + ctx["plans"]:
         for key in ("stop", "target", "price", "entry_price", "exit_price"):
             add(row.get(key))
@@ -203,8 +207,10 @@ def read_note(data: Dict[str, Any], ctx: Dict[str, Any], *, answer: bool = False
 
 
 def ask_model(system: str, ctx: Dict[str, Any], question: Optional[str] = None, *,
-              images: Optional[List[Dict[str, str]]] = None,
+              images: Optional[List[Dict[str, str]]] = None, chain: Optional[str] = None,
               generate: Optional[Callable[..., Dict[str, Any]]] = None) -> Dict[str, Any]:
     payload = {**ctx, "question": question} if question else ctx
-    kwargs = {"images": images} if images else {}
+    kwargs: Dict[str, Any] = {"images": images} if images else {}
+    if chain:
+        kwargs["chain"] = chain
     return (generate or assistant_model.generate)(json.dumps(payload, ensure_ascii=False, default=str), system, **kwargs)

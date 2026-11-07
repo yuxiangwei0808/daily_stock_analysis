@@ -61,8 +61,10 @@ function Notes({ item }: { item: AssistantTicker }) {
       {notes.length ? <ul className="mt-2 max-h-48 space-y-1.5 overflow-y-auto text-xs">{notes.map((note) => <li key={`${note.at}-${note.kind}`}
         className={note.kind === 'held' ? 'text-muted-text' : 'text-secondary-text'}>
         <span className="font-mono text-muted-text">{nyTime(note.at)}</span>{' '}
+        {note.tier ? <span className={`rounded px-1 text-[10px] ${note.tier === 'analyst' ? 'bg-cyan/10 text-cyan' : 'bg-border/40 text-muted-text'}`}>{note.tier === 'analyst' ? 'Analyst' : 'Watcher'}</span> : null}{note.tier ? ' ' : null}
         {note.question ? <span className="text-foreground">You: {note.question} · </span> : null}
         <span className={note.kind === 'held' ? '' : 'text-foreground'}>{note.text}</span>
+        {note.tier === 'watcher' && note.why ? <span className={note.escalate ? 'block text-cyan' : 'text-muted-text'}>{note.escalate ? `→ Analyst: ${note.why}` : ` · ${note.why}`}</span> : null}
         {note.call ? <span className="block text-warning">Call: {note.call} (untested model call, graded against random timing)</span> : null}
         {note.model ? <span className="text-muted-text"> · {note.model}{note.seconds != null ? `, ${note.seconds.toFixed(0)} s` : ''}</span> : null}
       </li>)}</ul> : <p className="pt-1 text-xs text-muted-text">Notes appear when something changes, at most every few minutes a stock, and right away for a fill, a stop or a target.</p>}
@@ -216,6 +218,8 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
         {state.model.by.length ? ` (${state.model.by.map((use) => `${use.label} ${use.calls}`).join(', ')})` : ''}
         {state.model.medianSeconds != null ? `, median ${state.model.medianSeconds.toFixed(0)} s` : ''}{state.model.failed ? `, ${state.model.failed} failed` : ''}.
         {state.model.order ? ` In order: ${state.model.order}.` : ' Your Claude Code plan first, then Codex, the API last.'}</p> : null}
+      {state.model?.watch && running ? <p className="pt-1 text-[11px] text-muted-text" data-testid="watcher-line">Watcher today: {state.model.watch.callsToday} reads, {state.model.watch.escalatedToday} sent to the analyst (at most {state.model.watch.analystPerHour} an hour; your plans, fills, expiries and questions always go). In order: {state.model.watch.order}.
+        {state.model.watch.grade ? ` Its escalations, graded by the next ${state.model.watch.grade.forwardMinutes} minutes' range: ${state.model.watch.grade.verdict}${state.model.watch.grade.meanDifferencePct != null ? ` (${state.model.watch.grade.meanDifferencePct > 0 ? '+' : ''}${state.model.watch.grade.meanDifferencePct.toFixed(2)}% vs the stock's other moments${state.model.watch.grade.t != null ? `, t ${state.model.watch.grade.t.toFixed(1)}` : ''})` : ''}; untested.` : ''}</p> : null}
       <p className="pt-2 text-[11px] text-muted-text">{state.note}</p>
     </Card>
   );

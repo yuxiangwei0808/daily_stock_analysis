@@ -1064,6 +1064,29 @@ export interface AssistantNote {
   model?: string;
   seconds?: number | null;
   call?: string | null;
+  /** Which tier wrote it: the fast watcher, or the analyst (your events, questions and escalations). */
+  tier?: 'watcher' | 'analyst';
+  /** The watcher's decision and its reason. */
+  escalate?: boolean;
+  why?: string;
+}
+
+export interface AssistantWatchGrade {
+  days: number;
+  decisions: number;
+  meanDifferencePct: number | null;
+  t: number | null;
+  verdict: string;
+  forwardMinutes: number;
+}
+
+export interface AssistantWatchUse {
+  order: string;
+  callsToday: number;
+  escalatedToday: number;
+  analystPerHour: number;
+  by: Array<{ label: string; calls: number }>;
+  grade?: AssistantWatchGrade | null;
 }
 
 export interface AssistantModelUse {
@@ -1076,6 +1099,8 @@ export interface AssistantModelUse {
   noteMinutes: number;
   /** The model order in words, e.g. "Claude Code (claude-sonnet-5-5, xhigh), then Codex (gpt-6.1-sol, xhigh)". */
   order?: string | null;
+  /** Shadow mode's watcher (TRADE_ASSISTANT_WATCH_MODELS); null when every note goes to the analyst. */
+  watch?: AssistantWatchUse | null;
 }
 
 export interface AssistantTicker {

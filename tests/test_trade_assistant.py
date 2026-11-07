@@ -306,6 +306,12 @@ class FakeRepo:
         for rec in records:
             self.rows[rec["id"]] = dict(rec)
 
+    def setting(self, key, default=None):
+        return getattr(self, "settings", {}).get(key, default)
+
+    def set_setting(self, key, value):
+        self.settings = {**getattr(self, "settings", {}), key: value}
+
     def delete_chart_trade(self, record_id, statuses):
         if record_id in self.rows and self.rows[record_id]["status"] in statuses:
             del self.rows[record_id]
@@ -400,7 +406,7 @@ def _model(answers):
     calls = []
 
     def generate(prompt, system, **kwargs):
-        calls.append({"prompt": prompt, "system": system, "images": kwargs.get("images")})
+        calls.append({"prompt": prompt, "system": system, "images": kwargs.get("images"), "chain": kwargs.get("chain")})
         answer = answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -620,3 +626,115 @@ def test_the_model_order_is_tried_in_turn_with_the_chart(monkeypatch):
     assert not am.configured("questions")
     with pytest.raises(ValueError, match="TRADE_DESK_QUESTION_MODELS is not set"):
         am.entries("questions")
+
+
+# -- the three tiers: code facts, the watcher, the analyst ----------------------------------------------------
+WATCH = "claude_code_cli:claude-haiku-5-5:low,litellm"
+
+
+def test_the_code_tier_hands_the_models_facts_from_completed_bars_only():
+    from src.services.trade_desk import assistant_watch as aw
+    provider = FakeProvider()
+    bars = [b for b in provider.kline("US.SPY", "K_1M", 400) if b["time"] >= at(9, 31).isoformat()]  # 09:31 .. 09:50
+    state = {"ticker": "SPY", "price": 737.0, "levels": [
+        {"label": "Pre-market high", "price": 737.03, "verdict": "not tested"},
+        {"label": "Far away", "price": 760.0, "verdict": "not tested"}]}
+    found = aw.facts(state, bars, at(9, 49, 30), band=asst.LEVEL_BAND,
+                     in_play={"rows": [{"ticker": "SPY", "rank": 2, "S": 2.1}, {"ticker": "QQQ", "rank": 1}]})
+    assert found["last_completed_minute_ends"] == "09:49"  # the 09:50 bar was still forming
+    assert found["in_play_today"]["rank"] == 2 and "not a direction" in found["in_play_today"]["verdict"]
+    near = found["levels_near_price"]
+    assert [level["label"] for level in near] == ["Pre-market high"]  # 760 is beyond 1.5 %
+    assert near[0]["last_1m_close"] == "at" and near[0]["last_5m_close"] in ("at", "below")
+    fives = aw.five_minute(aw.completed(bars, at(9, 49, 30)))
+    assert [five["end"].strftime("%H:%M") for five in fives] == ["09:35", "09:40", "09:45"]  # 09:45-09:50 not complete
+
+
+def test_the_watcher_reads_market_events_and_escalates_to_the_analyst(monkeypatch):
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_MODELS", WATCH)
+    a, charts, calls = _running(monkeypatch, [
+        {"note": "SPY 736 sits under the pre-market high 738.03.", "call": None},                    # first look: analyst
+        {"note": "SPY crossed 738.03 but no bar closed past it.", "escalate": False, "why": "No bar confirms it."},
+        {"note": "SPY closed above 738.03 on rising volume.", "escalate": True, "why": "A 1-minute bar closed past it."},
+        {"note": "Above the pre-market high 738.03; the plan's trigger 739 is close.", "call": None}])  # the analyst
+    a.notes_step(at(9, 50, 2))
+    assert calls[0]["chain"] is None and len(calls[0]["images"]) == 3 and '"facts"' in calls[0]["prompt"]
+    charts.push_quote("US.SPY", 738.5, at(9, 51))
+    a.check(at(9, 51))
+    a.notes_step(at(9, 53, 30))
+    assert calls[1]["chain"] == "watch" and len(calls[1]["images"]) == 1 and "first, fast reader" in calls[1]["system"]
+    assert len(calls) == 2  # not escalated: the analyst was not asked
+    charts.push_quote("US.SPY", 737.0, at(9, 54))
+    a.check(at(9, 54))
+    charts.push_quote("US.SPY", 738.6, at(9, 55))
+    a.check(at(9, 55))  # crossed again after the 15-minute repeat? no: the level fired at 9:51; a flag-free nudge
+    a._wants["SPY"] = ["level: SPY above Pre-market high 738.03"]
+    a.notes_step(at(9, 57))
+    assert calls[2]["chain"] == "watch" and calls[3]["chain"] is None
+    assert "watcher escalated: A 1-minute bar closed past it." in calls[3]["prompt"]
+    notes = a.state()["tickers"][0]["notes"]
+    assert notes[0]["tier"] == "analyst" and notes[1]["tier"] == "watcher" and notes[1]["escalate"] is True
+    model = a.state()["model"]
+    assert model["watch"]["calls_today"] == 2 and model["watch"]["escalated_today"] == 1 and model["calls_today"] == 2
+
+
+def test_your_plan_events_skip_the_watcher_and_escalations_have_an_hourly_limit(monkeypatch):
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_MODELS", WATCH)
+    monkeypatch.setenv("TRADE_ASSISTANT_ANALYST_PER_HOUR", "1")
+    a, charts, calls = _running(monkeypatch, [
+        {"note": "First look at 736.", "call": None},
+        {"note": "Your plan triggered at 739.1.", "call": None},
+        {"note": "A break of 738.03.", "escalate": True, "why": "Closed past it."},
+        {"note": "The analyst on 738.03.", "call": None},
+        {"note": "Another break of 738.03.", "escalate": True, "why": "Again."}])
+    a.notes_step(at(9, 50, 2))
+    a.add_plan("SPY", {"direction": "long", "trigger": {"kind": "above", "price": 739}, "stop": 737, "target": 742}, now=at(9, 50, 3))
+    charts.push_quote("US.SPY", 739.1, at(9, 50, 30))
+    a.check(at(9, 50, 30))
+    a.notes_step(at(9, 50, 31))
+    assert calls[1]["chain"] is None and "plan" in calls[1]["prompt"]  # yours: straight to the analyst
+    a._wants["SPY"] = ["level: SPY above Pre-market high 738.03"]
+    a.notes_step(at(9, 54))
+    assert [c["chain"] for c in calls[2:4]] == ["watch", None]
+    a._wants["SPY"] = ["level: SPY below Pre-market high 738.03"]
+    a.notes_step(at(9, 58))
+    assert len(calls) == 5 and calls[4]["chain"] == "watch"  # escalated, but the hour's one analyst call is used
+    assert "escalations this hour are used" in a.state()["tickers"][0]["notes"][0]["why"]
+
+
+def test_a_watcher_that_fails_hands_over_and_an_invented_price_is_held(monkeypatch):
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_MODELS", WATCH)
+    a, charts, calls = _running(monkeypatch, [
+        {"note": "First look.", "call": None},
+        RuntimeError("no model answered: claude_code_cli usage limit; litellm error"),
+        {"note": "The analyst instead, at 736.", "call": None},
+        {"note": "A move to 741.37.", "escalate": True, "why": "Big."}])
+    a.notes_step(at(9, 50, 2))
+    a._wants["SPY"] = ["flag: SPY fade short armed"]
+    a.notes_step(at(9, 54))
+    assert [c["chain"] for c in calls[1:3]] == ["watch", None] and "watcher: unavailable" in calls[2]["prompt"]
+    a._wants["SPY"] = ["flag: SPY fade short watching"]
+    a.notes_step(at(9, 58))
+    assert a.state()["tickers"][0]["notes"][0]["kind"] == "held" and len(calls) == 4  # nothing escalated from a held note
+
+
+def test_watcher_decisions_are_graded_by_the_next_30_minutes_and_summarised_by_day(monkeypatch):
+    from src.services.trade_desk import assistant_watch as aw
+    bars = [{"time": (at(10, 0) + timedelta(minutes=k)).isoformat(), "open": 100, "high": 100 + (2 if k == 10 else 0.5),
+             "low": 99.5, "close": 100, "volume": 10} for k in range(1, 61)]
+    decisions = [{"ticker": "SPY", "at": at(10, 0, 30).isoformat(), "escalate": True, "price": 100.0},  # mid-minute
+                 {"ticker": "SPY", "at": at(10, 40).isoformat(), "escalate": False, "price": 100.0},  # past the window end
+                 {"ticker": "SPY", "at": at(10, 20).isoformat(), "escalate": False, "price": 100.0}]
+    graded = aw.grade_decisions(decisions, bars)
+    assert [(row["at"][11:16], row["range_pct"]) for row in graded] == [("10:00", 2.5), ("10:20", 1.0)]  # 10:40 runs past 11:00
+    days = {f"2026-10-{d:02d}": [{"ticker": "SPY", "escalate": True, "range_pct": 1.0 + d * 0.01},
+                                 {"ticker": "SPY", "escalate": False, "range_pct": 0.5}] for d in range(1, 6)}
+    out = aw.summary(days)
+    assert out["days"] == 5 and out["verdict"].startswith("too early: 5 of 30") and out["mean_difference_pct"] > 0
+
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_MODELS", WATCH)
+    repo = FakeRepo()
+    a, charts, calls = _running(monkeypatch, [{"note": "First look.", "call": None}], repo=repo)
+    a._watch_log = [{"ticker": "SPY", "at": at(9, 31).isoformat(), "escalate": True, "price": 735.0}]
+    a.stop("the session closed", at(16, 15))
+    assert "2026-11-09" not in (repo.setting(aw.GRADES_SETTING) or {})  # 09:31 + 30 min is past the 20 bars held

@@ -3,7 +3,9 @@
 Two lists, each ``backend:model:effort`` entries tried in order until one gives readable JSON:
 
 - ``TRADE_ASSISTANT_MODELS``: shadow mode (the trading assistant's notes, your questions, plan reading);
-- ``TRADE_DESK_QUESTION_MODELS``: questions about your holdings and their daily review.
+- ``TRADE_DESK_QUESTION_MODELS``: questions about your holdings and their daily review;
+- ``TRADE_ASSISTANT_WATCH_MODELS``: shadow mode's watcher, a fast first reader of each market event
+  (assistant_watch.py); unset, every note goes to the analyst (``TRADE_ASSISTANT_MODELS``).
 
 For example ``claude_code_cli:claude-sonnet-5-5:xhigh,codex_cli:gpt-6.1-sol:xhigh,
 claude_code_cli:claude-opus-5-5:xhigh,litellm``. The backend is ``claude_code_cli`` (your Claude Code
@@ -36,7 +38,8 @@ BACKEND_NAMES = {"claude_code_cli": "Claude Code", "codex_cli": "Codex", "litell
 EFFORTS = {"claude_code_cli": {"low", "medium", "high", "xhigh", "max"},
            "codex_cli": {"minimal", "low", "medium", "high", "xhigh"}}
 CHAINS = {"assistant": ("TRADE_ASSISTANT_MODELS", "TRADE_ASSISTANT_TIMEOUT_SECONDS", 90),
-          "questions": ("TRADE_DESK_QUESTION_MODELS", "TRADE_DESK_QUESTION_TIMEOUT_SECONDS", 180)}
+          "questions": ("TRADE_DESK_QUESTION_MODELS", "TRADE_DESK_QUESTION_TIMEOUT_SECONDS", 180),
+          "watch": ("TRADE_ASSISTANT_WATCH_MODELS", "TRADE_ASSISTANT_WATCH_TIMEOUT_SECONDS", 30)}
 _cache: Dict[Any, Any] = {}
 _cache_lock = threading.Lock()
 
