@@ -124,8 +124,31 @@ def _validated(text, pool, label):
 
 
 
+PICTURES_NOTE = (
+    "Chart pictures of the stock come with this (each named in its title: 15-minute, 1-hour, 4-hour, daily), drawn "
+    "like the user's chart: the NX tunnels (their EMA 26 and 89 of highs and lows), VWAP or moving averages, the "
+    "boxes, value areas and prior-day levels, a volume-by-price profile (VRVP: point of control and value area), "
+    "volume, and the CD panel (MACD 12/26/9 with the CD script's buy and sell marks). Read trend, structure and "
+    "volume from them; take every number you write from the JSON, never from a picture's axis. ")
+
+
+def _write_pictures(images, folder):
+    import base64
+    from pathlib import Path
+    paths = []
+    for number, image in enumerate(images or [], start=1):
+        path = Path(folder) / f"chart-{number}.png"
+        path.write_bytes(base64.b64decode(image["data"]))
+        paths.append(str(path))
+    return paths
+
+
 class CodexTradeAdvisor:
-    def explain(self, request, snapshot, candidates, *, cancel, history=None, compare=None):
+    def explain(self, request, snapshot, candidates, *, cancel, history=None, compare=None, images=None,
+                model=None, effort=None, needs=None):
+        """The Codex agent with the comparison tool; ``images`` (chart pictures), ``model``/``effort`` (one
+        entry of TRADE_DESK_QUESTION_MODELS) and ``needs`` (what a tool-free model asked to calculate) are optional."""
+        import tempfile
         from src.agent.agent_backend import AgentRunRequest
         from src.agent.codex_agent_backend import CodexAgentBackend
         from src.agent.stock_scope import StockScope
@@ -156,19 +179,24 @@ class CodexTradeAdvisor:
         backend = CodexAgentBackend(ToolSurface(comparison_registry(process_only)), config,
                                     transport_factory=transport_factory)
         payload = _payload(request, snapshot, candidates)
+        if needs:
+            payload["needs_calculation"] = needs  # another model read the request and asked for this calculation
         system = _system_prompt(
             "Compare the supplied calculated candidates; use the read-only comparison tool when a follow-up "
             "requests a different strategy, direction, allocation, expiry or horizon, or when the user's message "
-            "describes a specific trade that has no 'custom' candidate yet (pass it as plan_legs). A synthetic replay request "
+            "describes a specific trade that has no 'custom' candidate yet (pass it as plan_legs), or when "
+            "needs_calculation names one. A synthetic replay request "
             "still uses the comparison tool: calculate the requested hypothetical alternatives, then recommend "
-            "waiting for real quotes. ")
-        result = backend.run(AgentRunRequest(
-            system_prompt=system, history_messages=history or [],
-            user_message=json.dumps(payload, ensure_ascii=False), session_id="trade-desk-" + snapshot.id,
-            stock_scope=StockScope(expected_stock_code=request.ticker, allowed_stock_codes={request.ticker}),
-            max_steps=6, max_wall_clock_seconds=float(getattr(config, "agent_orchestrator_timeout_s", 0) or 240),
-            cancel_event=cancel,
-        ))
+            "waiting for real quotes. " + (PICTURES_NOTE if images else ""))
+        with tempfile.TemporaryDirectory(prefix="dsa-ask-charts-") as folder:
+            result = backend.run(AgentRunRequest(
+                system_prompt=system, history_messages=history or [],
+                user_message=json.dumps(payload, ensure_ascii=False), session_id="trade-desk-" + snapshot.id,
+                stock_scope=StockScope(expected_stock_code=request.ticker, allowed_stock_codes={request.ticker}),
+                max_steps=6, max_wall_clock_seconds=float(getattr(config, "agent_orchestrator_timeout_s", 0) or 240),
+                cancel_event=cancel, model=model or None, effort=effort or None,
+                image_paths=_write_pictures(images, folder),
+            ))
         if not result.success:
             raise AdvisorError(result.error_message or result.error_code or "Codex advice unavailable")
         narrative = _validated(result.final_answer, pool, "Codex")
@@ -180,8 +208,95 @@ class CodexTradeAdvisor:
                 invalidation=pool[item_id].invalidation, exit_conditions=pool[item_id].exit_conditions)
                 for item_id in latest_ids[:4]]
         contexts["_usage"] = result.usage
+        if model:
+            contexts["_usage"] = {**(result.usage or {}),
+                                  "model": f"Codex ({', '.join(part for part in (model, effort) if part)})"}
         contexts["_tool_calls"] = getattr(result, "tool_calls_log", [])
         return narrative, pool, contexts
+
+
+class OrderedTradeAdvisor:
+    """Ask about a stock (and Discord /ask) on TRADE_DESK_QUESTION_MODELS, with the stock's chart pictures.
+
+    Entries are tried in order. A Claude Code or API entry reads the pictures and the calculated candidates
+    without tools; when the question needs a calculation the candidates don't cover, it says so in
+    ``needs_calculation`` and the request goes to the list's Codex entry, which runs the Codex agent with
+    the comparison tool (and the same pictures). A Codex entry reached in order runs that agent directly.
+    """
+
+    FRAMES = ("15m", "1h", "4h", "1d")
+
+    def __init__(self, codex=None, pictures=None):
+        self.codex = codex or CodexTradeAdvisor()
+        self.pictures = pictures or _ask_pictures
+
+    def explain(self, request, snapshot, candidates, *, cancel, history=None, compare=None):
+        from . import assistant_model
+        entries = assistant_model.entries("questions")
+        codex_entry = next((entry for entry in entries if entry.backend == "codex_cli"), None)
+        images = self.pictures(request.ticker, self.FRAMES) if getattr(snapshot, "mode", "live") != "replay" else []
+        errors = []
+        for entry in entries:
+            if cancel.is_set():
+                raise AdvisorError("Cancelled")
+            if entry.backend == "codex_cli":
+                try:
+                    return self.codex.explain(request, snapshot, candidates, cancel=cancel, history=history,
+                                              compare=compare, images=images, model=entry.model, effort=entry.effort)
+                except Exception as exc:  # the next entry answers
+                    errors.append(f"codex_cli {str(exc)[:120]}")
+                    continue
+            try:
+                answer = self._tool_free(entry, request, snapshot, candidates, history, images)
+            except Exception as exc:  # the next entry answers
+                errors.append(f"{entry.backend} {str(exc)[:120]}")
+                continue
+            narrative, pool, contexts, needs = answer
+            if needs and codex_entry is not None:
+                try:
+                    return self.codex.explain(request, snapshot, candidates, cancel=cancel, history=history,
+                                              compare=compare, images=images, model=codex_entry.model,
+                                              effort=codex_entry.effort, needs=needs)
+                except Exception as exc:  # keep the tool-free answer, which says what it could not calculate
+                    errors.append(f"codex_cli {str(exc)[:120]}")
+            return narrative, pool, contexts
+        raise AdvisorError("No model answered: " + "; ".join(errors))
+
+    def _tool_free(self, entry, request, snapshot, candidates, history, images):
+        from . import assistant_model
+        pool = {candidate.id: candidate for candidate in candidates}
+        contexts = {candidate.id: {"snapshot": snapshot, "request": request} for candidate in candidates}
+        payload = _payload(request, snapshot, candidates)
+        if history:
+            payload["earlier_turns"] = history[-8:]
+        system = _system_prompt(
+            "Compare the supplied calculated candidates. You have no tools and cannot calculate new trades: when "
+            "the user's message asks for a strategy, direction, allocation, expiry or horizon the candidates do "
+            "not cover, or describes a specific trade with no 'custom' candidate, put what should be calculated "
+            "in one sentence in an extra top-level field needs_calculation and select nothing; otherwise leave "
+            "needs_calculation out. " + (PICTURES_NOTE if images else ""))
+        result = assistant_model.generate(json.dumps(payload, ensure_ascii=False), system, chain="questions",
+                                          images=images or None, max_output_tokens=8192, use=[entry])
+        data = dict(result["data"])
+        needs = " ".join(str(data.pop("needs_calculation", "") or "").split())[:400]
+        if needs and not data.get("explanation"):
+            data = {"assessment": "wait", "explanation": f"This needs a new calculation: {needs}", "selections": []}
+        label = result.get("label") or assistant_model.label(entry)
+        narrative = _validated(json.dumps(data), pool, label)
+        contexts["_usage"] = {**(result.get("usage") or {}), "model": label}
+        contexts["_tool_calls"] = []
+        return narrative, pool, contexts, needs
+
+
+def _ask_pictures(ticker, frames):
+    """The stock's chart pictures for an answer (chart_frames.py); none when they can't be drawn."""
+    from . import chart_frames
+    try:
+        return chart_frames.with_provider(lambda provider: chart_frames.pictures(ticker, frames, provider=provider))
+    except Exception as exc:  # the answer goes on without pictures
+        import logging
+        logging.getLogger(__name__).info("Ask pictures for %s failed: %s", ticker, type(exc).__name__)
+        return []
 
 
 class _WithFallback:
@@ -215,12 +330,18 @@ class RoutineTradeAdvisor:
         from src.config import get_config
         from src.llm.second_opinion import model_label
 
+        from . import chart_frames
         backend, backend_id = _generation_backend()
         pool = {candidate.id: candidate for candidate in candidates}
         contexts = {candidate.id: {"snapshot": snapshot, "request": request} for candidate in candidates}
-        result = backend.generate(json.dumps(_payload(request, snapshot, candidates), ensure_ascii=False),
-                                  {"temperature": 0.2, "max_output_tokens": 8192},
-                                  system_prompt=_system_prompt("Compare the supplied calculated candidates. "))
+        images = (_ask_pictures(request.ticker, chart_frames.frames())
+                  if getattr(snapshot, "mode", "live") != "replay" else [])
+        generation_config = {"temperature": 0.2, "max_output_tokens": 8192}
+        if images:
+            generation_config["images"] = images
+        result = backend.generate(json.dumps(_payload(request, snapshot, candidates), ensure_ascii=False), generation_config,
+                                  system_prompt=_system_prompt("Compare the supplied calculated candidates. "
+                                                               + (PICTURES_NOTE if images else "")))
         # The model that answered: a fallback when the routine backend was unavailable.
         label = model_label(getattr(result, "backend", "") or backend_id, get_config())
         narrative = _validated(result.text or "", pool, label)
@@ -244,8 +365,11 @@ def _panel_parse(pool):
     return parse
 
 
-def second_opinions(request, snapshot, candidates, backend_ids, config):
-    """Independent trade/wait verdicts from other models on the same calculated candidates."""
+def second_opinions(request, snapshot, candidates, backend_ids, config, *, get_backend=None, labels=None, images=None):
+    """Independent trade/wait verdicts from other models on the same calculated candidates.
+
+    ``get_backend``/``labels`` replace the configured backends (an entry of TRADE_DESK_QUESTION_MODELS) and
+    ``images`` are the stock's chart pictures."""
     from src.llm.second_opinion import collect_opinions
 
     language = {"en": "English", "ko": "Korean"}.get(getattr(config, "report_language", "zh"), "Chinese")
@@ -256,19 +380,20 @@ def second_opinions(request, snapshot, candidates, backend_ids, config):
         "candidate ID you would consider (null when waiting), \"reason\": at most two sentences, "
         f"\"risk\": the most important risk in one sentence}}. Write reason and risk in {language}."
     )
-    return collect_opinions(lambda backend_id: _generation_backend(backend_id)[0], backend_ids,
+    return collect_opinions(get_backend or (lambda backend_id: _generation_backend(backend_id)[0]), backend_ids,
                             json.dumps(_payload(request, snapshot, candidates), ensure_ascii=False),
-                            config=config, system_prompt=system, parse=_panel_parse(
-                                {candidate.id: candidate for candidate in candidates}))
+                            config=config, system_prompt=system + (" " + PICTURES_NOTE if images else ""),
+                            parse=_panel_parse({candidate.id: candidate for candidate in candidates}),
+                            labels=labels, images=images)
 
 
-def build_panel(narrative, pool, opinions, config, primary_backend="codex_cli"):
+def build_panel(narrative, pool, opinions, config, primary_backend="codex_cli", primary_label=None):
     """Primary advice beside the second opinions; 'agree' only when all pick the same action and strategy."""
     from src.llm.second_opinion import model_label
 
     chosen = narrative.selections[0].candidate_id if narrative and narrative.selections else None
     trade = bool(narrative and narrative.assessment == "compare" and chosen)
-    primary = {"backend": primary_backend, "model": model_label(primary_backend, config), "role": "primary"}
+    primary = {"backend": primary_backend, "model": primary_label or model_label(primary_backend, config), "role": "primary"}
     if narrative is None:
         primary.update(status="error", error="No validated explanation.")
     else:

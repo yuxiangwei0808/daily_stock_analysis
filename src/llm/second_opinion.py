@@ -114,6 +114,8 @@ def collect_opinions(
     system_prompt: Optional[str] = None,
     parse: Callable[[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]] = normalize_opinion,
     max_output_tokens: int = 2048,
+    labels: Optional[Dict[str, str]] = None,
+    images: Optional[List[Dict[str, str]]] = None,
 ) -> List[Dict[str, Any]]:
     """Ask each backend in parallel; every entry reports ``status`` ok/error."""
     from src.agent.runner import try_parse_json
@@ -125,11 +127,15 @@ def collect_opinions(
             return _ask(backend_id)
 
     def _ask(backend_id: str) -> Dict[str, Any]:
-        entry: Dict[str, Any] = {"backend": backend_id, "model": model_label(backend_id, config)}
+        entry: Dict[str, Any] = {"backend": backend_id,
+                                 "model": (labels or {}).get(backend_id) or model_label(backend_id, config)}
+        generation_config: Dict[str, Any] = {"temperature": 0.2, "max_output_tokens": max_output_tokens}
+        if images:
+            generation_config["images"] = images  # chart pictures, for backends that read them
         try:
             result = get_backend(backend_id).generate(
                 prompt,
-                {"temperature": 0.2, "max_output_tokens": max_output_tokens},
+                generation_config,
                 system_prompt=system_prompt,
             )
             opinion = parse(try_parse_json(result.text or ""))

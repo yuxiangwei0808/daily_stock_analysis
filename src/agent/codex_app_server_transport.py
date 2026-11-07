@@ -22,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from src.agent.codex_tool_process import MAX_TOOL_RESULT_BYTES, CodexToolProcessRunner
 from src.agent.tool_surface import ToolSurface
@@ -481,18 +481,24 @@ class CodexAppServerTransport:
         text: str,
         timeout: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
+        *,
+        image_paths: Optional[List[str]] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
     ) -> TurnResult:
-        result = self.request(
-            "turn/start",
-            {
-                "threadId": thread_id,
-                "input": [{"type": "text", "text": text}],
-                "approvalPolicy": "never",
-                "environments": [],
-                "permissions": PERMISSION_PROFILE,
-            },
-            timeout=timeout,
-        )
+        params: Dict[str, Any] = {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": text},
+                      *({"type": "localImage", "path": str(path)} for path in image_paths or [])],
+            "approvalPolicy": "never",
+            "environments": [],
+            "permissions": PERMISSION_PROFILE,
+        }
+        if model:
+            params["model"] = model
+        if effort:
+            params["effort"] = effort
+        result = self.request("turn/start", params, timeout=timeout)
         turn = result.get("turn") or {}
         turn_id = turn.get("id")
         if not isinstance(turn_id, str) or not turn_id:

@@ -96,6 +96,9 @@ class _Ticker:
         self.flags: List[Dict[str, Any]] = []
         self.flag_states: Optional[Dict[str, str]] = None
         self.bars: List[Dict[str, Any]] = []  # today's regular 1-minute bars
+        self.frame_history: Dict[str, List[Dict[str, Any]]] = {}  # earlier sessions' bars per picture timeframe
+        self.bars15: List[Dict[str, Any]] = []  # the chart's 15-minute bars and boxes, for the pictures
+        self.boxes15: List[Dict[str, Any]] = []
         self.bar_seq: Optional[int] = None
         self.premarket: Tuple[Optional[float], Optional[float]] = (None, None)
         self.premarket_final = False
@@ -417,6 +420,7 @@ class Assistant:
         provider = self._provider()
         day = _local(now).date()
         self._load_bars(item, provider, now)
+        self._load_frame_history(item, provider, now)
         snap = (provider.snapshot_rows([item.code]) or [{}])[0]
         opening, _ = _session_bounds(day)
         with self._lock:
@@ -444,6 +448,21 @@ class Assistant:
                          for bar in bars] + pushed
             item.bars_stale = False
 
+    def _load_frame_history(self, item: _Ticker, provider: Any, now: datetime) -> None:
+        """Earlier sessions' bars for the pictures (moomoo history, once a session), so the NX lines have their warm-up."""
+        from . import chart_frames, chart_image
+        if not chart_image.enabled():
+            return
+        day = _local(now).date()
+        history = {}
+        for frame in chart_frames.frames("TRADE_ASSISTANT_CHART_FRAMES", "1m,5m,15m"):
+            if frame == "15m":
+                continue  # the chart's own 15-minute bars
+            rows = chart_frames.bars(item.ticker, frame, provider=provider, now=now, fallback=False)
+            history[frame] = [row for row in rows if chart_image._when(row["time"]).date() < day]
+        with self._lock:
+            item.frame_history = history
+
     def _load_chart(self, item: _Ticker, now: datetime, *, alert: bool) -> None:
         _, closing = _session_bounds(_local(now).date())
         if item.chart_levels and closing is not None and now >= closing:
@@ -460,9 +479,12 @@ class Assistant:
                             "open": "filled"}[flag["state"]]
                     self._event(item.ticker, "flag", f"{item.ticker} {flag['kind'].replace('_', ' ')} {flag['direction']} {what}",
                                 f"At {flag['price']:g}, stop {flag['stop']:g}, target {flag['target']:g}. {flag['grade']['label']}.", now)
+        from . import chart_frames
         with self._lock:
             item.chart_levels = list(snapshot.get("levels") or [])
             item.flags, item.flag_states = flags, states
+            item.bars15 = chart_frames.starts([row for row in snapshot.get("bars") or [] if not row.get("partial")], 15)
+            item.boxes15 = chart_frames.boxes_from(snapshot.get("boxes") or [])
 
     def _load_chain(self, item: _Ticker, provider: Any) -> None:
         try:
@@ -815,17 +837,21 @@ class Assistant:
             return
 
     def _chart_images(self, item: _Ticker) -> Optional[List[Dict[str, str]]]:
-        """Today's chart for the model (chart_image.py): bars, VWAP, the levels, open plans and flags."""
-        from . import chart_image
+        """The stock's pictures for the model (TRADE_ASSISTANT_CHART_FRAMES, default 1m,5m,15m; chart_frames.py):
+        earlier sessions from moomoo's history plus today's live 1-minute bars, with the levels, open plans and
+        flags; the 15-minute one is the chart's own, with its boxes."""
+        from . import chart_frames, chart_image
+        from src.llm.generation_backend import MAX_GENERATION_IMAGES
         if not chart_image.enabled():
             return None
         with self._lock:
-            bars = [dict(bar) for bar in item.bars]
+            today = [dict(bar) for bar in item.bars if not bar.get("partial")]
+            history = {frame: list(rows) for frame, rows in item.frame_history.items()}
+            bars15, boxes15 = list(item.bars15), list(item.boxes15)
             levels = [{"label": level["label"], "price": level["price"], "kind": level.get("kind")} for level in item.levels()]
             plans = [dict(plan) for plan in item.plans if plan.get("status") in ("waiting", "open")]
             flags = [dict(flag) for flag in item.flags]
-            price = item.price
-        if len(bars) < 2:
+        if len(today) < 2:
             return None  # before the open: the numbers say it all
         for plan in plans:
             who = "Your plan" if plan.get("source") == "you" else "Assistant call"
@@ -837,15 +863,21 @@ class Assistant:
         for flag in flags:
             levels.append({"label": f"{flag['kind'].replace('_', ' ')} {flag['direction']} flag", "price": flag.get("price"),
                            "kind": "flag"})
-        minutes = 5 if len(bars) > 90 else 1
-        try:
-            png = chart_image.render(chart_image.aggregate(bars, minutes), levels=levels,
-                                     title=f"{item.ticker} today, {minutes}-minute bars (New York time)"
-                                           + (f", last {price:g}" if price is not None else ""))
-        except Exception as exc:  # the note goes without the picture
-            logger.info("Assistant chart image for %s failed: %s", item.ticker, type(exc).__name__)
-            return None
-        return [chart_image.as_image(png)]
+        minutes = chart_frames.starts(today, 1)
+        out = []
+        for frame in chart_frames.frames("TRADE_ASSISTANT_CHART_FRAMES", "1m,5m,15m")[:MAX_GENERATION_IMAGES]:
+            if frame == "1m":
+                rows = history.get("1m", []) + minutes
+            elif frame == "15m":
+                rows = bars15 or history.get("15m", []) + chart_image.aggregate(minutes, 15)
+            elif frame == "5m":
+                rows = history.get("5m", []) + chart_image.aggregate(minutes, 5)
+            else:
+                rows = history.get(frame, [])
+            image = chart_frames.picture(item.ticker, frame, rows, levels=levels, boxes=boxes15 if frame == "15m" else ())
+            if image:
+                out.append(image)
+        return out or None
 
     def _write_note(self, item: _Ticker, reasons: List[str], now: datetime) -> None:
         from . import assistant_notes

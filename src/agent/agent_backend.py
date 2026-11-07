@@ -65,6 +65,11 @@ class AgentRunRequest:
     max_wall_clock_seconds: Optional[float]
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     cancel_event: Optional[threading.Event] = None
+    # Per turn, for backends that take them (the Codex app server): a model and reasoning effort instead of
+    # the configured ones, and local image files (chart pictures) sent with the user message.
+    model: Optional[str] = None
+    effort: Optional[str] = None
+    image_paths: List[str] = field(default_factory=list)
 
 
 @dataclass

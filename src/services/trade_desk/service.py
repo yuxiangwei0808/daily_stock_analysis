@@ -8,7 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from .advisor import CodexTradeAdvisor, RoutineTradeAdvisor, build_panel, second_opinions
+from .advisor import CodexTradeAdvisor, OrderedTradeAdvisor, RoutineTradeAdvisor, build_panel, second_opinions
 from .ledger import position_from_fills, validate_fills
 from .models import PLAN_STRATEGY, TradeAdviceRequest, TradeFill, TradePlan, utcnow
 from .repository import TradeDeskRepository
@@ -175,6 +175,9 @@ class TradeDeskService:
         self.provider_factory = provider_factory
         self.advisor = advisor or CodexTradeAdvisor()
         self.routine_advisor = routine_advisor or RoutineTradeAdvisor()
+        # Ask about a stock on TRADE_DESK_QUESTION_MODELS (Opus first, Codex for recalculations, with charts);
+        # an advisor passed in (tests) is used as is.
+        self.question_advisor = OrderedTradeAdvisor(self.advisor) if advisor is None else None
         self.providers = {}
         from .status import code_version
         self.started_at = utcnow().isoformat()
@@ -582,14 +585,28 @@ class TradeDeskService:
             # Codex plus independent second opinions from SECOND_OPINION_BACKENDS.
             # Automatic scans and report-driven ideas are routine work.
             proactive = job.get("source") in {"report", "opportunity"}  # automatic follow-ups
-            advisor = self.routine_advisor if proactive and config.targeted_generation_backend else self.advisor
+            from . import assistant_model
+            ordered = (not proactive and self.question_advisor is not None and assistant_model.configured("questions"))
+            advisor = (self.routine_advisor if proactive and config.targeted_generation_backend
+                       else self.question_advisor if ordered else self.advisor)
             panel_backends = [] if proactive else [
                 item for item in config.second_opinion_backends if item != "codex_cli"]
+            panel_kwargs = {}
+            primary_label = None
+            if ordered:
+                # The second opinion is the list's first model on another plan than the first entry (GPT after Opus).
+                order = assistant_model.entries("questions")
+                other = next((entry for entry in order if entry.backend != order[0].backend), None)
+                panel_backends = [other.backend] if other is not None and config.second_opinion_backends else []
+                if other is not None:
+                    panel_kwargs = {"get_backend": lambda backend_id, entry=other: assistant_model.backend_for(entry),
+                                    "labels": {other.backend: assistant_model.label(other)}}
+                primary_label = assistant_model.label(order[0])
             panel_future = None
             if panel_backends:
                 panel_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trade-panel")
                 panel_future = panel_pool.submit(second_opinions, request, snapshot, candidates,
-                                                 panel_backends, config)
+                                                 panel_backends, config, **panel_kwargs)
                 panel_pool.shutdown(wait=False)
             narrative = None
             pool = {candidate.id: candidate for candidate in candidates}
@@ -657,7 +674,10 @@ class TradeDeskService:
                                 "validated explanation; no AI recommendation or high-confidence opportunity was issued.")
             if panel_future is not None:
                 try:
-                    changes["panel"] = build_panel(narrative, pool, panel_future.result(timeout=180), config)
+                    answered = (contexts.get("_usage") or {}).get("model") if narrative is not None else None
+                    changes["panel"] = build_panel(narrative, pool, panel_future.result(timeout=180), config,
+                                                   primary_backend="claude_code_cli" if ordered else "codex_cli",
+                                                   primary_label=answered or primary_label if ordered else None)
                 except Exception as exc:  # advisory only
                     logger.warning("Trade Desk second opinions unavailable: %s", type(exc).__name__)
             if request.data_mode == "live" and changes.get("status") == "completed":

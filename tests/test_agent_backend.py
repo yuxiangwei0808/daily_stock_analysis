@@ -7,6 +7,8 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 from unittest.mock import patch
 
 from src.agent.agent_backend import (
@@ -549,3 +551,28 @@ def test_app_server_usage_uses_documented_last_turn_counts_only() -> None:
         "completion_tokens_details": {"reasoning_tokens": 12},
     }
     assert normalize_token_usage_notification({"tokenUsage": {"last": {}}}) is None
+
+
+def test_codex_backend_sends_a_turns_model_effort_and_chart_images_only_when_set(monkeypatch) -> None:
+    from src.agent.codex_app_server_transport import CodexAppServerTransport
+    monkeypatch.setattr("src.agent.codex_agent_backend.build_hardened_command", lambda **kwargs: ["codex", "app-server"])
+    seen = {}
+
+    class Recording(_FakeTransport):
+        def run_turn(self, thread_id, text, timeout=None, cancel_event=None, **per_turn):
+            seen.clear()
+            seen.update(per_turn)
+            return TurnResult(turn_id="turn-1", final_text="codex answer")
+    backend = CodexAgentBackend(_codex_surface(), SimpleNamespace(agent_orchestrator_timeout_s=30), Recording)
+    backend.run(_request(model="gpt-6.1-sol", effort="xhigh", image_paths=["/tmp/chart-1.png"]))
+    assert seen == {"model": "gpt-6.1-sol", "effort": "xhigh", "image_paths": ["/tmp/chart-1.png"]}
+    backend.run(_request())
+    assert seen == {}  # nothing extra: older transports and the configured model are untouched
+
+    sent = {}
+    transport = CodexAppServerTransport.__new__(CodexAppServerTransport)
+    transport.request = lambda method, params, timeout=None: sent.update(method=method, params=params) or {"turn": {}}
+    with pytest.raises(Exception):  # the fake answer has no turn id; the request is what matters here
+        transport.run_turn("thread-1", "question", image_paths=["/tmp/chart-1.png"], model="gpt-6.1-sol", effort="xhigh")
+    assert sent["method"] == "turn/start" and sent["params"]["model"] == "gpt-6.1-sol" and sent["params"]["effort"] == "xhigh"
+    assert sent["params"]["input"] == [{"type": "text", "text": "question"}, {"type": "localImage", "path": "/tmp/chart-1.png"}]

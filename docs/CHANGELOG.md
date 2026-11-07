@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 图表图片覆盖更多分析：按周期绘制（`trade_desk/chart_frames.py`），含 NX 通道、CD/MACD 及买卖标记、VRVP（成交量分布，POC 与价值区）、箱体、价值区与前日价位；数据取自 moomoo 历史 K 线（无订阅），连不上时用 Yahoo；4 小时线由 1 小时线合成。个股提问 15m/1h/4h/日线，持仓提问、自动扫描与报告（`REPORT_CHART_FRAMES`）15m/1h/4h，影子模式 1m/5m/15m（`TRADE_ASSISTANT_CHART_FRAMES`）
+- [新功能] 个股提问（含 Discord /ask）按 `TRADE_DESK_QUESTION_MODELS` 顺序调用：Opus 先读图与已计算方案作答；需要重新计算的问题交给 Codex（带比较工具、同样的图表，按列表中的模型与推理强度）；第二意见改由另一订阅的模型（如 GPT-6.1-Sol）给出
 - [新功能] 影子模式（Shadow mode）：交易助手改名为影子模式，作为常规模式（Discord 提醒照常）之上的附加功能，只在你看着页面时提供实时提醒；Trade Desk 各标签页下方显示当前模式，可随时关闭；整个页面共用一条事件流，切换标签页时提醒照样响起。原「Shadow exits」卡片改名为「Exit test」以免混淆
 - [新功能] 模型按顺序调用：`TRADE_ASSISTANT_MODELS`（影子模式）与 `TRADE_DESK_QUESTION_MODELS`（持仓提问与每日持仓复盘）按 `backend:model:effort` 依次尝试（如 Sonnet 5.5 → GPT-6.1-Sol → Opus 5.5 → API，均为 xhigh）；未设置时保持原行为
 - [新功能] 图表图片随提问发送给模型（`trade_desk/chart_image.py`，Pillow 绘制 K 线、VWAP 与各价位）：影子模式的点评与问答附当日图，持仓提问附权重最大的 4 只的日线图；Claude Code 走 stream-json、Codex 走 `--image`、API 走 image part；价格仍只取自数值（`TRADE_DESK_CHART_IMAGES=false` 可关闭）

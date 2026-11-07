@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,11 @@ def entries(chain: str = "assistant") -> List[Entry]:
         raise ValueError(f"{variable} is not set")
     names = _env("TRADE_ASSISTANT_BACKENDS", ",".join(DEFAULT_BACKENDS))
     return [Entry(name.strip(), legacy=True) for name in names.split(",") if name.strip()]
+
+
+def backend_for(entry: Entry, chain: str = "questions") -> Any:
+    """The generation backend of one entry (its model and effort), e.g. for a second opinion."""
+    return _analyzer(entry, _timeout(chain))._get_generation_backend(entry.backend)
 
 
 def backends() -> List[str]:
@@ -177,10 +182,11 @@ def describe(chain: str = "assistant") -> str:
 
 def generate(prompt: str, system_prompt: str, *, chain: str = "assistant", images: Optional[List[Dict[str, str]]] = None,
              validate: Optional[Callable[[Dict[str, Any]], None]] = None, max_output_tokens: int = 2000,
-             analyzer_for: Optional[Callable[[Entry], Any]] = None) -> Dict[str, Any]:
+             analyzer_for: Optional[Callable[[Entry], Any]] = None, use: Optional[Sequence[Entry]] = None) -> Dict[str, Any]:
     """The first entry's readable JSON answer: ``data``, ``backend``, ``model``, ``label``, ``seconds``, ``usage``, ``tried``.
 
-    ``images`` (``{"mime_type", "data"}``, base64) go with the prompt to every entry.
+    ``images`` (``{"mime_type", "data"}``, base64) go with the prompt to every entry. ``use`` tries only those
+    entries (with the chain's timeout), e.g. one entry of the list.
     """
     from src.agent.runner import try_parse_json
     timeout = _timeout(chain)
@@ -189,7 +195,7 @@ def generate(prompt: str, system_prompt: str, *, chain: str = "assistant", image
     if images:
         config["images"] = images
     try:
-        chain_entries = entries(chain)
+        chain_entries = list(use) if use is not None else entries(chain)
     except ValueError as exc:
         raise RuntimeError(f"no model answered: {exc}") from exc
     for entry in chain_entries:

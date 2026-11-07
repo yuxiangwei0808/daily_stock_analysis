@@ -176,11 +176,14 @@ class CodexAgentBackend(AgentBackend):
                     request.progress_callback(stream_event("thinking", step=1, message="正在准备分析…"))
                 turn_timeout = remaining_timeout()
                 tool_context.timeout_seconds = turn_timeout
+                per_turn = {key: value for key, value in (("image_paths", list(request.image_paths or [])),
+                                                          ("model", request.model), ("effort", request.effort)) if value}
                 turn = client.run_turn(
                     thread_id,
                     request.user_message,
                     timeout=turn_timeout,
                     cancel_event=request.cancel_event,
+                    **per_turn,
                 )
                 tool_calls_log = [
                     {

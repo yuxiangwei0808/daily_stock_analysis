@@ -105,7 +105,7 @@ class GenerationBackend(Protocol):
 
 
 IMAGE_MIME_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
-MAX_GENERATION_IMAGES = 4
+MAX_GENERATION_IMAGES = 8
 
 
 def generation_images(generation_config: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:

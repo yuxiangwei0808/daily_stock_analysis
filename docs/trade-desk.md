@@ -267,6 +267,32 @@ calculated candidates. The advice stores this as `panel` (`opinions`, `agreement
 `agree`/`split`/`unavailable`); agreement requires the same action and strategy.
 The panel is advisory and never changes candidates, triggers or plan eligibility.
 
+**Ordered models and chart pictures** (`OrderedTradeAdvisor`, with `TRADE_DESK_QUESTION_MODELS` set; Discord
+`/ask` runs the same way): each manual question gets the stock's 15-minute, 1-hour, 4-hour and daily pictures
+(below). The list is tried in order, e.g. Opus 5.5 → GPT-6.1-Sol → Sonnet 5.5 → API, all at xhigh. A Claude Code
+or API entry reads the pictures and the calculated candidates without tools; when the question needs a
+calculation the candidates don't cover (another strategy, direction, size, expiry or horizon, or a trade you
+describe with no `custom` candidate) it names it in `needs_calculation` and the request goes to the list's
+Codex entry, which runs the Codex advisor with the comparison tool, that entry's model and effort and the same
+pictures (the app server's `localImage` input). A Codex entry reached in order runs that advisor directly. The
+second opinion is then the list's first model on another plan than the first entry (GPT after Opus), with the
+pictures; it runs when `SECOND_OPINION_BACKENDS` is not empty. Automatic follow-ups (the routine review) also
+get the `TRADE_DESK_CHART_FRAMES` pictures. Replay requests get no pictures (their prices are synthetic).
+
+**Chart pictures** (`trade_desk/chart_frames.py` fetches, `trade_desk/chart_image.py` draws, Pillow): one
+picture per timeframe, drawn like the Chart tab: candles; your NX tunnels (EMA 26 and 89 of highs and lows);
+VWAP on intraday frames (restarting each session) or moving averages 20/50/200 on daily; the chart's boxes on
+the 15-minute frame; the prior weeks' value areas and the prior-day levels (and your stops, targets or plan
+lines where the question has them); a volume-by-price profile of the drawn range (VRVP: its point of control
+and 70 % value area); volume; and a CD panel (MACD 12/26/9 with the CD script's buy and sell marks).
+Indicators use a longer history than is drawn so the NX lines have settled. Bars come from moomoo's history
+(`request_history_kline`: read only, no subscription; each stock uses one history allowance for 30 days),
+or from Yahoo when OpenD can't be reached; moomoo has no 4-hour bars, so they are built from 1-hour bars
+(09:30-13:30 and 13:30-16:00). Timeframes: `TRADE_DESK_CHART_FRAMES` (default `15m,1h,4h`) for holding
+questions, automatic scans and reports, plus `1d` for Ask about a stock; shadow mode uses
+`TRADE_ASSISTANT_CHART_FRAMES` (default `1m,5m,15m`). At most 8 pictures go with one request. Every model is
+told to take numbers from the data, never from a picture's axis. `TRADE_DESK_CHART_IMAGES=false` sends none.
+
 ## Watchlist groups on Home
 
 When OpenD is connected, `GET /api/v1/stocks/watchlist/groups` returns the
@@ -713,9 +739,11 @@ unlocked and nothing is ordered. The snapshot is stored locally
   set (same `backend:model:effort` list as shadow mode's, e.g. `claude_code_cli:claude-opus-5-5:xhigh,
   codex_cli:gpt-6.1-sol:xhigh,claude_code_cli:claude-sonnet-5-5:xhigh,litellm`; timeout
   `TRADE_DESK_QUESTION_TIMEOUT_SECONDS`, 180) these questions and the daily review use that order
-  instead of the generation backend, and carry daily charts (the last 90 sessions with the 20-day
-  high and low, the 50-day average, your average cost or option strikes and the rule-of-thumb levels)
-  of the four tickers with the most weight; the model is told to take every price from the numbers.
+  instead of the generation backend, and carry chart pictures (see *Chart pictures*): a question about one
+  position gets its 15-minute, 1-hour and 4-hour pictures; one about several gets a 4-hour picture of each
+  of the (up to 8) tickers with the most weight, with the 20-day high and low, the 50-day average, your
+  average cost or option strikes and the rule-of-thumb levels drawn in; the model is told to take every
+  price from the numbers.
 - **Exit test** (named shadow exits until shadow mode came to mean the live page; `trade_desk/shadow_exits.py`,
   `shadow_watch.py`, `live_feed.py`, `GET /holdings/shadow`, the Journal tab's card, refreshed every 15 seconds; `trade_desk_settings` ids `shadow_exits`, `shadow_levels`,
   `shadow_feed`): what the system would have sold, when and at what quote. **Nothing is sent to moomoo:** there is
@@ -1003,11 +1031,12 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   `TRADE_ASSISTANT_CODEX_CLI_MODEL` / `_EFFORT` (`low`). One note with a chart, timed once on 2026-11-07:
   Sonnet 5.5 at xhigh 13.5 s (4.5 s at low), GPT-6.1-Sol at xhigh 29 s, Opus 5.5 at xhigh 28 s, Fable 5.1 at
   xhigh 22 s. Level and P&L alerts never wait for a model.
-- **The chart picture** (`trade_desk/chart_image.py`, Pillow): notes and answers carry today's chart (1-minute
-  bars, 5-minute after 90 minutes; VWAP; the levels, open plans and flags, labelled as on the card) so the
-  model sees the shape as well as the numbers; prices still come from the numbers only (the price guard
-  holds back any other). Plan reading is text only. `TRADE_DESK_CHART_IMAGES=false` sends no picture. Claude
-  Code gets it as a stream-json message, Codex as `--image`, the API as an image part.
+- **The chart pictures** (see *Chart pictures* above): notes and answers carry the `TRADE_ASSISTANT_CHART_FRAMES`
+  pictures, by default 1-, 5- and 15-minute: earlier sessions read once from moomoo's history when the session
+  starts, today's part from the live 1-minute bars, the 15-minute one the chart's own with its boxes (reloaded
+  at each 15-minute close), each with the levels, open plans and flags. No moomoo call is made per note.
+  Prices still come from the numbers only (the price guard holds back any other). Plan reading is text only.
+  Claude Code gets the pictures as a stream-json message, Codex as `--image`, the API as image parts.
 - **How:** a check thread reads only memory every 0.25 s (the chart service's pushed trades and 1- and
   15-minute bars, on its own moomoo connection) and steps the plans; an io thread loads each chart at the
   start and after each 15-minute close, today's 1-minute bars, the chain once, the contract quotes and the

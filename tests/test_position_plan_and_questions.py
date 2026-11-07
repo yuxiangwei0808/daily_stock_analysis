@@ -181,8 +181,16 @@ def test_the_model_sees_prices_and_percentages_but_no_sizes_or_amounts(store):
         pq.positions_in(store.view(), "AAPL")
 
 
-def test_questions_carry_daily_charts_of_the_biggest_holdings_through_the_question_models(store, monkeypatch):
-    from src.services.trade_desk import assistant_model
+def test_questions_carry_charts_of_the_biggest_holdings_through_the_question_models(store, monkeypatch):
+    from src.services.trade_desk import assistant_model, chart_frames
+    drawn = []
+    monkeypatch.setattr(chart_frames, "with_provider", lambda fn: fn(None))  # no moomoo connection in a test
+
+    def fake_bars(ticker, frame, **kwargs):
+        drawn.append((ticker, frame))
+        return [{"time": f"2026-10-{day:02d}T09:30:00-04:00", "open": 100, "high": 101, "low": 99, "close": 100.5,
+                 "volume": 1000} for day in range(1, 29)]
+    monkeypatch.setattr(chart_frames, "bars", fake_bars)
     view = store.view()
     rows = pq.positions_in(view)
     unused = []
@@ -194,7 +202,9 @@ def test_questions_carry_daily_charts_of_the_biggest_holdings_through_the_questi
     context = pq.build_context(rows, view, store.rules(), TODAY, bars=lambda tickers, period="2y": {t: _bars() for t in tickers},
                                geared=lambda ticker: ticker == "SOXS", report=lambda ticker, day: "",
                                earnings_date=lambda ticker, day: date(2026, 10, 28), images=charts)
-    assert charts and len(charts) <= 4 and all(chart["mime_type"] == "image/png" for chart in charts)
+    tickers = list(dict.fromkeys(item["ticker"] for item in context["positions"]))
+    assert len(charts) == len(tickers) and all(chart["mime_type"] == "image/png" for chart in charts)
+    assert {frame for _, frame in drawn} == {"4h", "15m"}  # one 4-hour picture each (15-minute bars give the boxes)
     assert "_images" not in context and "iVBOR" not in json.dumps(context)  # the pictures never enter the JSON
     seen = {}
 
@@ -205,6 +215,10 @@ def test_questions_carry_daily_charts_of_the_biggest_holdings_through_the_questi
     out = pq.answer("Review all my positions", context, images=charts)
     assert out["model"] == "Claude Code (claude-opus-5-5, xhigh)" and seen["chain"] == "questions"
     assert seen["images"] == charts and "never from a chart's axis" in seen["prompt"]
+    one = []
+    pq.build_context([rows[0]], view, store.rules(), TODAY, bars=lambda tickers, period="2y": {t: _bars() for t in tickers},
+                     geared=lambda ticker: False, report=lambda ticker, day: "", earnings_date=lambda ticker, day: None, images=one)
+    assert len(one) == 3  # a single position: its 15-minute, 1-hour and 4-hour pictures
 
 
 def test_levels_on_the_wrong_side_are_replaced_and_unknown_positions_dropped(store):

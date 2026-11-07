@@ -555,10 +555,11 @@ def test_notes_and_answers_carry_todays_chart_unless_switched_off(monkeypatch):
                                               {"answer": "At 736.", "note": "", "call": None}])
     a.notes_step(at(9, 50, 2))
     images = calls[0]["images"]
-    assert len(images) == 1 and images[0]["mime_type"] == "image/png"
+    assert len(images) == 3 and all(image["mime_type"] == "image/png" for image in images)  # 1-, 5- and 15-minute
     assert base64.b64decode(images[0]["data"])[:8] == b"\x89PNG\r\n\x1a\n"
+    monkeypatch.setenv("TRADE_ASSISTANT_CHART_FRAMES", "5m")
     a.ask("SPY", "where?", at(9, 51))
-    assert calls[1]["images"] and "never from the picture's axis" in calls[1]["system"]
+    assert len(calls[1]["images"]) == 1 and "never from the picture's axis" in calls[1]["system"]
     monkeypatch.setenv("TRADE_DESK_CHART_IMAGES", "false")
     a.ask("SPY", "and now?", at(9, 52))
     assert calls[2]["images"] is None

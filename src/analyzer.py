@@ -1978,6 +1978,15 @@ def populate_decision_action_fields(
     return result
 
 
+REPORT_CHART_NOTE = (
+    "Chart pictures of the stock come with this request (each named in its title: 15-minute, 1-hour or 4-hour bars), "
+    "drawn like the user's chart: the NX tunnels (EMA 26 and 89 of highs and lows), VWAP, the boxes, value areas and "
+    "prior-day levels, a volume-by-price profile (VRVP: point of control and value area), volume, and the CD panel "
+    "(MACD 12/26/9 with the CD script's buy and sell marks). Use them for trend, structure and volume; take every "
+    "number you write from the data in the prompt, never from a picture's axis."
+)
+
+
 class GeminiAnalyzer:
     """
     Gemini AI 分析器
@@ -3844,6 +3853,22 @@ class GeminiAnalyzer:
             logger.error("[generate_text_with_metadata] LLM call failed: %s", exc)
             raise
 
+    def _report_chart_images(self, code: str) -> List[Dict[str, str]]:
+        """Chart pictures for a US stock's report (``REPORT_CHART_FRAMES``, empty = none); never blocks the report."""
+        import os
+        from data_provider.us_index_mapping import is_us_stock_code
+        frames_raw = (os.getenv("REPORT_CHART_FRAMES", "") or "").strip()
+        if not frames_raw or not is_us_stock_code(str(code or "").strip().upper()):
+            return []
+        try:
+            from src.services.trade_desk import chart_frames
+            frames = chart_frames.frames("REPORT_CHART_FRAMES", "")
+            ticker = str(code).strip().upper()
+            return chart_frames.with_provider(lambda provider: chart_frames.pictures(ticker, frames, provider=provider))
+        except Exception as exc:  # the report goes on without pictures
+            logger.info("Report chart pictures for %s unavailable: %s", code, type(exc).__name__)
+            return []
+
     def analyze(
         self, 
         context: Dict[str, Any],
@@ -4036,6 +4061,11 @@ class GeminiAnalyzer:
                 "temperature": config.llm_temperature,
                 "max_output_tokens": 8192,
             }
+            # 图表图片（REPORT_CHART_FRAMES，如 15m,1h,4h）：K 线、NX 通道、CD/MACD、VRVP、箱体与价位，仅美股
+            chart_images = self._report_chart_images(code)
+            if chart_images:
+                generation_config["images"] = chart_images
+                system_prompt = f"{system_prompt}\n\n{REPORT_CHART_NOTE}"
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
             _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")

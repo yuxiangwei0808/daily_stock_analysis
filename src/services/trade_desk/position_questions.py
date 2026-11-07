@@ -148,26 +148,24 @@ def build_context(rows: List[Dict[str, Any]], view: Dict[str, Any], rules: List[
     return context
 
 
-CHART_SESSIONS = 90
-
-
 def _charts(history: Dict[str, List[Dict[str, Any]]], markets: Dict[str, Dict[str, Any]],
             positions: List[Dict[str, Any]], today: date) -> List[Dict[str, str]]:
-    """Daily charts of the tickers with the most weight (chart_image.py); never part of the JSON the model reads."""
-    from . import assistant_model, chart_image
+    """Chart pictures for the question (chart_frames.py; never part of the JSON the model reads): the
+    TRADE_DESK_CHART_FRAMES timeframes (15-minute, 1-hour, 4-hour) of a single ticker, or, when several are
+    asked about, one 4-hour picture of each of the tickers with the most weight."""
+    from . import assistant_model, chart_frames, chart_image
     from src.llm.generation_backend import MAX_GENERATION_IMAGES
     if not chart_image.enabled() or not assistant_model.configured("questions"):
         return []  # only the ordered question models take pictures
     weight: Dict[str, float] = {}
     for item in positions:
         weight[item["ticker"]] = weight.get(item["ticker"], 0.0) + abs(item.get("weight_pct_of_account") or 0.0)
-    out = []
-    for ticker in sorted(weight, key=lambda name: -weight[name]):
-        if len(out) >= MAX_GENERATION_IMAGES:
-            break
-        rows = (history.get(ticker) or history.get(ticker.replace("-", ".")) or [])[-CHART_SESSIONS:]
-        if len(rows) < 2:
-            continue
+    tickers = sorted(weight, key=lambda name: -weight[name])
+    wanted = chart_frames.frames()
+    plan = ([(tickers[0], wanted)] if len(tickers) == 1 else
+            [(ticker, ["4h"]) for ticker in tickers[:MAX_GENERATION_IMAGES]])
+
+    def levels_of(ticker: str) -> List[Dict[str, Any]]:
         found = markets.get(ticker, {}).get("_levels") or {}
         levels = [{"label": label, "price": found.get(key), "kind": kind} for key, label, kind in (
             ("high20", "20-day high", "prior_high"), ("low20", "20-day low", "prior_low"), ("ma50", "50-day average", "ma"))]
@@ -178,16 +176,20 @@ def _charts(history: Dict[str, List[Dict[str, Any]]], markets: Dict[str, Dict[st
             for leg in item.get("legs") or []:
                 levels.append({"label": f"{leg['side'].title()} {leg['right']} strike", "price": leg["strike"], "kind": "strike"})
             for word, kind in (("stop", "stop"), ("target", "target")):
-                value = (item.get("rule_of_thumb") or {}).get(word)
-                levels.append({"label": f"{name}: rule-of-thumb {word}", "price": value, "kind": kind})
-        try:
-            png = chart_image.render([{**row, "time": row["date"]} for row in rows], levels=levels, vwap=False,
-                                     time_format="%b %d", title=f"{ticker} daily, last {len(rows)} sessions to {today.isoformat()}")
-        except Exception as exc:  # the question goes on without this picture
-            logger.info("Position question chart for %s failed: %s", ticker, type(exc).__name__)
-            continue
-        out.append(chart_image.as_image(png))
-    return out
+                levels.append({"label": f"{name}: rule-of-thumb {word}",
+                               "price": (item.get("rule_of_thumb") or {}).get(word), "kind": kind})
+        return levels
+
+    def draw(provider: Any) -> List[Dict[str, str]]:
+        out: List[Dict[str, str]] = []
+        for ticker, frames in plan:
+            out += chart_frames.pictures(ticker, frames, provider=provider, levels=levels_of(ticker))
+        return out[:MAX_GENERATION_IMAGES]
+    try:
+        return chart_frames.with_provider(draw)
+    except Exception as exc:  # the question goes on without pictures
+        logger.info("Position question charts failed: %s", type(exc).__name__)
+        return []
 
 
 def _round(value: Any, digits: int = 1) -> Optional[float]:
@@ -265,8 +267,10 @@ def answer(question: str, context: Dict[str, Any], *, generate_fn: Callable[[str
     import json
     from . import assistant_model
     images = images if images and generate_fn is None and assistant_model.configured("questions") else []
-    pictures = (f"\n\n{len(images)} daily chart(s) come with this: read the trend and ranges from them; take every "
-                "price you write from the JSON, never from a chart's axis." if images else "")
+    pictures = (f"\n\n{len(images)} chart picture(s) come with this, each named in its title (15-minute, 1-hour or "
+                "4-hour bars, drawn like the user's chart: the NX tunnels, VWAP, boxes and levels, a volume-by-price "
+                "profile, volume and the CD/MACD panel with its buy and sell marks). Read trend, structure and volume "
+                "from them; take every price you write from the JSON, never from a chart's axis." if images else "")
     prompt = (f"{INSTRUCTIONS}{pictures}\n\nQuestion: {question}\n\nPositions and levels (JSON):\n"
               f"{json.dumps(context, ensure_ascii=False, default=str)}")
     result = generate_fn(prompt) if generate_fn is not None else generate(prompt, images=images)
