@@ -993,7 +993,7 @@ export interface AssistantContract {
   breakevenMovePct?: number | null;
   minutesLeft: number | null;
   thetaPerMin?: number;
-  atLevels?: Array<{ id: string; label: string; price: number; now: number; in30m: number }>;
+  atLevels?: Array<{ id: string; label: string; price: number; now: number; inHalfHour: number }>;
 }
 
 export interface AssistantPosition {
@@ -1071,7 +1071,7 @@ export interface AssistantModelUse {
   cap: number;
   failed: number;
   medianSeconds: number | null;
-  by: Record<string, number>;
+  by: Array<{ label: string; calls: number }>;
   lastError: string | null;
   noteMinutes: number;
 }

@@ -70,8 +70,8 @@ NOTE_SYSTEM = """You are a trading assistant beside a trader during the US sessi
 computed it: the price, levels with their test verdicts, box flags with their grades, option contracts near the price,
 the trader's positions and plans, the latest events, and why you are asked now. Write for the trader in plain English.
 Reply with one JSON object and nothing else:
-{"note": "two to four short sentences: what just changed, where the price sits against the levels that matter, what the
-trader's position or plan means now, and the risk in % of the account when the state gives it",
+{"note": "two to four short sentences: what just changed, where the price sits against the levels that matter, and what
+the trader's position or plan means now, with its risk in % of the account when the state gives one",
  "call": null, or {"direction": "long" or "short",
                    "trigger": {"kind": "now" | "above" | "below" | "close_above" | "close_below", "price": number or null,
                                "bar_minutes": 1 | 5 | 15 or null},
@@ -79,7 +79,10 @@ trader's position or plan means now, and the risk in % of the account when the s
 Rules:
 - Every price you write, in the note or the call, must be one in the state: the last price, a level, a flag's or plan's
   price, stop or target, or a contract's strike, bid, ask or breakeven. Never compute, round or invent a price.
-- Nothing here has passed a test except what the state marks "pass"; when you lean on a level or flag, say it is untested.
+- Nothing here has passed a test except what the state marks "pass": say once in a note that the levels and flags you
+  lean on are untested, not after each one.
+- Leave out what is missing: don't say there is no position, no plan or no risk figure.
+- A plan's "state" says whether it is waiting for its trigger, in the trade, or done; take it as given.
 - Make a call only when the state gives a clear reason; most notes have none. It is an untested model call: it is
   recorded and graded against the same trade at random times. Never size a position.
 - The trader places every order; never say an order was or will be placed."""
@@ -102,6 +105,7 @@ def context(state: Dict[str, Any], *, horizon: str, now: datetime, closing: Opti
         "ticker": state["ticker"], "horizon": horizon, "time_new_york": now.astimezone(_NEW_YORK).strftime("%H:%M"),
         "minutes_to_close": round((closing - now).total_seconds() / 60) if closing is not None else None,
         "price": price, "change_pct": state.get("change_pct"),
+        "price_is": "the last pre-market trade: the session has not opened" if state.get("price_at") == "pre-market" else "the last trade",
         "levels": [{"label": l["label"], "price": l["price"], "distance_pct": l["distance_pct"], "verdict": l["verdict"] or "yours"}
                    for l in state.get("levels") or []],
         "flags": state.get("flags") or [],
@@ -109,11 +113,38 @@ def context(state: Dict[str, Any], *, horizon: str, now: datetime, closing: Opti
                                              "theta_per_min", "minutes_left")} for r in contracts],
         "positions": [{k: p.get(k) for k in ("label", "type", "pnl_pct", "weight_pct", "stop", "target", "days_left")}
                       for p in state.get("positions") or []],
-        "plans": [{k: p.get(k) for k in ("source", "status", "direction", "trigger", "stop", "target", "time_stop", "price")}
+        "plans": [{"source": p.get("source"), "state": _plan_state(p),
+                   **{k: p.get(k) for k in ("direction", "trigger", "stop", "target", "time_stop")},
+                   "entry_price": p.get("price"), "exit_price": (p.get("live_exit") or {}).get("price") or p.get("exit")}
                   for p in state.get("plans") or []],
-        "recent_events": [{"time": e["at"][11:16], "title": e["title"]} for e in events[-6:]],
+        "recent_events": [{"time": datetime.fromisoformat(e["at"]).astimezone(_NEW_YORK).strftime("%H:%M"), "title": e["title"]}
+                          for e in events[-6:]],  # events are stamped in UTC; the model reads New York time
         "asked_because": reasons,
     }
+
+
+def _hhmm(text: Any) -> str:
+    try:
+        return datetime.fromisoformat(str(text)).astimezone(_NEW_YORK).strftime("%H:%M")
+    except ValueError:
+        return "?"
+
+
+def _plan_state(plan: Dict[str, Any]) -> str:
+    """A plan's status in words, with its prices: the bare status ("open") reads to a model like "not triggered"."""
+    status, live = plan.get("status"), plan.get("live_exit")
+    if status == "waiting":
+        return "waiting for its trigger: not in the trade"
+    if status == "open" and live:
+        return f"in the trade from {plan.get('price'):g} at {_hhmm(plan.get('entry_time'))}, then reached its {live['how']} " \
+               f"at {live['price']:g} at {_hhmm(live['time'])}: done for today, graded after the close"
+    if status == "open":
+        return f"in the trade: triggered at {_hhmm(plan.get('entry_time'))}, entry {plan.get('price'):g}"
+    if status == "closed":
+        return f"graded: {plan.get('how')} at {plan.get('exit'):g}" + (f", {plan['R']:+.2f}R" if plan.get("R") is not None else "")
+    if status == "void":
+        return f"void: {plan.get('void') or 'cancelled'}"
+    return "expired without triggering" if status == "expired" else str(status)
 
 
 def known_prices(ctx: Dict[str, Any]) -> List[float]:
@@ -131,7 +162,7 @@ def known_prices(ctx: Dict[str, Any]) -> List[float]:
         for key in ("strike", "bid", "ask", "breakeven"):
             add(row.get(key))
     for row in ctx["positions"] + ctx["plans"]:
-        for key in ("stop", "target", "price"):
+        for key in ("stop", "target", "price", "entry_price", "exit_price"):
             add(row.get(key))
         add((row.get("trigger") or {}).get("price") if isinstance(row.get("trigger"), dict) else None)
     return out

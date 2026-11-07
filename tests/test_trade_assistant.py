@@ -25,7 +25,7 @@ class FakeProvider:
 
     def kline(self, code, subtype, count, push=False):
         bars = []
-        for k in range(20):  # 09:31 .. 09:50 one-minute bars, and one from yesterday
+        for k in range(getattr(self, "n_bars", 20)):  # 09:31 .. 09:50 one-minute bars, and one from yesterday
             end = at(9, 31) + timedelta(minutes=k)
             bars.append({"time": end.isoformat(), "open": 735 + k * 0.1, "high": 735.5 + k * 0.1, "low": 734.5 + k * 0.1,
                          "close": 735.2 + k * 0.1, "volume": 1000, "partial": end > at(9, 50)})
@@ -37,7 +37,7 @@ class FakeProvider:
         for code in codes:
             if code == "US.SPY":
                 out.append({"code": code, "last_price": 736.0, "prev_close_price": 733.0, "pre_high_price": 738.03,
-                            "pre_low_price": 732.43})
+                            "pre_low_price": 732.43, **getattr(self, "extra", {})})
             else:
                 strike = float(code.split("-")[-1][1:])
                 out.append({"code": code, "bid_price": 1.0, "ask_price": 1.1, "option_implied_volatility": 20.0,
@@ -164,6 +164,14 @@ def test_levels_contracts_and_crossings():
     charts.push_quote("US.SPY", 740.6, at(9, 52))
     a.check(at(9, 52))
     assert [e["title"] for e in a.events_after(alert["seq"])] == ["SPY below Prior day high (Nov 6) 740"]  # once per direction in 15 min
+    seen = a.seq
+    for minute, price in ((10, 739.8), (11, 740.2), (12, 739.75), (13, 740.3)):  # within 0.05% of the level: no crossing
+        charts.push_quote("US.SPY", price, at(10, minute))
+        a.check(at(10, minute))
+    assert not [e for e in a.events_after(seen) if str(e.get("level")).startswith("prior_high")]
+    charts.push_quote("US.SPY", 739.6, at(10, 14))
+    a.check(at(10, 14))
+    assert [e["title"] for e in a.events_after(seen) if str(e.get("level")).startswith("prior_high")] == ["SPY below Prior day high (Nov 6) 740"]
 
 
 def test_a_15_minute_close_reloads_the_chart_and_a_new_flag_alerts():
@@ -206,11 +214,21 @@ def test_positions_alert_when_they_appear_close_or_step_and_before_a_0dte_close(
     a.io(at(9, 51))
     assert [e["title"] for e in a.events_after(1)] == ["New position: SPY 11/09 735C"]
     assert a.state()["tickers"][0]["positions"][0]["source"] == "live feed"
-    held["pnl_pct"] = 12.5
+    held["pnl_pct"] = 15.0
     clock["mono"] += asst.POSITION_SECONDS
     a.io(at(9, 52))
-    assert a.events_after(0)[-1]["title"] == "SPY 11/09 735C +12.5% on cost"
-    assert "1.2% of the account" in a.events_after(0)[-1]["detail"]
+    assert a.events_after(0)[-1]["title"] == "SPY 11/09 735C +15.0% on cost"
+    assert "1.2% of the account; its best this session" in a.events_after(0)[-1]["detail"]
+    seen = a.seq
+    # a 0DTE option swings: a new high (by 10 points, or a quarter of the last), a new low below cost, half its gain given back
+    for minute, pnl in ((53, 4.0), (54, 24.0), (55, 26.0), (56, 12.0), (57, 10.0), (58, -11.0), (59, -3.0)):
+        held["pnl_pct"] = pnl
+        clock["mono"] += asst.POSITION_SECONDS
+        a.io(at(9, minute))
+    assert [(e["title"], e["detail"].split("; ")[1]) for e in a.events_after(seen)] == [
+        ("SPY 11/09 735C +26.0% on cost", "its best this session"),
+        ("SPY 11/09 735C +12.0% on cost", "it gave back half of its best this session (+26%)"),
+        ("SPY 11/09 735C -11.0% on cost", "its worst this session")]
     a.check(at(15, 31))
     a.check(at(15, 44))
     a.check(at(15, 46))
@@ -410,7 +428,7 @@ def test_notes_come_on_events_at_most_every_few_minutes_and_at_once_for_a_plan(m
     note = a.state()["tickers"][0]["notes"][0]
     assert note["kind"] == "note" and "738.03" in note["text"] and note["model"].startswith("Claude Code")
     assert "first look" in calls[0]["prompt"] and "Never compute, round or invent a price" in calls[0]["system"]
-    assert a.state()["model"]["calls_today"] == 1 and a.state()["model"]["by"] == {"Claude Code (claude-sonnet-5-5)": 1}
+    assert a.state()["model"]["calls_today"] == 1 and a.state()["model"]["by"] == [{"label": "Claude Code (claude-sonnet-5-5)", "calls": 1}]
     charts.push_quote("US.SPY", 738.5, at(9, 51))
     a.check(at(9, 51))
     a.notes_step(at(9, 51))
@@ -462,3 +480,68 @@ def test_questions_are_answered_from_the_state_and_the_daily_cap_holds(monkeypat
         a.ask("SPY", "again?", at(9, 53))
     a.notes_step(at(9, 55))
     assert len(calls) == 2  # the cap stops notes too
+
+
+def test_before_the_open_the_price_is_pre_market_and_plans_wait_for_the_session(monkeypatch):
+    from datetime import timezone
+    a, charts, clock = _assistant()
+    # OpenD's last price is the prior close until the open; the pre-market trade is pre_price
+    charts.provider.extra = {"last_price": 733.0, "pre_price": 736.4}
+    a.start(["SPY"], "0dte", at(9, 20), threads=False)
+    a.io(at(9, 20))
+    spy = a.state(at(9, 20))["tickers"][0]
+    assert spy["price"] == 736.4 and spy["price_at"] == "pre-market"
+    charts.push_quote("US.SPY", 733.0, at(9, 21))  # a pushed quote before the open carries the prior close
+    a.check(at(9, 21))
+    assert a.state(at(9, 21))["tickers"][0]["price"] == 736.4 and [e["kind"] for e in a.events_after(0)] == ["session"]
+    charts.provider.extra = {"last_price": 733.0, "pre_price": 737.0, "pre_high_price": 738.5}
+    clock["mono"] += 10
+    a.io(at(9, 25))
+    spy = a.state(at(9, 25))["tickers"][0]
+    assert spy["price"] == 737.0 and next(l for l in spy["levels"] if l["kind"] == "pm_high")["price"] == 738.5
+    with pytest.raises(ValueError, match="Before the open a plan needs a trigger price"):
+        a.add_plan("SPY", {"direction": "long", "trigger": {"kind": "now"}, "stop": 735, "target": 742}, now=at(9, 25))
+    a.add_plan("SPY", {"direction": "long", "trigger": {"kind": "above", "price": 739}, "stop": 737.5, "target": 742}, now=at(9, 25))
+    charts.push_quote("US.SPY", 739.5, at(9, 26))
+    a.check(at(9, 26))
+    assert a.state(at(9, 26))["tickers"][0]["plans"][0]["status"] == "waiting"  # plans are watched from the open
+    opened = at(9, 30, 1).astimezone(timezone.utc)  # the server's clock is UTC
+    charts.push_quote("US.SPY", 739.6, opened)
+    a.check(opened)
+    assert a.state(opened)["tickers"][0]["plans"][0]["status"] == "open"
+    charts.provider.extra = {"last_price": 739.6, "pre_price": 737.0, "pre_high_price": 738.9}  # its last seconds set a new high
+    clock["mono"] += 10
+    a.io(at(9, 30, 10))
+    spy = a.state(at(9, 30, 10))["tickers"][0]
+    assert spy["price"] == 739.6 and next(l for l in spy["levels"] if l["kind"] == "pm_high")["price"] == 738.9
+    charts.provider.extra = {"pre_high_price": 999.0}
+    clock["mono"] += 30
+    a.io(at(9, 30, 40))
+    a.io(at(9, 31))  # read until 30 s after the open, then final
+    clock["mono"] += 10
+    a.io(at(9, 31, 10))
+    assert next(l for l in a.state()["tickers"][0]["levels"] if l["kind"] == "pm_high")["price"] == 999.0
+    charts.provider.extra = {"pre_high_price": 1.0}
+    clock["mono"] += 10
+    a.io(at(9, 31, 20))
+    assert next(l for l in a.state()["tickers"][0]["levels"] if l["kind"] == "pm_high")["price"] == 999.0
+    ctx = a._context(a._tickers["SPY"], opened, ["plan"])
+    events = ctx["recent_events"]
+    assert events[-1]["title"].startswith("Your plan triggered") and events[-1]["time"] == "09:30"  # New York, not UTC
+    plan = ctx["plans"][0]  # in words: the bare status "open" read to the model like "not triggered yet"
+    assert plan["state"] == "in the trade: triggered at 09:30, entry 739.6" and plan["entry_price"] == 739.6
+    assert "status" not in plan and 739.6 in __import__("src.services.trade_desk.assistant_notes", fromlist=["x"]).known_prices(ctx)
+
+
+def test_minutes_the_pushes_missed_are_read_again_from_opend():
+    a, charts, clock = _assistant()
+    a.start(["SPY"], "0dte", at(9, 50), threads=False)
+    a.io(at(9, 50))
+    item = a._tickers["SPY"]
+    assert item.bars[-1]["time"] == at(9, 50).isoformat() and not item.bars_stale
+    charts.push_bar("US.SPY", "K_1M", at(9, 53), open=737, high=737.5, low=736.8, close=737.2, volume=900)
+    a.check(at(9, 52, 30))  # 09:51 and 09:52 never arrived: the opening ranges and VWAP would rest on a hole
+    assert item.bars_stale and [b["time"][11:16] for b in item.bars[-2:]] == ["09:50", "09:53"]
+    charts.provider.n_bars = 23  # OpenD has them
+    a.io(at(9, 52, 31))
+    assert not item.bars_stale and [b["time"][11:16] for b in item.bars[-4:]] == ["09:50", "09:51", "09:52", "09:53"]

@@ -920,8 +920,13 @@ to moomoo, and its alerts go to this page only, never to Discord.
 - **Levels** for each stock, with the price's distance and the register verdict of each
   ([trading-methodology.md](trading-methodology.md) §11; none has passed): the chart's prior-day high,
   low and close and the two prior weeks' value areas, your plan stops and targets and price alerts, the
-  pre-market high and low (from moomoo's snapshot at the start), the 5- and 15-minute opening range
-  and VWAP from today's 1-minute bars, kept up to date from pushes.
+  pre-market high and low (from moomoo's snapshot, read again until 30 seconds after the open), the 5- and
+  15-minute opening range and VWAP from today's 1-minute bars, kept up to date from pushes; a minute the
+  pushes missed, and every 15-minute close, reads today's bars from moomoo again.
+- **Before the open** the price is the last pre-market trade (moomoo's last price stays at the prior close
+  until the session trades), read every 5 seconds and marked pre-market; option quotes are the last
+  session's. Plans are watched and levels alerted from the open, and a plan that enters "now" needs the
+  session open.
 - **Contracts:** calls and puts of the 10 strikes nearest the price, for the nearest expiry (0DTE and
   intraday) or the first one at least 14 days out (swing), quoted every 5 seconds: bid and ask, the
   spread as % of mid, implied volatility, delta, the move the stock needs to break even at expiry, the
@@ -933,10 +938,14 @@ to moomoo, and its alerts go to this page only, never to Discord.
   runs, otherwise from the last holdings sync, and the card says which.
 - **Box flags** that are armed, watching or open, reloaded at every 15-minute close, with their grades.
 - **Alerts**, each once, with a sound and a browser notification once allowed (**Allow notifications**):
-  the price crossing a level (each level and direction at most every 15 minutes; the first trade after
-  the start only sets the side), a box flag becoming armed, watching or filled, a position appearing or
-  closing, its P&L on cost crossing a step (10 % for options, 2 % for stock), and 30 and 15 minutes before
-  the close while you hold a contract expiring today.
+  the price crossing a level (it counts once the price trades 0.05 % past the level; each level and
+  direction at most every 15 minutes; the first trade after the start only sets the side), a box flag
+  becoming armed, watching or filled, a position appearing or closing, its P&L on cost in the session
+  reaching a new high (10 points above the last high for options, 2 for stock, or a quarter of the last
+  high when that is more), a new low below cost (by the same step) or giving back half of its best gain,
+  and 30 and 15 minutes before the close while you hold a contract expiring today. On a replay of
+  2026-11-06 (three in-play stocks, two made-up 0DTE positions) that was 65 level and 28 P&L alerts in
+  the day, against 118 and 388 under the first rules.
 - **Your plan** (`POST /assistant/plans/parse`, `POST /assistant/plans`, `DELETE /assistant/plans/{id}`;
   `trade_desk/assistant_grades.py`): type it in your words ("calls if a 5-minute bar closes above VWAP,
   stop under the prior-day low, target 742, out by 3:30") and **Read it**, or **Fill in by hand**. The model
@@ -952,7 +961,7 @@ to moomoo, and its alerts go to this page only, never to Discord.
   trade at 20 random minutes of that session, and shows in **Forward grades** as *Your plans*, clustered
   by day. A session stopped early, or a restart, leaves open plans to the daily pass after 16:20.
 - **Notes, calls and questions** (`trade_desk/assistant_notes.py`, `POST /assistant/ask`): when something
-  changes (a level crossed, a flag, a position, a P&L step, the close coming, a plan's step) the model writes
+  changes (a level crossed, a flag, a position, a P&L alert, the close coming, a plan's step) the model writes
   a short note on that stock from its computed state: what changed, where the price sits against the levels,
   what your position or plan means now. At most one note a stock every `TRADE_ASSISTANT_NOTE_MINUTES` (3),
   at once for a fill or a plan's trigger, stop, target or time stop, and one at the start; notes show on the
@@ -961,8 +970,10 @@ to moomoo, and its alerts go to this page only, never to Discord.
   as *Assistant calls*. **Ask** answers a question about the stock from the same state. Every price a
   note, call or answer writes must be one the state shows (within 0.05 %); otherwise it is held back and the
   page says only that. `TRADE_ASSISTANT_DAILY_CALLS` (150) caps the day's model calls, notes, plan readings
-  and questions together; the card shows the day's count, by model, and the median time. A test on live data
-  wrote a note in about 4 seconds and answered a question in 5, through Claude Code on Sonnet 5.5.
+  and questions together; the card shows the day's count, by model, and the median time. A replay of a full
+  day with three stocks asked for about 100 notes; through Claude Code on Sonnet 5.5 a note took a median of
+  4 seconds (at most 15) and an answer 5. The model gets each plan's state in words ("in the trade: triggered
+  at 09:54, entry 302.5"), event times in New York time, and is told not to mention what is missing.
 - **The model** (`trade_desk/assistant_model.py`): your Claude Code plan first, then Codex, and the API
   only as a fallback (`TRADE_ASSISTANT_BACKENDS`, default `claude_code_cli,codex_cli,litellm`), each with
   the assistant's own light settings: `TRADE_ASSISTANT_CLAUDE_CODE_CLI_MODEL` and `_EFFORT` (default the
@@ -976,6 +987,10 @@ to moomoo, and its alerts go to this page only, never to Discord.
   start and after each 15-minute close, today's 1-minute bars, the chain once, the contract quotes and the
   positions, and saves the plans. The Status page shows it as "Trading assistant". Your server restart
   ends a session.
+- **Checked on a replayed day** (2026-11-06, AVGO, NVDA and DIA, the in-play top three): the real session,
+  chart, plan grading, API, stream and page ran on a fake clock over moomoo's own 1-minute bars, with
+  synthetic option quotes and made-up positions. The levels, every plan's grade and the alerts matched
+  values computed straight from the bars; the replay harness is not part of the repository.
 
 ## 0DTE quote recorder
 

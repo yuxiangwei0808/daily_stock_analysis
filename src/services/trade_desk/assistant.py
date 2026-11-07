@@ -47,9 +47,11 @@ POSITION_SECONDS = 15
 TOUCH_SECONDS = 30
 RELOAD_AFTER = timedelta(seconds=3)  # after a 15-minute close, like the chart page
 AFTER_CLOSE = timedelta(minutes=15)
+PREMARKET_SETTLE = timedelta(seconds=30)  # the pre-market range is read until this long after the open
 PANEL_STRIKES = 5  # each side of the price
 REPEAT = timedelta(minutes=15)  # one alert per level and direction in this long
-PNL_STEP = {"option": 10.0, "stock": 2.0}  # an alert each time P&L on cost crosses a multiple of this
+LEVEL_BAND = 0.0005  # a level counts as crossed once the price trades this far past it (0.05%)
+PNL_STEP = {"option": 10.0, "stock": 2.0}  # P&L on cost, in points: see _pnl_alert
 CLOSE_WARNINGS = (30, 15)  # minutes before the close, for a position expiring today
 EVENTS = 300
 SILENT = timedelta(seconds=60)
@@ -96,6 +98,7 @@ class _Ticker:
         self.bars: List[Dict[str, Any]] = []  # today's regular 1-minute bars
         self.bar_seq: Optional[int] = None
         self.premarket: Tuple[Optional[float], Optional[float]] = (None, None)
+        self.premarket_final = False
         self.prev_close: Optional[float] = None
         self.price: Optional[float] = None
         self.price_at: Optional[str] = None
@@ -110,7 +113,8 @@ class _Ticker:
         self.contracts_at: Optional[datetime] = None
         self.positions: List[Dict[str, Any]] = []
         self.held: Optional[Dict[str, Dict[str, Any]]] = None
-        self.pnl_steps: Dict[str, int] = {}
+        self.pnl_steps: Dict[str, Dict[str, Any]] = {}  # per position: best, worst, peak, gave_back (_pnl_alert)
+        self.bars_stale = False  # a pushed bar skipped a minute: today's bars are read again
         self.pending15: List[datetime] = []  # 15-minute bars seen forming, by end, until their close is handled
         self.closed_through: Optional[datetime] = None
         self.reload_at: Optional[datetime] = None
@@ -161,6 +165,8 @@ class _Ticker:
         elif not self.bars or row["time"] > self.bars[-1]["time"]:
             if self.bars:
                 self.bars[-1]["partial"] = False
+                gap = datetime.fromisoformat(row["time"]) - datetime.fromisoformat(self.bars[-1]["time"])
+                self.bars_stale = self.bars_stale or gap > timedelta(minutes=1)
             self.bars.append(row)
 
 
@@ -287,7 +293,7 @@ class Assistant:
     def check(self, now: datetime) -> None:
         if not self.running:
             return
-        _, closing = _session_bounds(_local(now).date())
+        opening, closing = _session_bounds(_local(now).date())
         if closing is not None and self.started_at < closing + AFTER_CLOSE <= now:
             self.stop("the session closed", now)
             return
@@ -309,6 +315,8 @@ class Assistant:
                 item.closed_through = max(done)
                 if item.loaded:
                     item.reload_at = now  # boxes, flags and levels move on completed 15-minute bars
+            if opening is not None and now < opening:
+                continue  # before the open the price is the pre-market one (io), and plans wait for the session
             quote = self.charts.pushed_quote(item.code)
             if quote and quote.get("seq") != item.quote_seq:
                 item.quote_seq = quote["seq"]
@@ -323,7 +331,8 @@ class Assistant:
             item.price, item.price_at, item.received = price, at, received
             levels = item.levels()
         for level in levels:
-            side = 1 if price > level["price"] else -1 if price < level["price"] else 0
+            band = level["price"] * LEVEL_BAND
+            side = 1 if price > level["price"] + band else -1 if price < level["price"] - band else 0
             before = item.sides.get(level["id"])
             if side:
                 item.sides[level["id"]] = side
@@ -361,9 +370,14 @@ class Assistant:
                 elif item.reload_at is not None and now >= item.reload_at:
                     item.reload_at = None
                     self._load_chart(item, now, alert=True)
+                    self._load_bars(item, self._provider(), now)  # a pushed update missed within a bar is mended too
+                elif item.bars_stale:
+                    self._load_bars(item, self._provider(), now)
                 item.error = None
             except Exception as exc:
                 item.error = type(exc).__name__
+        if self._due("premarket", CONTRACT_SECONDS):
+            self._premarket(now)
         if self._due("contracts", CONTRACT_SECONDS):
             self._contracts(now)
         if self._due("positions", POSITION_SECONDS):
@@ -377,25 +391,58 @@ class Assistant:
     def _provider(self) -> Any:
         return self.charts._connection()
 
+    def _premarket(self, now: datetime) -> None:
+        """Before the open: the last pre-market trade and the pre-market high and low, from the snapshot.
+
+        OpenD's ``last_price`` stays at the prior close until the regular session trades."""
+        opening, _ = _session_bounds(_local(now).date())
+        items = [item for item in self._tickers.values() if item.loaded and not item.premarket_final]
+        if opening is None or not items:
+            return
+        rows = {str(row.get("code") or ""): row for row in self._provider().snapshot_rows([item.code for item in items])}
+        with self._lock:
+            for item in items:
+                self._set_premarket(item, rows.get(item.code) or {}, price=now < opening)
+                # the range is final once the session trades: one more read after the open catches its last seconds
+                item.premarket_final = now >= opening + PREMARKET_SETTLE
+
+    @staticmethod
+    def _set_premarket(item: _Ticker, snap: Dict[str, Any], *, price: bool = True) -> None:
+        item.premarket = (_num(snap.get("pre_high_price")), _num(snap.get("pre_low_price")))
+        if price and _num(snap.get("pre_price")):
+            item.price, item.price_at = _num(snap.get("pre_price")), "pre-market"
+
     def _load(self, item: _Ticker, now: datetime) -> None:
         self._load_chart(item, now, alert=False)
         provider = self._provider()
         day = _local(now).date()
-        rows = provider.kline(item.code, "K_1M", 400, push=True)
-        bars = [row for row in rows if _regular(row["time"]) and _local(datetime.fromisoformat(row["time"])).date() == day]
+        self._load_bars(item, provider, now)
         snap = (provider.snapshot_rows([item.code]) or [{}])[0]
+        opening, _ = _session_bounds(day)
         with self._lock:
-            pushed = [bar for bar in item.bars if not bars or bar["time"] > bars[-1]["time"]]
-            item.bars = [{**{k: bar[k] for k in ("time", "open", "high", "low", "close", "volume")}, "partial": bar.get("partial", False)}
-                         for bar in bars] + pushed
-            item.premarket = (_num(snap.get("pre_high_price")), _num(snap.get("pre_low_price")))
             item.prev_close = _num(snap.get("prev_close_price"))
+            if opening is not None and now < opening:
+                self._set_premarket(item, snap)
+            else:
+                item.premarket = (_num(snap.get("pre_high_price")), _num(snap.get("pre_low_price")))
+                item.premarket_final = opening is None or now >= opening + PREMARKET_SETTLE
             if item.price is None and _num(snap.get("last_price")):
                 item.price = _num(snap.get("last_price"))
         self._load_chain(item, provider)
         item.loaded = True
         with self._lock:
             self._wants.setdefault(item.ticker, []).append("session: started, first look at the stock")
+
+    def _load_bars(self, item: _Ticker, provider: Any, now: datetime) -> None:
+        """Today's regular 1-minute bars from OpenD, then any pushed since: the opening ranges and VWAP rest on them."""
+        day = _local(now).date()
+        rows = provider.kline(item.code, "K_1M", 400, push=True)
+        bars = [row for row in rows if _regular(row["time"]) and _local(datetime.fromisoformat(row["time"])).date() == day]
+        with self._lock:
+            pushed = [bar for bar in item.bars if not bars or bar["time"] > bars[-1]["time"]]
+            item.bars = [{**{k: bar[k] for k in ("time", "open", "high", "low", "close", "volume")}, "partial": bar.get("partial", False)}
+                         for bar in bars] + pushed
+            item.bars_stale = False
 
     def _load_chart(self, item: _Ticker, now: datetime, *, alert: bool) -> None:
         snapshot = self.charts.chart(item.ticker, "15m", now=now)
@@ -475,7 +522,7 @@ class Assistant:
             out["at_levels"] = [
                 {"id": level["id"], "label": level["label"], "price": level["price"],
                  "now": round(black_scholes_price(level["price"], strike, minutes / MINUTES_A_YEAR, sigma, right=right), 3),
-                 "in_30m": round(black_scholes_price(level["price"], strike, max(minutes - 30, 0) / MINUTES_A_YEAR, sigma,
+                 "in_half_hour": round(black_scholes_price(level["price"], strike, max(minutes - 30, 0) / MINUTES_A_YEAR, sigma,
                                                      right=right), 3)}
                 for level in self._nearby_levels(item)]
         return out
@@ -507,6 +554,8 @@ class Assistant:
         if view is None:
             view, source = store.view(live=False), "last sync"
         rows = position_plans.panel_rows(view, store.plans()["plans"], store.rules())
+        opening, closing = _session_bounds(_local(now).date())
+        in_session = opening is not None and opening <= now < closing
         for item in self._tickers.values():
             mine = [{**row, "source": source} for row in rows if row["ticker"] == item.ticker]
             current = {row["key"]: row for row in mine}
@@ -519,17 +568,40 @@ class Assistant:
                     if key not in current:
                         self._event(item.ticker, "position", f"Position closed: {row['label']}", "", now)
             for key, row in current.items():
-                pnl, step = row.get("pnl_pct"), PNL_STEP.get(row.get("type"), PNL_STEP["stock"])
-                if pnl is None:
-                    continue
-                level = int(pnl // step) if pnl >= 0 else -int(-pnl // step)
-                before = item.pnl_steps.get(key)
-                item.pnl_steps[key] = level
-                if item.held is not None and before is not None and level != before and level != 0:
-                    self._event(item.ticker, "pnl", f"{row['label']} {pnl:+.1f}% on cost",
-                                f"{_weight(row)} of the account", now)
+                why = self._pnl_alert(item, key, row) if item.held is not None else None
+                if why and in_session:
+                    self._event(item.ticker, "pnl", f"{row['label']} {row['pnl_pct']:+.1f}% on cost",
+                                f"{_weight(row)} of the account; {why}", now)
             with self._lock:
                 item.positions, item.held = mine, current
+
+    @staticmethod
+    def _pnl_alert(item: _Ticker, key: str, row: Dict[str, Any]) -> Optional[str]:
+        """Why a position's P&L on cost is worth an alert now, or None.
+
+        A 0DTE option swings across hundreds of points of its cost in a day, so a fixed step back and forth alerts
+        every few minutes. Alerts come on a new high above cost (by a step, or a quarter of the last high when that
+        is more), a new low below cost (by a step), and once when it gives back half of its best gain. The first
+        reading only sets the marks."""
+        pnl, step = row.get("pnl_pct"), PNL_STEP.get(row.get("type"), PNL_STEP["stock"])
+        if pnl is None:
+            return None
+        marks = item.pnl_steps.get(key)
+        if marks is None:
+            item.pnl_steps[key] = {"best": max(pnl, 0.0), "worst": min(pnl, 0.0), "peak": max(pnl, 0.0), "gave_back": False}
+            return None
+        marks["peak"] = max(marks["peak"], pnl)
+        if pnl >= marks["best"] + max(step, 0.25 * marks["best"]):
+            marks.update(best=pnl, gave_back=False)
+            return "its best this session"
+        if pnl <= marks["worst"] - step:
+            marks["worst"] = pnl
+            marks["gave_back"] = marks["gave_back"] or pnl <= marks["peak"] / 2
+            return "its worst this session"
+        if not marks["gave_back"] and marks["peak"] >= 2 * step and pnl <= marks["peak"] / 2:
+            marks["gave_back"] = True
+            return f"it gave back half of its best this session ({marks['peak']:+.0f}%)"
+        return None
 
     # -- plans and calls (assistant_grades.py) ------------------------------------------------------
     def _repo(self) -> Any:
@@ -591,9 +663,11 @@ class Assistant:
         item = self._item(ticker)
         if item.price is None:
             raise ValueError(f"No price for {item.ticker} yet")
-        _, closing = _session_bounds(_local(now).date())
+        opening, closing = _session_bounds(_local(now).date())
         if closing is None or now >= closing:
             raise ValueError("Plans are for the regular session")
+        if now < opening and str((fields.get("trigger") or {}).get("kind") or "now") == "now":
+            raise ValueError("Before the open a plan needs a trigger price: entering now would use a pre-market price")
         plan = ag.check_plan(fields, item.price, closing, now)
         rec = ag.new_record(item.ticker, source, plan, item.price, now, text=text, why=why, model=model)
         repo = self._repo()
@@ -671,7 +745,7 @@ class Assistant:
             tickers = [self._ticker_state(item, now) for item in self._tickers.values()]
             seconds = sorted(self._usage["seconds"])
             model = {"calls_today": self._usage["calls"], "cap": _daily_cap(), "failed": self._usage["failed"],
-                     "median_seconds": seconds[len(seconds) // 2] if seconds else None, "by": dict(self._usage["by"]),
+                     "median_seconds": seconds[len(seconds) // 2] if seconds else None, "by": [{"label": label, "calls": calls} for label, calls in self._usage["by"].items()],
                      "last_error": self._usage["last_error"], "note_minutes": _note_gap().total_seconds() / 60}
             return {"running": self.running, "horizon": self.horizon, "horizons": HORIZONS,
                     "started_at": self.started_at.isoformat() if self.started_at else None, "stopped": self.stopped,

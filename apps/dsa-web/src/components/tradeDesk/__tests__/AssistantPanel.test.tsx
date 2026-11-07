@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantPanel } from '../AssistantPanel';
+import { toCamelCase } from '../../../api/utils';
 
 const api = vi.hoisted(() => ({
   getAssistant: vi.fn(), startAssistant: vi.fn(), stopAssistant: vi.fn(), askAssistant: vi.fn(), getInPlay: vi.fn(),
@@ -27,7 +28,7 @@ const spy = {
   flags: [{ kind: 'fade', box: 'range', direction: 'short', state: 'armed', price: 741, stop: 743, target: 737, grade: 'No edge shown in backtest' }],
   contracts: { expiry: '2026-11-09', asOf: null, error: null, rows: [{ code: 'US.SPY-C736', right: 'call', strike: 736, expiry: '2026-11-09',
     bid: 1, ask: 1.1, mid: 1.05, spreadPct: 9.5, iv: 20, delta: 0.5, volume: 100, openInterest: 500, breakevenMovePct: 0.15,
-    minutesLeft: 370, thetaPerMin: -0.004, atLevels: [{ id: 'stop:SPY', label: 'SPY shares stop', price: 728, now: 0.05, in30m: 0.04 }] }] },
+    minutesLeft: 370, thetaPerMin: -0.004, atLevels: [{ id: 'stop:SPY', label: 'SPY shares stop', price: 728, now: 0.05, inHalfHour: 0.04 }] }] },
   positions: [{ key: 'SPY|C735', ticker: 'SPY', type: 'option', label: 'SPY 11/09 735C', pnlPct: 12.5, weightPct: 1.2, daysLeft: 0, source: 'live feed' }],
   plans: [],
   notes: [{ at: '2026-11-09T09:50:05-05:00', kind: 'note', text: 'SPY 736 sits under the pre-market high 738.03, an untested level.',
@@ -35,7 +36,7 @@ const spy = {
   { at: '2026-11-09T09:49:00-05:00', kind: 'held', text: 'A note was held back: it quoted 741.37, which the system does not show.' }],
 };
 const running = { ...idle, running: true, horizon: '0dte', startedAt: '2026-11-09T09:50:00-05:00', tickers: [spy], seq: 1,
-  model: { callsToday: 4, cap: 150, failed: 0, medianSeconds: 6.2, by: { 'Claude Code (claude-sonnet-5-5)': 4 }, lastError: null, noteMinutes: 3 },
+  model: { callsToday: 4, cap: 150, failed: 0, medianSeconds: 6.2, by: [{ label: 'Claude Code (claude-sonnet-5-5)', calls: 4 }], lastError: null, noteMinutes: 3 },
   events: [{ seq: 1, at: '2026-11-09T09:50:00-05:00', ticker: null, kind: 'session', title: 'Watching SPY', detail: '0DTE options' }] };
 
 describe('AssistantPanel', () => {
@@ -124,5 +125,31 @@ describe('AssistantPanel', () => {
     const { container } = render(<AssistantPanel current="SPY" onShow={() => undefined} />);
     await waitFor(() => expect(api.getAssistant).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('reads the state as the server sends it, through the camelCase conversion', async () => {
+    // As the API sends it: a dict keyed "0dte", "in_half_hour", R and twin_R must survive camelCase conversion.
+    const raw = {
+      running: true, horizon: '0dte', horizons: { '0dte': '0DTE options', intraday: 'Intraday', swing: 'Swing' },
+      started_at: '2026-11-09T14:50:00+00:00', stopped: null, max_tickers: 3, seq: 1, events: [], note: 'Nothing is sent to moomoo.',
+      model: { calls_today: 4, cap: 150, failed: 0, median_seconds: 4.2, by: [{ label: 'Claude Code (claude-sonnet-5-5)', calls: 4 }],
+        last_error: null, note_minutes: 3 },
+      tickers: [{ ticker: 'SPY', price: 736, price_at: null, change_pct: 0.41, quote_age_s: 0.3, loaded: true, error: null, flags: [],
+        levels: [{ id: 'vwap', kind: 'vwap', label: 'VWAP', price: 735.1, distance_pct: -0.12, verdict: 'not tested', verdict_label: 'x' }],
+        contracts: { expiry: '2026-11-09', as_of: null, error: null, rows: [{ code: 'US.SPY-C736', right: 'call', strike: 736,
+          expiry: '2026-11-09', bid: 1, ask: 1.1, mid: 1.05, spread_pct: 9.5, iv: 20, delta: 0.5, volume: 100, open_interest: 500,
+          breakeven: 737.1, breakeven_move_pct: 0.15, minutes_left: 370, theta_per_min: -0.004,
+          at_levels: [{ id: 'vwap', label: 'VWAP', price: 735.1, now: 0.61, in_half_hour: 0.52 }] }] },
+        positions: [], notes: [],
+        plans: [{ id: 'you|SPY|plan|1', ticker: 'SPY', status: 'closed', source: 'you', kind: 'plan', direction: 'long',
+          trigger: { kind: 'above', price: 736.5, bar_minutes: null }, stop: 735, target: 739, time_stop: '15:30', price: 736.5,
+          how: 'time', exit: 737.6, R: 0.71, twin_R: -0.2, day: '2026-11-09' }] }],
+    };
+    api.getAssistant.mockResolvedValue(toCamelCase(raw));
+    render(<AssistantPanel current="" onShow={() => undefined} />);
+    expect(await screen.findByText(/Trading assistant: SPY · 0DTE options · since/)).toBeInTheDocument();
+    expect(screen.getByText(/Claude Code \(claude-sonnet-5-5\) 4/)).toBeInTheDocument();
+    expect(screen.getByText('0.61 → 0.52')).toBeInTheDocument();
+    expect(screen.getByText(/time \+0\.71R, random timing −0\.20R/)).toBeInTheDocument();
   });
 });

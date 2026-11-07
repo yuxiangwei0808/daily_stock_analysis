@@ -47,7 +47,7 @@ function ContractRows({ rows }: { rows: AssistantContract[] }) {
         <td className="px-1 py-1 text-right font-mono">{signed(row.breakevenMovePct)}</td>
         <td className="px-1 py-1 text-right font-mono">{row.thetaPerMin == null ? '—' : num(row.thetaPerMin, 3)}</td>
         <td className="px-1 py-1 text-secondary-text">{(row.atLevels || []).map((level) =>
-          <span key={level.id} className="mr-3">{level.label} {price(level.price)}: <span className="font-mono">{num(level.now)} → {num(level.in30m)}</span></span>)}</td>
+          <span key={level.id} className="mr-3">{level.label} {price(level.price)}: <span className="font-mono">{num(level.now)} → {num(level.inHalfHour)}</span></span>)}</td>
       </tr>)}</tbody>
     </table></div>
   );
@@ -202,7 +202,7 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
   return (
     <Card variant="bordered" padding="md" data-testid="assistant-panel">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-foreground">Trading assistant{running ? `: ${state.tickers.map((item) => item.ticker).join(', ')} · ${state.horizons[state.horizon || '0dte']}${state.startedAt ? ` · since ${nyTime(state.startedAt)} ET` : ''}` : ''}</h3>
+        <h3 className="text-sm font-semibold text-foreground">Trading assistant{running ? `: ${state.tickers.map((item) => item.ticker).join(', ')} · ${HORIZONS.find(([key]) => key === (state.horizon || '0dte'))?.[1]}${state.startedAt ? ` · since ${nyTime(state.startedAt)} ET` : ''}` : ''}</h3>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {permission === 'default' ? <Button size="xsm" variant="ghost" onClick={() => void allow()}><BellRing className="h-3.5 w-3.5" />Allow notifications</Button> : null}
           {permission === 'denied' ? <span className="text-muted-text">Notifications are blocked in this browser; alerts still sound here.</span> : null}
@@ -251,7 +251,7 @@ export function AssistantPanel({ current, onShow }: { current: string; onShow: (
           <span className="font-mono text-muted-text">{nyTime(event.at)}</span> <span className="text-foreground">{event.title}</span>{event.detail ? ` · ${event.detail}` : ''}</li>)}</ul>
       </div> : null}
       {state.model && running ? <p className="pt-2 text-[11px] text-muted-text">Model today: {state.model.callsToday} of {state.model.cap} calls
-        {Object.keys(state.model.by).length ? ` (${Object.entries(state.model.by).map(([name, count]) => `${name} ${count}`).join(', ')})` : ''}
+        {state.model.by.length ? ` (${state.model.by.map((use) => `${use.label} ${use.calls}`).join(', ')})` : ''}
         {state.model.medianSeconds != null ? `, median ${state.model.medianSeconds.toFixed(0)} s` : ''}{state.model.failed ? `, ${state.model.failed} failed` : ''}.
         Your Claude Code plan first, then Codex, the API last.</p> : null}
       <p className="pt-2 text-[11px] text-muted-text">{state.note}</p>
