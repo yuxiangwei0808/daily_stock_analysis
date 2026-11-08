@@ -350,6 +350,7 @@ def test_a_confirmed_plan_is_watched_alerted_and_graded_at_the_close():
     other = a.add_plan("SPY", {"direction": "short", "trigger": {"kind": "below", "price": 730}, "stop": 733, "target": 725},
                        now=at(11, 1))
     assert a.remove_plan(other["id"], at(11, 2)) and other["id"] not in repo.rows
+    assert a.events_after(0)[-1]["title"] == "Plan removed on SPY: short below 730"  # which plan, for the models too
     assert a.state()["tickers"][0]["plans"][0]["id"] == plan["id"]
     # The day's bars: up 0.01 a minute, about 737.2 at 10:00, so the 10:00 entry reaches 739 around 12:40.
     a._tickers["SPY"].bars = _day_bars([(736.9 + 0.01 * k, 736.9 + 0.01 * k + 0.2, 736.9 + 0.01 * k - 0.1,
@@ -661,16 +662,19 @@ def test_the_watcher_reads_market_events_and_escalates_to_the_analyst(monkeypatc
     assert calls[0]["chain"] is None and len(calls[0]["images"]) == 3 and '"facts"' in calls[0]["prompt"]
     charts.push_quote("US.SPY", 738.5, at(9, 51))
     a.check(at(9, 51))
-    a.notes_step(at(9, 53, 30))
+    assert a._wants["SPY"] == [] and "level: SPY above Pre-market high 738.03" in a._watch_wants["SPY"]
+    a.notes_step(at(9, 51, 1))
+    assert len(calls) == 1  # a market event: the analyst's queue doesn't take it
+    a.watch_step(at(9, 51, 1))
     assert calls[1]["chain"] == "watch" and len(calls[1]["images"]) == 1 and "first, fast reader" in calls[1]["system"]
+    assert "level: SPY above Pre-market high 738.03" in calls[1]["prompt"] and '"analyst_last_note"' in calls[1]["prompt"]
+    a.notes_step(at(9, 53, 30))
     assert len(calls) == 2  # not escalated: the analyst was not asked
-    charts.push_quote("US.SPY", 737.0, at(9, 54))
-    a.check(at(9, 54))
-    charts.push_quote("US.SPY", 738.6, at(9, 55))
-    a.check(at(9, 55))  # crossed again after the 15-minute repeat? no: the level fired at 9:51; a flag-free nudge
-    a._wants["SPY"] = ["level: SPY above Pre-market high 738.03"]
-    a.notes_step(at(9, 57))
-    assert calls[2]["chain"] == "watch" and calls[3]["chain"] is None
+    a._watch_wants["SPY"] = ["level: SPY above Pre-market high 738.03"]
+    a.watch_step(at(9, 57))
+    assert calls[2]["chain"] == "watch" and '"your_last_read"' in calls[2]["prompt"] and len(calls) == 3
+    a.notes_step(at(9, 57, 1))  # the escalation waits in the analyst's queue, so the watcher never waits for it
+    assert calls[3]["chain"] is None
     assert "watcher escalated: A 1-minute bar closed past it." in calls[3]["prompt"]
     notes = a.state()["tickers"][0]["notes"]
     assert notes[0]["tier"] == "analyst" and notes[1]["tier"] == "watcher" and notes[1]["escalate"] is True
@@ -693,11 +697,13 @@ def test_your_plan_events_skip_the_watcher_and_escalations_have_an_hourly_limit(
     a.check(at(9, 50, 30))
     a.notes_step(at(9, 50, 31))
     assert calls[1]["chain"] is None and "plan" in calls[1]["prompt"]  # yours: straight to the analyst
-    a._wants["SPY"] = ["level: SPY above Pre-market high 738.03"]
-    a.notes_step(at(9, 54))
+    a._watch_wants["SPY"] = ["level: SPY above Pre-market high 738.03"]
+    a.watch_step(at(9, 54))
+    a.notes_step(at(9, 54, 1))
     assert [c["chain"] for c in calls[2:4]] == ["watch", None]
-    a._wants["SPY"] = ["level: SPY below Pre-market high 738.03"]
-    a.notes_step(at(9, 58))
+    a._watch_wants["SPY"] = ["level: SPY below Pre-market high 738.03"]
+    a.watch_step(at(9, 58))
+    a.notes_step(at(9, 58, 1))
     assert len(calls) == 5 and calls[4]["chain"] == "watch"  # escalated, but the hour's one analyst call is used
     assert "escalations this hour are used" in a.state()["tickers"][0]["notes"][0]["why"]
 
@@ -710,12 +716,68 @@ def test_a_watcher_that_fails_hands_over_and_an_invented_price_is_held(monkeypat
         {"note": "The analyst instead, at 736.", "call": None},
         {"note": "A move to 741.37.", "escalate": True, "why": "Big."}])
     a.notes_step(at(9, 50, 2))
-    a._wants["SPY"] = ["flag: SPY fade short armed"]
-    a.notes_step(at(9, 54))
+    a._watch_wants["SPY"] = ["flag: SPY fade short armed"]
+    a.watch_step(at(9, 54))
+    a.notes_step(at(9, 54, 1))
     assert [c["chain"] for c in calls[1:3]] == ["watch", None] and "watcher: unavailable" in calls[2]["prompt"]
-    a._wants["SPY"] = ["flag: SPY fade short watching"]
-    a.notes_step(at(9, 58))
+    a._watch_wants["SPY"] = ["flag: SPY fade short watching"]
+    a.watch_step(at(9, 58))
+    a.notes_step(at(9, 58, 1))
     assert a.state()["tickers"][0]["notes"][0]["kind"] == "held" and len(calls) == 4  # nothing escalated from a held note
+
+
+def test_the_watcher_reads_each_completed_minute_quietly_and_events_within_seconds(monkeypatch):
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_MODELS", WATCH)
+    a, charts, calls = _running(monkeypatch, [
+        {"note": "SPY 736 sits under the pre-market high 738.03.", "call": None},                         # first look
+        {"note": "SPY holds 736, a quiet drift.", "escalate": False, "why": "Nothing new."},             # 09:50 bar
+        {"note": "The 09:51 bar closed above 738.03.", "escalate": True, "why": "A completed bar broke it."},
+        {"note": "Above the pre-market high 738.03.", "call": None},                                     # the analyst
+        {"note": "SPY at 736 again.", "escalate": False, "why": "Back inside."}])                        # the event
+    a.notes_step(at(9, 50, 2))
+    a.watch_step(at(9, 50, 3))
+    assert calls[1]["chain"] == "watch" and "minute: the 1-minute bar to 09:50 closed" in calls[1]["prompt"]
+    ticker = a.state()["tickers"][0]
+    assert [note["tier"] for note in ticker["notes"]] == ["analyst"]  # not escalated: only the latest read changes
+    assert ticker["watch"]["text"] == "SPY holds 736, a quiet drift." and ticker["watch"]["trigger"] == "minute"
+    a.watch_step(at(9, 50, 30))
+    assert len(calls) == 2  # that minute is read
+    charts.push_bar("US.SPY", "K_1M", at(9, 51), close=738.5)
+    a.check(at(9, 50, 31))
+    charts.push_bar("US.SPY", "K_1M", at(9, 52), close=738.6)
+    a.check(at(9, 51, 1))
+    a.watch_step(at(9, 51, 2))
+    assert "minute: the 1-minute bar to 09:51 closed" in calls[2]["prompt"] and '"your_last_read"' in calls[2]["prompt"]
+    assert a.state()["tickers"][0]["notes"][0]["escalate"] is True  # an escalation goes to the notes too
+    a.notes_step(at(9, 51, 3))
+    assert calls[3]["chain"] is None and "watcher escalated: A completed bar broke it." in calls[3]["prompt"]
+    a._watch_wants["SPY"] = ["level: SPY below Pre-market high 738.03"]
+    a.watch_step(at(9, 51, 7))
+    assert len(calls) == 4  # an event waits until 10 seconds after the last read
+    a.watch_step(at(9, 51, 12))
+    assert calls[4]["chain"] == "watch" and "level: SPY below" in calls[4]["prompt"]
+    assert a.state()["tickers"][0]["notes"][0]["trigger"] == "event"  # an event's read is shown, escalated or not
+    assert [d["trigger"] for d in a._watch_log] == ["minute", "minute", "event"]
+    a._wants["SPY"] = ["watcher escalated: one"]  # still waiting for the analyst: a second escalation joins it
+    a._hand_over(a._tickers["SPY"], ["watcher escalated: two"], at(9, 51, 13))
+    assert a._wants["SPY"] == ["watcher escalated: one", "watcher escalated: two"] and len(a._analyst_times) == 1
+    watch = a.state()["model"]["watch"]
+    assert watch["calls_today"] == 3 and watch["every_minute"] is True and watch["event_seconds"] == 10 and watch["cap"] == 1500
+
+
+def test_minute_reads_only_in_the_regular_session_and_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_MODELS", WATCH)
+    a, charts, calls = _running(monkeypatch, [{"note": "First look.", "call": None}])
+    a.notes_step(at(9, 50, 2))
+    a.watch_step(at(16, 5))
+    assert len(calls) == 1  # after the close: no minute reads
+    monkeypatch.setenv("TRADE_ASSISTANT_WATCH_EVERY_MINUTE", "false")
+    a.watch_step(at(9, 50, 5))
+    assert len(calls) == 1 and a.state()["model"]["watch"]["every_minute"] is False
+    monkeypatch.delenv("TRADE_ASSISTANT_WATCH_MODELS")
+    charts.push_quote("US.SPY", 738.5, at(9, 51))
+    a.check(at(9, 51))
+    assert "level: SPY above Pre-market high 738.03" in a._wants["SPY"] and not a._watch_wants  # no watcher: the analyst's
 
 
 def test_watcher_decisions_are_graded_by_the_next_30_minutes_and_summarised_by_day(monkeypatch):

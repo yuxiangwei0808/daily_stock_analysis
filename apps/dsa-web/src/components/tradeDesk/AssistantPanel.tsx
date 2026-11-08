@@ -48,6 +48,7 @@ function Notes({ item }: { item: AssistantTicker }) {
     try { await tradeDeskApi.askAssistant(item.ticker, question); setQuestion(''); } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
   };
   const notes = item.notes || [];
+  const latest = item.watch && item.watch.trigger === 'minute' && !item.watch.escalate ? item.watch : null;  // the rest are in the notes
   return (
     <div data-testid="assistant-notes">
       <h4 className="pb-1 text-xs font-semibold text-foreground">Assistant</h4>
@@ -58,6 +59,12 @@ function Notes({ item }: { item: AssistantTicker }) {
         <Button type="submit" size="xsm" variant="outline" isLoading={busy}>Ask</Button>
       </form>
       {error ? <p role="alert" className="pt-1 text-xs text-danger">{error}</p> : null}
+      {latest ? <p className="mt-2 text-xs text-secondary-text" data-testid="watcher-latest">
+        <span className="font-mono text-muted-text">{nyTime(latest.at)}</span>{' '}
+        <span className="rounded bg-border/40 px-1 text-[10px] text-muted-text">Watcher, each minute</span>{' '}
+        <span className={latest.kind === 'held' ? 'text-muted-text' : 'text-foreground'}>{latest.text}</span>
+        {latest.why ? <span className="text-muted-text"> · {latest.why}</span> : null}
+      </p> : null}
       {notes.length ? <ul className="mt-2 max-h-48 space-y-1.5 overflow-y-auto text-xs">{notes.map((note) => <li key={`${note.at}-${note.kind}`}
         className={note.kind === 'held' ? 'text-muted-text' : 'text-secondary-text'}>
         <span className="font-mono text-muted-text">{nyTime(note.at)}</span>{' '}
@@ -218,7 +225,7 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
         {state.model.by.length ? ` (${state.model.by.map((use) => `${use.label} ${use.calls}`).join(', ')})` : ''}
         {state.model.medianSeconds != null ? `, median ${state.model.medianSeconds.toFixed(0)} s` : ''}{state.model.failed ? `, ${state.model.failed} failed` : ''}.
         {state.model.order ? ` In order: ${state.model.order}.` : ' Your Claude Code plan first, then Codex, the API last.'}</p> : null}
-      {state.model?.watch && running ? <p className="pt-1 text-[11px] text-muted-text" data-testid="watcher-line">Watcher today: {state.model.watch.callsToday} reads, {state.model.watch.escalatedToday} sent to the analyst (at most {state.model.watch.analystPerHour} an hour; your plans, fills, expiries and questions always go). In order: {state.model.watch.order}.
+      {state.model?.watch && running ? <p className="pt-1 text-[11px] text-muted-text" data-testid="watcher-line">Watcher today: {state.model.watch.callsToday} reads{state.model.watch.everyMinute ? ` (each stock every completed minute, events within ${state.model.watch.eventSeconds ?? 10} s${state.model.watch.cap ? `; at most ${state.model.watch.cap} a day` : ''})` : ''}, {state.model.watch.escalatedToday} sent to the analyst (at most {state.model.watch.analystPerHour} an hour; your plans, fills, expiries and questions always go). In order: {state.model.watch.order}.
         {state.model.watch.grade ? ` Its escalations, graded by the next ${state.model.watch.grade.forwardMinutes} minutes' range: ${state.model.watch.grade.verdict}${state.model.watch.grade.meanDifferencePct != null ? ` (${state.model.watch.grade.meanDifferencePct > 0 ? '+' : ''}${state.model.watch.grade.meanDifferencePct.toFixed(2)}% vs the stock's other moments${state.model.watch.grade.t != null ? `, t ${state.model.watch.grade.t.toFixed(1)}` : ''})` : ''}; untested.` : ''}</p> : null}
       <p className="pt-2 text-[11px] text-muted-text">{state.note}</p>
     </Card>

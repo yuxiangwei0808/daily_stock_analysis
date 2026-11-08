@@ -1069,6 +1069,8 @@ export interface AssistantNote {
   /** The watcher's decision and its reason. */
   escalate?: boolean;
   why?: string;
+  /** What asked the watcher: a completed 1-minute bar, or a market event. */
+  trigger?: 'minute' | 'event';
 }
 
 export interface AssistantWatchGrade {
@@ -1083,8 +1085,14 @@ export interface AssistantWatchGrade {
 export interface AssistantWatchUse {
   order: string;
   callsToday: number;
+  /** The watcher's reads a day (TRADE_ASSISTANT_WATCH_DAILY_CALLS). */
+  cap?: number;
   escalatedToday: number;
   analystPerHour: number;
+  /** Each stock read once for every completed 1-minute bar of the regular session. */
+  everyMinute?: boolean;
+  /** A market event is read at once, at most this often a stock. */
+  eventSeconds?: number;
   by: Array<{ label: string; calls: number }>;
   grade?: AssistantWatchGrade | null;
 }
@@ -1115,6 +1123,8 @@ export interface AssistantTicker {
   positions: AssistantPosition[];
   plans: AssistantPlan[];
   notes: AssistantNote[];
+  /** The watcher's latest read of the stock; a minute read that doesn't escalate shows only here. */
+  watch?: AssistantNote | null;
   loaded: boolean;
   error: string | null;
 }

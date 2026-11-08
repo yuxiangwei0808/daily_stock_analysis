@@ -271,8 +271,8 @@ Tracked forward or shown, without a verdict here (the scoreboard grades the forw
 - Every number the assistant writes comes from the system's computations or quotes, never from its
   own estimate.
 - Shadow mode works in three tiers ([trade-desk.md](trade-desk.md)): code watches every quote and alerts on events
-  defined from completed bars (section 2); a fast watcher model reads each market event and decides whether the
-  analyst model should look; the analyst answers your questions and your plans', fills' and expiries' events without
+  defined from completed bars (section 2); a fast watcher model reads each stock once a completed 1-minute bar (when
+  those facts change) and each market event, and decides whether the analyst model should look; the analyst answers your questions and your plans', fills' and expiries' events without
   waiting for the watcher. The watcher's decisions are a model's choice, so they are tracked forward with a fixed rule
   (section 9): each decision's next 30-minute range, escalated against the same stock's other decisions that day,
   clustered by day (section 13: which moments move, not which way).

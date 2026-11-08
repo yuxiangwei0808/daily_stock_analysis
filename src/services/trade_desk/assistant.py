@@ -5,7 +5,7 @@ the close, ends it. Everything here is computed, never written by a model: the d
 positions on the stocks, the option contracts around the price and the alerts. The model's notes
 come later and never hold up an alert. Read only: DSA never sends, changes or cancels an order.
 
-Two threads, like the exit test's live feed (``shadow_watch.py``):
+Four threads; the first two are like the exit test's live feed (``shadow_watch.py``):
 
 - **check**, every ``CHECK_SECONDS``, reads only memory: the chart service's pushed trades and 1- and
   15-minute bars (``chart.py``). It alerts when the price crosses a level, notes a 15-minute close and
@@ -13,6 +13,8 @@ Two threads, like the exit test's live feed (``shadow_watch.py``):
 - **io** reads OpenD and the database: each stock's chart (levels and flags) at the start and after
   every 15-minute close, today's 1-minute bars once, the contract panel's quotes every
   ``CONTRACT_SECONDS`` and your positions every ``POSITION_SECONDS``.
+- **notes**, the analyst model's notes (``notes_step``), and **watch**, the fast watcher model's reads
+  (``watch_step``, assistant_watch.py), so a slow analyst never holds up the watcher. Neither holds up an alert.
 
 Levels carry their register verdicts (``register.py``); none has passed. Contract values at a level
 are Black-Scholes estimates at the contract's quoted implied volatility.
@@ -125,6 +127,9 @@ class _Ticker:
         self.warned: set = set()
         self.plans: List[Dict[str, Any]] = []  # today's plans and calls on this stock (assistant_grades.py)
         self.notes: deque = deque(maxlen=NOTES_KEPT)  # the model's notes and answers, newest first
+        self.watch_latest: Optional[Dict[str, Any]] = None  # the watcher's last read (assistant_watch.py)
+        self.watched_at: Optional[datetime] = None
+        self.watched_minute: Optional[str] = None  # the end of the last completed 1-minute bar it read
         self.error: Optional[str] = None
 
     # -- levels --------------------------------------------------------------------------------
@@ -190,6 +195,7 @@ class Assistant:
         self._next: Dict[str, float] = {}
         self._dirty: Dict[str, Dict[str, Any]] = {}  # plan records to save, by id
         self._wants: Dict[str, List[str]] = {}  # why each stock wants a note
+        self._watch_wants: Dict[str, List[str]] = {}  # the market events the watcher reads first, by stock
         self._last_note: Dict[str, datetime] = {}
         self._usage: Dict[str, Any] = {"day": None, "calls": 0, "failed": 0, "by": {}, "seconds": deque(maxlen=200),
                                        "last_error": None, "watch_calls": 0, "watch_by": {}, "escalated": 0}
@@ -218,7 +224,7 @@ class Assistant:
             self._tickers = {name: _Ticker(name) for name in names}
             self.horizon, self.started_at, self.stopped = horizon, now, None
             self._events.clear()
-            self._next, self._wants, self._last_note = {}, {}, {}
+            self._next, self._wants, self._watch_wants, self._last_note = {}, {}, {}, {}
             self._watch_log, self._analyst_times = [], []
         self._watch_summary = self.watch_grades()
         for item in self._tickers.values():
@@ -227,10 +233,13 @@ class Assistant:
         self._event(None, "session", f"Watching {', '.join(names)}", f"{HORIZONS[horizon]}; alerts on this page", now)
         if threads:
             self._stop.clear()
+            from . import assistant_watch
             self._threads = [threading.Thread(target=self._loop, args=(self.check, CHECK_SECONDS), name="assistant-check", daemon=True),
                              threading.Thread(target=self._loop, args=(self.io, IO_SECONDS), name="assistant-io", daemon=True),
                              threading.Thread(target=self._loop, args=(self.notes_step, NOTES_SECONDS), name="assistant-notes",
-                                              daemon=True)]
+                                              daemon=True),
+                             threading.Thread(target=self._loop, args=(self.watch_step, assistant_watch.WATCH_STEP_SECONDS),
+                                              name="assistant-watch", daemon=True)]
             for thread in self._threads:
                 thread.start()
         return self.state(now)
@@ -314,11 +323,16 @@ class Assistant:
     # -- events --------------------------------------------------------------------------------
     def _event(self, ticker: Optional[str], kind: str, title: str, detail: str, now: datetime, *, wants_note: bool = True,
                **extra: Any) -> None:
+        from . import assistant_watch
+        watcher = ticker and wants_note and kind in NOTE_KINDS and kind not in assistant_watch.ALWAYS \
+            and assistant_watch.watch_enabled()
         with self._lock:
             self._seq += 1
             self._events.append({"seq": self._seq, "at": now.isoformat(), "ticker": ticker, "kind": kind,
                                  "title": title, "detail": detail, **extra})
-            if ticker and wants_note and kind in NOTE_KINDS:
+            if watcher:  # a market event: the watcher reads it first
+                self._watch_wants.setdefault(ticker, []).append(f"{kind}: {title}")
+            elif ticker and wants_note and kind in NOTE_KINDS:
                 self._wants.setdefault(ticker, []).append(f"{kind}: {title}")
 
     def events_after(self, seq: int) -> List[Dict[str, Any]]:
@@ -739,11 +753,7 @@ class Assistant:
         with self._lock:
             item.plans.append(rec)
         whose = "Plan" if source == "you" else "Assistant call"
-        side = "long" if rec["direction"] == 1 else "short"
-        trigger = rec["trigger"]
-        when = "now" if trigger["kind"] == "now" else f"{trigger['kind'].replace('_', ' ')} {trigger['price']:g}" + (
-            f" on a {trigger['bar_minutes']}-minute bar" if trigger["bar_minutes"] else "")
-        self._event(item.ticker, "plan", f"{whose} watched: {item.ticker} {side} {when}",
+        self._event(item.ticker, "plan", f"{whose} watched: {item.ticker} {_plan_words(rec)}",
                     f"Stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}.", now, plan=rec["id"],
                     wants_note=False)
         return ag.view(rec)
@@ -759,7 +769,8 @@ class Assistant:
                         return False
                     with self._lock:
                         item.plans.remove(rec)
-                    self._event(item.ticker, "plan", f"Plan removed on {item.ticker}", "", now, wants_note=False)
+                    self._event(item.ticker, "plan", f"Plan removed on {item.ticker}: {_plan_words(rec)}", "", now,
+                                wants_note=False)  # which one: the models read the title
                     return True
         return False
 
@@ -800,6 +811,7 @@ class Assistant:
             "positions": list(item.positions), "loaded": item.loaded, "error": item.error,
             "plans": [ag.view(rec) for rec in item.plans][::-1],
             "notes": [dict(note) for note in item.notes],
+            "watch": dict(item.watch_latest) if item.watch_latest else None,
         }
 
     def state(self, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -863,7 +875,9 @@ class Assistant:
                                        reasons=reasons, facts=found)
 
     def notes_step(self, now: datetime) -> None:
-        """At most one note a pass: the stock that waited longest, each stock at most every few minutes unless urgent."""
+        """The analyst's notes, at most one a pass, each stock at most every few minutes unless urgent: a fill, a
+        plan's event or what the watcher hands over. With a watcher, market events go to it first (watch_step); this
+        queue then holds only your events, the first look and the watcher's hand-overs."""
         if not self.running:
             return
         self._roll_usage(now)
@@ -873,21 +887,55 @@ class Assistant:
             if not reasons or not item.loaded or item.price is None:
                 continue
             last = self._last_note.get(item.ticker)
-            urgent = any(reason.split(":")[0] in URGENT for reason in reasons)
+            urgent = any(reason.split(":")[0] in URGENT or reason.startswith("watcher") for reason in reasons)
             if last is not None and now - last < _note_gap() and not urgent:
                 continue
-            with self._lock:
-                self._wants[item.ticker] = []
+            with self._lock:  # what arrived meanwhile comes too
+                reasons, self._wants[item.ticker] = list(self._wants.get(item.ticker) or []), []
             self._last_note[item.ticker] = now
-            from . import assistant_watch
-            yours = any(reason.split(":")[0] in assistant_watch.ALWAYS for reason in reasons)
-            if not yours and assistant_watch.watch_enabled():
-                self._watch(item, reasons, now)  # the watcher reads market events first
-                return
             if self._usage["calls"] >= _daily_cap():
                 return
             self._write_note(item, reasons, now)
             return
+
+    def watch_step(self, now: datetime) -> None:
+        """The watcher's thread (assistant_watch.py), one read a pass: a stock's market events first, at most every
+        TRADE_ASSISTANT_WATCH_SECONDS; then, in the regular session, each completed 1-minute bar it hasn't read, the
+        stock read longest ago first."""
+        from . import assistant_watch
+        if not self.running or not assistant_watch.watch_enabled():
+            return
+        self._roll_usage(now)
+        if self._usage["watch_calls"] >= assistant_watch.watch_daily_cap():
+            return
+        opening, closing = _session_bounds(_local(now).date())
+        session = opening is not None and closing is not None and opening <= now < closing and assistant_watch.every_minute()
+        gap = assistant_watch.watch_gap()
+        due = []
+        for item in list(self._tickers.values()):
+            if not item.loaded or item.price is None:
+                continue
+            with self._lock:
+                waiting = bool(self._watch_wants.get(item.ticker))
+                done = assistant_watch.completed(item.bars, now)
+                minute = done[-1]["time"] if done else None
+            read_at = item.watched_at.timestamp() if item.watched_at else 0.0
+            if waiting and (item.watched_at is None or now - item.watched_at >= gap):
+                due.append((0, read_at, item.ticker, "event", minute))
+            elif session and minute is not None and minute != item.watched_minute:
+                due.append((1, read_at, item.ticker, "minute", minute))
+        if not due:
+            return
+        _, _, ticker, trigger, minute = min(due)
+        item = self._tickers[ticker]
+        with self._lock:
+            reasons = list(self._watch_wants.get(ticker) or []) if trigger == "event" else []
+            if trigger == "event":
+                self._watch_wants[ticker] = []
+        if trigger == "minute":
+            reasons = [f"minute: the 1-minute bar to {_local(datetime.fromisoformat(minute)).strftime('%H:%M')} closed"]
+        item.watched_at, item.watched_minute = now, minute or item.watched_minute
+        self._watch(item, reasons, now, trigger)
 
     def _chart_images(self, item: _Ticker, frames: Optional[List[str]] = None) -> Optional[List[Dict[str, str]]]:
         """The stock's pictures for the model (TRADE_ASSISTANT_CHART_FRAMES, default 1m,5m,15m; chart_frames.py):
@@ -932,26 +980,25 @@ class Assistant:
                 out.append(image)
         return out or None
 
-    def _watch(self, item: _Ticker, reasons: List[str], now: datetime) -> None:
-        """The watcher (assistant_watch.py): a fast model reads the market event, writes the short note and says
-        whether the analyst should look; its decision is kept for the forward grade."""
+    def _watch(self, item: _Ticker, reasons: List[str], now: datetime, trigger: str = "event") -> None:
+        """One watcher read: the short note and whether the analyst should look, kept for the forward grade. An
+        escalation, or an event no watcher could read, joins the analyst's queue (notes_step) within its hourly
+        limit, so the watcher never waits for the analyst. A minute read that doesn't escalate only replaces the
+        stock's latest read; events and escalations also go to the page's notes."""
         from . import assistant_notes, assistant_watch
-        if self._usage["watch_calls"] >= assistant_watch.watch_daily_cap():
-            return
-        ctx = self._context(item, now, reasons)
+        ctx = {**self._context(item, now, reasons), **self._watch_memory(item)}
         try:
             result = assistant_notes.ask_model(assistant_watch.WATCH_SYSTEM, ctx, chain="watch",
                                                images=self._chart_images(item, frames=assistant_watch.watch_frames()))
-        except RuntimeError as exc:  # no watcher answered: the analyst reads it, within its hourly limit
+        except RuntimeError as exc:  # no watcher answered: the analyst reads an event, within its hourly limit
             self._failed(exc)
-            if self._analyst_room(now) and self._usage["calls"] < _daily_cap():
-                self._analyst_used(now)
-                self._write_note(item, reasons + ["watcher: unavailable"], now)
+            if trigger == "event" and self._analyst_room(now):
+                self._hand_over(item, reasons + ["watcher: unavailable"], now)
             return
         with self._lock:
             self._usage["watch_calls"] += 1
             self._usage["watch_by"][result.get("label") or "model"] = self._usage["watch_by"].get(result.get("label") or "model", 0) + 1
-        entry = {"at": now.isoformat(), "kind": "note", "tier": "watcher", "model": result.get("label", ""),
+        entry = {"at": now.isoformat(), "kind": "note", "tier": "watcher", "trigger": trigger, "model": result.get("label", ""),
                  "seconds": result.get("seconds"), "call": None}
         try:
             watched = assistant_watch.read_watch(result["data"], ctx)
@@ -959,25 +1006,48 @@ class Assistant:
             entry.update(kind="held", text=f"A watcher note was held back: {exc}.")
             with self._lock:
                 item.notes.appendleft(entry)
+                item.watch_latest = dict(entry)
             return
         escalate = watched["escalate"]
         entry.update(text=watched["text"], escalate=escalate, why=watched["why"])
-        with self._lock:
-            self._watch_log.append({"at": now.isoformat(), "ticker": item.ticker, "escalate": escalate,
-                                    "price": item.price, "why": watched["why"]})
-            item.notes.appendleft(entry)
-        self._event(item.ticker, "note", f"{item.ticker}: watcher note", entry["text"][:240], now, wants_note=False)
-        if not escalate:
-            return
-        if not self._analyst_room(now):
+        room = escalate and self._analyst_room(now)
+        if escalate and not room:
             entry["why"] += f" (the analyst's {assistant_watch.analyst_per_hour()} escalations this hour are used)"
-            return
-        if self._usage["calls"] >= _daily_cap():
-            return
-        self._analyst_used(now)
+        posted = trigger == "event" or escalate
         with self._lock:
-            self._usage["escalated"] += 1
-        self._write_note(item, reasons + [f"watcher escalated: {watched['why']}"], now)
+            self._watch_log.append({"at": now.isoformat(), "ticker": item.ticker, "escalate": escalate, "trigger": trigger,
+                                    "price": item.price, "why": watched["why"]})
+            item.watch_latest = dict(entry)
+            if posted:
+                item.notes.appendleft(entry)
+        if posted:
+            self._event(item.ticker, "note", f"{item.ticker}: watcher note", entry["text"][:240], now, wants_note=False)
+        if room:
+            with self._lock:
+                self._usage["escalated"] += 1
+            self._hand_over(item, reasons + [f"watcher escalated: {watched['why']}"], now)
+
+    def _hand_over(self, item: _Ticker, reasons: List[str], now: datetime) -> None:
+        """Into the analyst's queue; one still waiting there for the stock takes this one along, as one note."""
+        with self._lock:
+            queue = self._wants.setdefault(item.ticker, [])
+            waiting = any(reason.startswith("watcher") for reason in queue)
+            queue.extend(reasons)
+        if not waiting:
+            self._analyst_used(now)
+
+    def _watch_memory(self, item: _Ticker) -> Dict[str, Any]:
+        """The watcher's own last read and the analyst's last note on the stock: it escalates what changed, not a repeat."""
+        with self._lock:
+            last = dict(item.watch_latest) if item.watch_latest else None
+            analyst = next((dict(note) for note in item.notes if note.get("kind") == "note" and note.get("tier") != "watcher"), None)
+        hhmm = lambda text: _local(datetime.fromisoformat(text)).strftime("%H:%M")
+        out: Dict[str, Any] = {}
+        if last and last.get("kind") == "note":
+            out["your_last_read"] = {"time": hhmm(last["at"]), "note": last.get("text"), "escalated": bool(last.get("escalate"))}
+        if analyst:
+            out["analyst_last_note"] = {"time": hhmm(analyst["at"]), "note": str(analyst.get("text") or "")[:400]}
+        return out
 
     def _analyst_room(self, now: datetime) -> bool:
         from . import assistant_watch
@@ -1097,8 +1167,9 @@ def _watch_state(usage: Dict[str, Any], grade: Optional[Dict[str, Any]]) -> Opti
     from . import assistant_model, assistant_watch
     if not assistant_watch.watch_enabled():
         return None
-    return {"order": assistant_model.describe("watch"), "calls_today": usage["watch_calls"],
+    return {"order": assistant_model.describe("watch"), "calls_today": usage["watch_calls"], "cap": assistant_watch.watch_daily_cap(),
             "escalated_today": usage["escalated"], "analyst_per_hour": assistant_watch.analyst_per_hour(),
+            "every_minute": assistant_watch.every_minute(), "event_seconds": assistant_watch.watch_gap().total_seconds(),
             "by": [{"label": label, "calls": calls} for label, calls in usage["watch_by"].items()], "grade": grade}
 
 
@@ -1121,6 +1192,15 @@ def _note_gap() -> timedelta:
         return timedelta(minutes=max(0.5, float(os.getenv("TRADE_ASSISTANT_NOTE_MINUTES", "3"))))
     except ValueError:
         return timedelta(minutes=3)
+
+
+def _plan_words(rec: Dict[str, Any]) -> str:
+    """A plan's side and trigger in words, e.g. "short below 150" or "long close above 194.53 on a 5-minute bar"."""
+    side = "long" if rec["direction"] == 1 else "short"
+    trigger = rec["trigger"]
+    when = "now" if trigger["kind"] == "now" else f"{trigger['kind'].replace('_', ' ')} {trigger['price']:g}" + (
+        f" on a {trigger['bar_minutes']}-minute bar" if trigger["bar_minutes"] else "")
+    return f"{side} {when}"
 
 
 def _flag_key(flag: Dict[str, Any]) -> str:

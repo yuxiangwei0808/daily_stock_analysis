@@ -1038,23 +1038,33 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
      a completed bar closing 0.05 % past it) and for how many minutes; the last 5 minutes' volume against the
      session's normal; the range so far and the last 5 and 15 minutes' change; and the stock's in-play rank, the one
      rule that has passed (as a range selector, never a direction). Every level keeps its register verdict.
-  2. *The watcher* (`TRADE_ASSISTANT_WATCH_MODELS`, e.g. `claude_code_cli:claude-haiku-5-5:low,claude_code_cli:
-     claude-sonnet-5-5:low,codex_cli:gpt-6.1-sol:low,litellm`, with the `TRADE_ASSISTANT_WATCH_FRAMES` picture,
-     default `1m`; timeout `TRADE_ASSISTANT_WATCH_TIMEOUT_SECONDS`, 30; at most `TRADE_ASSISTANT_WATCH_DAILY_CALLS`,
-     400, a day) reads each market event (a level, a flag, a P&L step), at most once every
-     `TRADE_ASSISTANT_NOTE_MINUTES` a stock, writes the short note and says whether the analyst should look now and
-     why. Notes show *Watcher* or *Analyst*, and an escalation reads "→ Analyst: why".
+  2. *The watcher* (`TRADE_ASSISTANT_WATCH_MODELS`, e.g. `claude_code_cli:claude-haiku-5-5:medium,claude_code_cli:
+     claude-sonnet-5-5:medium,codex_cli:gpt-6.1-sol:medium,litellm`, with the `TRADE_ASSISTANT_WATCH_FRAMES`
+     picture, default `1m`; timeout `TRADE_ASSISTANT_WATCH_TIMEOUT_SECONDS`, 30; at most
+     `TRADE_ASSISTANT_WATCH_DAILY_CALLS`, 1500, a day) runs on its own thread, one read at a time, so a slow analyst
+     never holds it up. In the regular session it reads each stock once for every completed 1-minute bar, the moment
+     its facts change (`TRADE_ASSISTANT_WATCH_EVERY_MINUTE`, on; about 3 × 390 reads on a full day with three
+     stocks); a market event (a level, a flag, a P&L step) is read at once, at most every
+     `TRADE_ASSISTANT_WATCH_SECONDS` (10) a stock, and before the open only events are read. It gets its own last
+     read and the analyst's last note, writes the short note and says whether the analyst should look now and why.
+     A minute read that doesn't escalate only replaces the stock's latest read (*Watcher, each minute*), so the notes
+     stay readable; event reads and escalations go to the notes, which show *Watcher* or *Analyst*, and an escalation
+     reads "→ Analyst: why". Use at least `medium`: replaying 23 of a session's watcher prompts, `low` made the same
+     escalation choices but got 3 of the 10 distances it worked out wrong (`medium` and `high` none).
   3. *The analyst* (`TRADE_ASSISTANT_MODELS`, every picture): your questions, the first look at each stock and your
-     plans', fills' and expiries' events go to it straight away; the watcher's escalations at most
-     `TRADE_ASSISTANT_ANALYST_PER_HOUR` (12) an hour. If no watcher answers, the event goes to the analyst within that
-     limit. Unset `TRADE_ASSISTANT_WATCH_MODELS` and every note goes to the analyst, as before.
+     plans', fills' and expiries' events go to it straight away; the watcher's escalations join its queue, at most
+     `TRADE_ASSISTANT_ANALYST_PER_HOUR` (20) an hour, without waiting for the `TRADE_ASSISTANT_NOTE_MINUTES` gap
+     (a replayed first hour with minute reads had 15 escalations, so 12 cut 3 off). If no watcher answers an event,
+     the event goes to the analyst within that limit. Unset
+     `TRADE_ASSISTANT_WATCH_MODELS` and every note goes to the analyst, as before.
 
   The watcher's escalations are a model's choice, so they are tracked forward with a fixed rule (methodology
   sections 9 and 13; register: *Shadow mode watcher*): when the session stops, each decision with 30 completed
   minutes after it gets that range as % of its price (`trade_desk_settings` id `assistant_watch_grades`); on each
   stock-day with both kinds, escalated decisions are compared with the others, clustered by day; the card shows
-  the result, "too early" before 30 graded days. It grades whether the watcher picks moments that move, not which
-  way; decisions in a session turned off early, or within 30 minutes of the close, are not graded.
+  the result, "too early" before 30 graded days. With the minute reads, most of the others are ordinary minutes of
+  the same stock, a fair baseline. It grades whether the watcher picks moments that move, not which way; decisions in
+  a session turned off early, or within 30 minutes of the close, are not graded.
 - **The chart pictures** (see *Chart pictures* above): notes and answers carry the `TRADE_ASSISTANT_CHART_FRAMES`
   pictures, by default 1-, 5- and 15-minute: earlier sessions read once from moomoo's history when the session
   starts, today's part from the live 1-minute bars, the 15-minute one the chart's own with its boxes (reloaded

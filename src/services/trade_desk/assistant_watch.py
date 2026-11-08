@@ -6,8 +6,12 @@
    ahead), each level with its register verdict (section 11) and today's in-play rank, the one rule that has
    passed, as a range selector and never a direction (section 13).
 2. **The watcher** (``TRADE_ASSISTANT_WATCH_MODELS``, a fast model with the 1-minute picture,
-   ``TRADE_ASSISTANT_WATCH_FRAMES``) reads each market event (a level, a flag, a P&L step), writes the short note
-   and says whether the analyst should look now.
+   ``TRADE_ASSISTANT_WATCH_FRAMES``), on its own thread so the analyst never holds it up, reads each stock once
+   for every completed 1-minute bar of the regular session (``TRADE_ASSISTANT_WATCH_EVERY_MINUTE``): the bar is
+   when its facts change. A market event (a level, a flag, a P&L step) is read at once, at most every
+   ``TRADE_ASSISTANT_WATCH_SECONDS`` a stock. It writes the short note and says whether the analyst should look
+   now; a minute read that doesn't escalate only replaces the stock's latest read, so the page's notes stay the
+   events and the analyst.
 3. **The analyst** (``TRADE_ASSISTANT_MODELS`` with every picture) answers your questions and, without waiting
    for the watcher, your plans', positions' and expiries' events and the first look at a stock; and what the
    watcher escalates, at most ``TRADE_ASSISTANT_ANALYST_PER_HOUR`` escalations an hour.
@@ -29,14 +33,16 @@ from typing import Any, Dict, List, Optional, Sequence
 from . import assistant_notes
 
 ALWAYS = ("position", "plan", "close_soon", "session")  # yours, and the first look: straight to the analyst
+WATCH_STEP_SECONDS = 1.0
 FORWARD_MINUTES = 30
 MIN_DAYS = 30
 GRADES_SETTING = "assistant_watch_grades"
 NEAR_PCT = 1.5  # levels this close to the price go to the models with their bar facts
 
-WATCH_SYSTEM = """You are the first, fast reader of one stock for a day trader during the US session. You get the stock's
-state as the system computed it: the price, levels with their test verdicts, facts from completed bars, the trader's
-positions and plans, the latest events and why you are asked; and, when present, its 1-minute chart.
+WATCH_SYSTEM = """You are the first, fast reader of one stock for a day trader during the US session. You are asked each time a
+1-minute bar completes and right after the system's events. You get the stock's state as the system computed it: the
+price, levels with their test verdicts, facts from completed bars, the trader's positions and plans, the latest
+events, why you are asked, your own last read and the analyst's last note; and, when present, its 1-minute chart.
 Reply with one JSON object and nothing else:
 {"note": "one or two short sentences: what just happened and where the price sits against the levels that matter",
  "escalate": true or false,
@@ -44,12 +50,14 @@ Reply with one JSON object and nothing else:
 Escalate when the trader should look now: completed bars confirm a move through a level (the facts say whether a 1- or
 5-minute bar closed past it), the volume of the last minutes is well above the session's normal, the price is near
 an open plan's trigger, stop or target or acts at a level of a held position, or the state shows something unusual.
-Don't escalate a crossing no completed bar confirms, a repeat of the last event, or a quiet drift.
+Don't escalate a crossing no completed bar confirms, a quiet drift, or what your last read or the analyst's last
+note already covered, unless completed bars have changed it since.
 Rules:
 - Every price you write must be one in the state: never compute, round or invent a price, and never read one off the
   chart's axis.
 - Nothing here has passed a test except what the state marks "pass"; in-play passed only as a range selector (which
   stocks move more today), never as a direction or a trade rule.
+- Distances are in the state (each level's distance_pct); quote those rather than working one out.
 - Leave out what is missing. Never size a position; the trader places every order."""
 
 
@@ -60,16 +68,28 @@ def watch_enabled() -> bool:
 
 def analyst_per_hour() -> int:
     try:
-        return max(0, int((os.getenv("TRADE_ASSISTANT_ANALYST_PER_HOUR", "") or "12").strip()))
+        return max(0, int((os.getenv("TRADE_ASSISTANT_ANALYST_PER_HOUR", "") or "20").strip()))
     except ValueError:
-        return 12
+        return 20
 
 
 def watch_daily_cap() -> int:
     try:
-        return max(0, int((os.getenv("TRADE_ASSISTANT_WATCH_DAILY_CALLS", "") or "400").strip()))
+        return max(0, int((os.getenv("TRADE_ASSISTANT_WATCH_DAILY_CALLS", "") or "1500").strip()))
     except ValueError:
-        return 400
+        return 1500
+
+
+def watch_gap() -> timedelta:
+    """The soonest a stock's market event is read after its last read."""
+    try:
+        return timedelta(seconds=max(1.0, float((os.getenv("TRADE_ASSISTANT_WATCH_SECONDS", "") or "10").strip())))
+    except ValueError:
+        return timedelta(seconds=10)
+
+
+def every_minute() -> bool:
+    return (os.getenv("TRADE_ASSISTANT_WATCH_EVERY_MINUTE", "") or "true").strip().lower() not in ("false", "0", "no", "off")
 
 
 def watch_frames() -> List[str]:

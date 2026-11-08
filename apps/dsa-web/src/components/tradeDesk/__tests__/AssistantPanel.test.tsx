@@ -174,6 +174,27 @@ describe('AssistantPanel', () => {
     expect(line).toHaveTextContent('too early: 3 of 30 graded days (+0.12% vs the stock\'s other moments, t 1.1); untested.');
   });
 
+  it('shows the watcher\'s latest quiet minute read apart from the notes, and its cadence', async () => {
+    const quiet = { at: '2026-11-09T09:58:01-05:00', kind: 'note', tier: 'watcher', trigger: 'minute', text: 'SPY holds 736, a quiet drift.',
+      escalate: false, why: 'Nothing new since the last read.' };
+    const watched = { ...spy, watch: quiet, notes: [
+      { at: '2026-11-09T09:57:00-05:00', kind: 'note', tier: 'analyst', text: 'Above 738.03 on volume.' }] };
+    api.getAssistant.mockResolvedValue({ ...running, tickers: [watched], model: { ...running.model,
+      watch: { order: 'Claude Code (claude-haiku-5-5, medium), then API', callsToday: 180, cap: 1500, escalatedToday: 3, analystPerHour: 12,
+        everyMinute: true, eventSeconds: 10, by: [], grade: null } } });
+    const { unmount } = render(<AssistantPanel current="" onShow={() => undefined} />);
+    const latest = await screen.findByTestId('watcher-latest');
+    expect(latest).toHaveTextContent('Watcher, each minute SPY holds 736, a quiet drift. · Nothing new since the last read.');
+    expect(screen.getAllByRole('listitem').some((li) => li.textContent?.includes('quiet drift'))).toBe(false);
+    expect(screen.getByTestId('watcher-line')).toHaveTextContent(
+      'Watcher today: 180 reads (each stock every completed minute, events within 10 s; at most 1500 a day), 3 sent to the analyst');
+    unmount();
+    api.getAssistant.mockResolvedValue({ ...running, tickers: [{ ...watched, watch: { ...quiet, escalate: true } }] });
+    render(<AssistantPanel current="" onShow={() => undefined} />);
+    await screen.findByText('Above 738.03 on volume.');
+    expect(screen.queryByTestId('watcher-latest')).toBeNull();  // an escalated read is in the notes instead
+  });
+
   it('names the mode on every tab: normal mode, or shadow mode on with a way to turn it off', async () => {
     api.getAssistant.mockResolvedValue(idle);
     const openChart = vi.fn();
