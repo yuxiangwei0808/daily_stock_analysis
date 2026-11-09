@@ -999,6 +999,8 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   2026-11-06 (three in-play stocks, two made-up 0DTE positions) that was 65 level and 28 P&L alerts in
   the day, against 118 and 388 under the first rules. The list also shows the analyst's notes; the
   watcher's notes stay under each stock. The day's model use is folded under **Models today**.
+- **What these mean**, folded at the bottom of the card, explains its labels section by section
+  (`apps/dsa-web/src/components/tradeDesk/assistantGlossary.ts`; keep it in step with the card).
 - **Your plan** (`POST /assistant/plans/parse`, `POST /assistant/plans`, `DELETE /assistant/plans/{id}`;
   `trade_desk/assistant_grades.py`): type it in your words ("calls if a 5-minute bar closes above VWAP,
   stop under the prior-day low, target 742, out by 3:30") and **Read it**, or **Fill in by hand**. The model

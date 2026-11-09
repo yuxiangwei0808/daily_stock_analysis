@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantPanel } from '../AssistantPanel';
 import { ShadowModeBar, ShadowModeProvider } from '../shadowMode';
@@ -65,7 +65,7 @@ describe('AssistantPanel', () => {
     await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['SPY', 'QQQ'], '0dte'));
     expect(onShow).toHaveBeenCalledWith('SPY');
     expect(await screen.findByText('Pre-market high')).toBeInTheDocument();
-    expect(screen.getByText('not tested')).toBeInTheDocument();
+    expect(within(screen.getByTestId('assistant-levels')).getByText('not tested')).toBeInTheDocument();
     expect(screen.getByText('SPY 11/09 735C')).toBeInTheDocument();
     expect(screen.getByText(/expires today/)).toBeInTheDocument();
     expect(screen.getByText('736.00 C')).toBeInTheDocument();
@@ -96,7 +96,7 @@ describe('AssistantPanel', () => {
     expect(await screen.findByText(/sits under the pre-market high 738.03/)).toBeInTheDocument();
     expect(screen.getByText(/Call: short now, stop 738.03/)).toBeInTheDocument();
     expect(screen.getByText(/untested model call, graded against random timing/)).toBeInTheDocument();
-    expect(screen.getByText(/A note was held back/)).toBeInTheDocument();
+    expect(within(screen.getByTestId('assistant-notes')).getByText(/A note was held back/)).toBeInTheDocument();
     expect(screen.getByText(/Model today: 4 of 150 calls/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Ask the assistant'), { target: { value: 'take profit here?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
@@ -167,8 +167,9 @@ describe('AssistantPanel', () => {
     expect(await screen.findByText('Closed above 738.03.')).toBeInTheDocument();
     expect(screen.getByText('→ Analyst: A 1-minute bar closed past it.')).toBeInTheDocument();
     expect(screen.getByText(/· No bar confirms it\./)).toBeInTheDocument();
-    expect(screen.getAllByText('Watcher')).toHaveLength(2);
-    expect(screen.getByText('Analyst')).toBeInTheDocument();
+    const notes = within(screen.getByTestId('assistant-notes'));
+    expect(notes.getAllByText('Watcher')).toHaveLength(2);
+    expect(notes.getByText('Analyst')).toBeInTheDocument();
     const line = screen.getByTestId('watcher-line');
     expect(line).toHaveTextContent('Watcher today: 9 reads, 2 sent to the analyst (at most 12 an hour');
     expect(line).toHaveTextContent('too early: 3 of 30 graded days (+0.12% vs the stock\'s other moments, t 1.1); untested.');
@@ -202,7 +203,7 @@ describe('AssistantPanel', () => {
       ...running.events] });
     render(<AssistantPanel current="" onShow={() => undefined} />);
     const levels = await screen.findByTestId('assistant-levels');
-    for (const id of ['assistant-levels', 'assistant-flags', 'assistant-contracts', 'assistant-models']) {
+    for (const id of ['assistant-levels', 'assistant-flags', 'assistant-contracts', 'assistant-models', 'assistant-glossary']) {
       expect(screen.getByTestId(id)).not.toHaveAttribute('open');
     }
     expect(levels.querySelector('summary')).toHaveTextContent(/^Levels \(2\)· above: Pre-market high 738\.03 \(\+0\.28%\); below: SPY shares stop 728\.00 \(−1\.09%\)$/);
@@ -215,6 +216,15 @@ describe('AssistantPanel', () => {
     expect(screen.getByTestId('assistant-models').querySelector('summary')).toHaveTextContent('analyst 4 of 150 calls');
     expect(screen.getByText('SPY: assistant note')).toBeInTheDocument();
     expect(screen.queryByText('SPY: watcher note')).toBeNull();
+    // The labels explained: the last section of the card, after the alerts and model use.
+    const glossary = screen.getByTestId('assistant-glossary');
+    expect(glossary.querySelector('summary')).toHaveTextContent('What these mean');
+    expect(glossary).toHaveTextContent('Fade short: Sell at a box\'s bottom edge when the price climbs back up to it from below');
+    expect(glossary).toHaveTextContent('Nothing on this card is a tested trading signal.');
+    const order = ['assistant-notes', 'assistant-levels', 'assistant-models', 'assistant-glossary'].map((id) => screen.getByTestId(id));
+    for (let k = 1; k < order.length; k += 1) {
+      expect(order[k - 1].compareDocumentPosition(order[k]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
 
   it('names the mode on every tab: normal mode, or shadow mode on with a way to turn it off', async () => {

@@ -5,6 +5,7 @@ import { tradeDeskApi } from '../../api/tradeDesk';
 import { Badge, Button, Card } from '../common';
 import type { AssistantContract, AssistantEvent, AssistantHorizon, AssistantTicker, InPlayList } from '../../types/tradeDesk';
 import { AssistantPlans } from './AssistantPlans';
+import { GLOSSARY, GLOSSARY_INTRO } from './assistantGlossary';
 import { nyTime, price } from './chartOverlays';
 import { errorMessage } from './deskFormat';
 import { ShadowModeProvider } from './shadowMode';
@@ -108,6 +109,21 @@ function Levels({ item }: { item: AssistantTicker }) {
         {below.map(row)}
       </tbody></table>
       <p className="pt-1 text-[11px] text-muted-text">Distance is the level against the price now. None of these levels has passed a test; yours are your stops and targets.</p>
+    </Fold>
+  );
+}
+
+/** The card's labels explained, folded at the bottom so it never sits between you and the notes. */
+function Glossary() {
+  return (
+    <Fold title="What these mean" testId="assistant-glossary" summary="the card's labels, section by section">
+      <p className="text-[11px] text-muted-text">{GLOSSARY_INTRO}</p>
+      <div className="grid gap-x-6 gap-y-3 pt-2 lg:grid-cols-2">{GLOSSARY.map((section) => <section key={section.title}>
+        <h5 className="pb-0.5 text-[11px] font-semibold text-secondary-text">{section.title}</h5>
+        <dl className="space-y-0.5 text-[11px]">{section.entries.map(([term, meaning]) => <div key={term}>
+          <dt className="inline font-medium text-secondary-text">{term}</dt><dd className="inline text-muted-text">: {meaning}</dd>
+        </div>)}</dl>
+      </section>)}</div>
     </Fold>
   );
 }
@@ -298,6 +314,7 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
       {state.model.watch ? <p className="pt-1 text-[11px] text-muted-text" data-testid="watcher-line">Watcher today: {state.model.watch.callsToday} reads{state.model.watch.everyMinute ? ` (each stock every completed minute, events within ${state.model.watch.eventSeconds ?? 10} s${state.model.watch.cap ? `; at most ${state.model.watch.cap} a day` : ''})` : ''}, {state.model.watch.escalatedToday} sent to the analyst (at most {state.model.watch.analystPerHour} an hour; your plans, fills, expiries and questions always go). In order: {state.model.watch.order}.
         {state.model.watch.grade ? ` Its escalations, graded by the next ${state.model.watch.grade.forwardMinutes} minutes' range: ${state.model.watch.grade.verdict}${state.model.watch.grade.meanDifferencePct != null ? ` (${state.model.watch.grade.meanDifferencePct > 0 ? '+' : ''}${state.model.watch.grade.meanDifferencePct.toFixed(2)}% vs the stock's other moments${state.model.watch.grade.t != null ? `, t ${state.model.watch.grade.t.toFixed(1)}` : ''})` : ''}; untested.` : ''}</p> : null}
       </Fold></div> : null}
+      {running ? <div className="mt-2"><Glossary /></div> : null}
       <p className="pt-2 text-[11px] text-muted-text">{state.note}</p>
     </Card>
   );
