@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 影子模式卡片：价位、方框信号（Box flags）、合约和模型用量默认折叠为一行摘要（最近的上下价位、最近的信号及距离、合约数量与行权价范围）；价位表标出当前价格位置，合约表每个价位一列；方框信号附说明（fade short/long、break and retest 的含义）；提醒列表不再重复观察者的笔记
 - [改进] 影子模式观察者改为独立线程：常规时段内每根 1 分钟 K 线收盘读一次每只股票（`TRADE_ASSISTANT_WATCH_EVERY_MINUTE`），行情事件 10 秒内读（`TRADE_ASSISTANT_WATCH_SECONDS`）；未升级的分钟读取只更新该股的“最新读取”，不刷屏；观察者带上自己上次的读取与分析模型上次的点评，避免重复升级；升级排入分析模型队列，观察者不再等待分析模型；每日上限默认 1500（`TRADE_ASSISTANT_WATCH_DAILY_CALLS`）；每小时交给分析模型的升级上限由 12 提高到 20（`TRADE_ASSISTANT_ANALYST_PER_HOUR`）；建议 effort 至少 medium（low 会算错距离）
 - [新功能] 影子模式三层：代码层按交易方法论（只用已完成的 K 线定义突破、成交量相对常态、在列今日活跃股排名等事实，价位附检验结论）实时提醒；观察者（`TRADE_ASSISTANT_WATCH_MODELS`，快速便宜的模型带 1 分钟图）先读每个行情事件并决定是否交给分析模型；你的计划、成交、到期提醒与提问直接交给分析模型；升级每小时有上限（`TRADE_ASSISTANT_ANALYST_PER_HOUR`）。观察者的升级决定按固定规则前向评估（之后 30 分钟的波动区间，同股同日对比，按日聚类），已登记于方法论注册表
 - [新功能] 图表图片覆盖更多分析：按周期绘制（`trade_desk/chart_frames.py`），含 NX 通道、CD/MACD 及买卖标记、VRVP（成交量分布，POC 与价值区）、箱体、价值区与前日价位；数据取自 moomoo 历史 K 线（无订阅），连不上时用 Yahoo；4 小时线由 1 小时线合成。个股提问 15m/1h/4h/日线，持仓提问、自动扫描与报告（`REPORT_CHART_FRAMES`）15m/1h/4h，影子模式 1m/5m/15m（`TRADE_ASSISTANT_CHART_FRAMES`）

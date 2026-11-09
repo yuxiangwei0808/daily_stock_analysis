@@ -195,6 +195,28 @@ describe('AssistantPanel', () => {
     expect(screen.queryByTestId('watcher-latest')).toBeNull();  // an escalated read is in the notes instead
   });
 
+  it('folds levels, box flags, contracts and model use to one line each, and keeps watcher notes out of the alerts', async () => {
+    api.getAssistant.mockResolvedValue({ ...running, events: [
+      { seq: 3, at: '2026-11-09T09:52:00-05:00', ticker: 'SPY', kind: 'note', title: 'SPY: watcher note', detail: 'SPY holds 736.' },
+      { seq: 2, at: '2026-11-09T09:51:30-05:00', ticker: 'SPY', kind: 'note', title: 'SPY: assistant note', detail: 'Above 738.03.' },
+      ...running.events] });
+    render(<AssistantPanel current="" onShow={() => undefined} />);
+    const levels = await screen.findByTestId('assistant-levels');
+    for (const id of ['assistant-levels', 'assistant-flags', 'assistant-contracts', 'assistant-models']) {
+      expect(screen.getByTestId(id)).not.toHaveAttribute('open');
+    }
+    expect(levels.querySelector('summary')).toHaveTextContent(/^Levels \(2\)· above: Pre-market high 738\.03 \(\+0\.28%\); below: SPY shares stop 728\.00 \(−1\.09%\)$/);
+    const rows = Array.from(levels.querySelectorAll('tr')).map((tr) => tr.textContent);
+    expect(rows[1]).toContain('Price now736.00');  // between the level above and the one below
+    expect(screen.getByTestId('assistant-flags').querySelector('summary')).toHaveTextContent('1; nearest fade short at 741.00 (+0.68% away)');
+    expect(screen.getByText(/fade short sells at the bottom edge/)).toBeInTheDocument();
+    expect(screen.getByTestId('assistant-contracts').querySelector('summary')).toHaveTextContent('1 expiring 2026-11-09, strikes 736.00–736.00');
+    expect(screen.getByRole('columnheader', { name: 'At SPY shares stop 728.00' })).toBeInTheDocument();
+    expect(screen.getByTestId('assistant-models').querySelector('summary')).toHaveTextContent('analyst 4 of 150 calls');
+    expect(screen.getByText('SPY: assistant note')).toBeInTheDocument();
+    expect(screen.queryByText('SPY: watcher note')).toBeNull();
+  });
+
   it('names the mode on every tab: normal mode, or shadow mode on with a way to turn it off', async () => {
     api.getAssistant.mockResolvedValue(idle);
     const openChart = vi.fn();

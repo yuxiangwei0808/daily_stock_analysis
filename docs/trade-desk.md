@@ -967,6 +967,7 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   15-minute opening range and VWAP from today's 1-minute bars, kept up to date from pushes; a minute the
   pushes missed, and every 15-minute close, reads today's bars from moomoo again. After the close the session
   keeps the day's levels: the chart then moves on to the next session's, where today is the "prior day".
+  Folded by default to the nearest level above and below; open, the list marks where the price sits.
 - **Before the open** the price is the last pre-market trade (moomoo's last price stays at the prior close
   until the session trades), read every 5 seconds and marked pre-market; option quotes are the last
   session's. Plans are watched and levels alerted from the open, and a plan that enters "now" needs the
@@ -976,11 +977,18 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   spread as % of mid, implied volatility, delta, the move the stock needs to break even at expiry, the
   value lost to time each minute, and what the contract would be worth if the stock reached the nearest
   level above and below or your stop or target, now and in 30 minutes. Those values are Black-Scholes
-  estimates at the contract's quoted implied volatility, not quotes; it never picks a contract.
+  estimates at the contract's quoted implied volatility, not quotes; it never picks a contract. Folded by
+  default to the count, expiry and strikes; open, each level is one column.
 - **Your positions** on the stocks: P&L on cost, weight in the account, plan stop and target, days to
   expiry. They come from the exit test's live feed (read every 15 seconds, at once after a fill) while it
   runs, otherwise from the last holdings sync, and the card says which.
-- **Box flags** that are armed, watching or open, reloaded at every 15-minute close, with their grades.
+- **Box flags** that are armed, watching or open, reloaded at every 15-minute close, with their grades and
+  distance from the price; folded by default to the nearest one. These are the chart's box rule
+  (`trade_desk/boxes.py`): a *fade* is a limit at a box edge for the first return to the box (*fade short*
+  sells at the bottom edge when the price comes back up from below, *fade long* buys at the top edge when
+  it comes back down from above; stop past the box, target twice the stop distance), and a *break and
+  retest* waits for a close outside the box, then a limit back at its edge. Neither beat the same trades
+  at random times in the backtest.
 - **Alerts**, each once, with a sound and a browser notification once allowed (**Allow notifications**):
   the price crossing a level (it counts once the price trades 0.05 % past the level; each level and
   direction at most every 15 minutes; the first trade after the start only sets the side), a box flag
@@ -989,7 +997,8 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   high when that is more), a new low below cost (by the same step) or giving back half of its best gain,
   and 30 and 15 minutes before the close while you hold a contract expiring today. On a replay of
   2026-11-06 (three in-play stocks, two made-up 0DTE positions) that was 65 level and 28 P&L alerts in
-  the day, against 118 and 388 under the first rules.
+  the day, against 118 and 388 under the first rules. The list also shows the analyst's notes; the
+  watcher's notes stay under each stock. The day's model use is folded under **Models today**.
 - **Your plan** (`POST /assistant/plans/parse`, `POST /assistant/plans`, `DELETE /assistant/plans/{id}`;
   `trade_desk/assistant_grades.py`): type it in your words ("calls if a 5-minute bar closes above VWAP,
   stop under the prior-day low, target 742, out by 3:30") and **Read it**, or **Fill in by hand**. The model
