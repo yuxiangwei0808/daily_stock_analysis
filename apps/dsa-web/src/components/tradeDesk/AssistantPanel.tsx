@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { BellRing, ChevronRight, Play, Square } from 'lucide-react';
 import { tradeDeskApi } from '../../api/tradeDesk';
 import { Badge, Button, Card } from '../common';
-import type { AssistantContract, AssistantEvent, AssistantHorizon, AssistantTicker, InPlayList } from '../../types/tradeDesk';
+import type { AssistantCalls, AssistantContract, AssistantEvent, AssistantHorizon, AssistantTicker, InPlayList } from '../../types/tradeDesk';
 import { AssistantPlans } from './AssistantPlans';
 import { GLOSSARY, GLOSSARY_INTRO } from './assistantGlossary';
 import { nyTime, price } from './chartOverlays';
@@ -13,6 +13,7 @@ import { useShadowMode } from './shadowModeContext';
 import type { ShadowMode } from './shadowModeContext';
 
 const HORIZONS: Array<[AssistantHorizon, string]> = [['0dte', '0DTE options'], ['intraday', 'Intraday'], ['swing', 'Swing']];
+const CALLS: Array<[AssistantCalls, string]> = [['selective', 'Selective'], ['active', 'Active']];
 const signed = (value?: number | null, digits = 2) => (value == null ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(digits)}%`);
 const num = (value?: number | null, digits = 2) => (value == null ? '—' : value.toFixed(digits));
 const away = (value: number, from?: number | null) => (from ? signed((value / from - 1) * 100) : '—');
@@ -222,6 +223,7 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
   const { state, setState, permission } = shadow;
   const [names, setNames] = useState(current);
   const [horizon, setHorizon] = useState<AssistantHorizon>('0dte');
+  const [calls, setCalls] = useState<AssistantCalls>('selective');
   const [focus, setFocus] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -238,7 +240,7 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
     shadow.prime();  // created on the click, so the alerts may play
     setBusy(true); setError('');
     try {
-      const next = await tradeDeskApi.startAssistant(tickers, horizon);
+      const next = await tradeDeskApi.startAssistant(tickers, horizon, calls);
       shadow.markSeen(next.seq);
       setState(next); setFocus(next.tickers[0]?.ticker || '');
       if (next.tickers[0]) onShow(next.tickers[0].ticker);
@@ -256,7 +258,7 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
   return (
     <Card variant="bordered" padding="md" data-testid="assistant-panel">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-foreground">Shadow mode{running ? `: ${state.tickers.map((item) => item.ticker).join(', ')} · ${HORIZONS.find(([key]) => key === (state.horizon || '0dte'))?.[1]}${state.startedAt ? ` · since ${nyTime(state.startedAt)} ET` : ''}` : ' (off)'}</h3>
+        <h3 className="text-sm font-semibold text-foreground">Shadow mode{running ? `: ${state.tickers.map((item) => item.ticker).join(', ')} · ${HORIZONS.find(([key]) => key === (state.horizon || '0dte'))?.[1]}${state.calls === 'active' ? ' · active calls' : ''}${state.startedAt ? ` · since ${nyTime(state.startedAt)} ET` : ''}` : ' (off)'}</h3>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {permission === 'default' ? <Button size="xsm" variant="ghost" onClick={() => void shadow.allow()}><BellRing className="h-3.5 w-3.5" />Allow notifications</Button> : null}
           {permission === 'denied' ? <span className="text-muted-text">Notifications are blocked in this browser; alerts still sound here.</span> : null}
@@ -274,7 +276,14 @@ function ShadowModePanel({ current, onShow, shadow }: { current: string; onShow:
             {HORIZONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select>
         </label>
+        <label className="flex flex-col gap-1 text-secondary-text">Calls
+          <select aria-label="Assistant calls" value={calls} onChange={(event) => setCalls(event.target.value as AssistantCalls)}
+            className="input-surface h-8 rounded-md border px-2 text-foreground">
+            {CALLS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+        </label>
         <Button type="submit" size="xsm" variant="outline" isLoading={busy}><Play className="h-3.5 w-3.5" />Turn on shadow mode</Button>
+        <p className="basis-full text-[11px] text-muted-text">Calls: <strong className="font-medium">Selective</strong> makes a call only with a clear reason. <strong className="font-medium">Active</strong> also says hold, add, trim or exit for each position you hold whenever something changes, and reads each P&amp;L alert on a position at once. Either way every call is an untested model call, graded after the close.</p>
       </form> : null}
       {error ? <p role="alert" className="pt-1 text-xs text-danger">{error}</p> : null}
       {!running && inPlay?.rows.length ? <div className="mt-2 text-xs" data-testid="in-play">

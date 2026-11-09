@@ -10,6 +10,7 @@ export const GLOSSARY_INTRO = 'Nothing on this card is a tested trading signal. 
 export const GLOSSARY: GlossarySection[] = [
   { title: 'Top of the card', entries: [
     ['0DTE options, Intraday, Swing', 'The horizon you started with. It sets which option expiry the contracts show.'],
+    ['active calls', 'Chosen when you turn it on. Selective: a call only with a clear reason. Active: also hold, add, trim or exit for each position you hold whenever something changes, and each P&L alert on a position goes straight to the analyst.'],
     ['+4.31%', 'The change from yesterday\'s close.'],
     ['last trade 3.2 s ago', 'How fresh the quote is. Before 9:30 the price is the last pre-market trade.'],
   ] },
@@ -19,7 +20,7 @@ export const GLOSSARY: GlossarySection[] = [
     ['Grey text after a watcher note', 'Why the watcher did not pass it on.'],
     ['→ Analyst: …', 'The watcher passed it to the analyst, and why.'],
     ['Watcher, each minute', 'The watcher\'s latest quiet read, replaced every minute.'],
-    ['Call: …', 'A trade the analyst suggested: an untested model call, tracked like a plan and graded after the close. Not advice.'],
+    ['Call: …', 'What the analyst suggested: a new trade, an add to a position, a trim or an exit. An untested model call, tracked like a plan and graded after the close. Not advice.'],
     ['A note was held back', 'The model quoted a price the data does not show, so the note is hidden.'],
   ] },
   { title: 'Your positions', entries: [
@@ -36,6 +37,10 @@ export const GLOSSARY: GlossarySection[] = [
     ['+0.71R', 'The result in units of your risk; 1R is the distance from the entry to the stop.'],
     ['random timing −0.20R', 'The same trade at 20 random times that day, averaged: the baseline.'],
     ['Assistant call', 'A plan made from the analyst\'s call, not from you.'],
+    ['Add to …', 'A call to buy more of a position you hold, on its side, with its own stop and target. Graded like a new trade.'],
+    ['Trim, Exit …', 'A call to sell part or all of a position when its trigger trades. A stop is an exit below the price (above it for a short position); taking profit is a trim above it. How much is up to you.'],
+    ['Triggered', 'A trim or exit whose trigger traded: the moment it said to sell.'],
+    ['+0.42% against holding', 'For a trim or exit: what selling there saved per unit against holding to its time stop, measured on the stock (an estimate for options), next to the same sale at random times.'],
   ] },
   { title: 'Levels', entries: [
     ['Prior day high, low, close', 'Yesterday\'s prices.'],

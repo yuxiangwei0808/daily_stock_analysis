@@ -581,6 +581,7 @@ async def chart_stream(ticker: str, request: Request, interval: Literal["1m", "5
 class AssistantStart(Model):
     tickers: list[str] = Field(min_length=1, max_length=3)
     horizon: Literal["0dte", "intraday", "swing"] = "0dte"
+    calls: Literal["selective", "active"] = "selective"  # how readily the analyst makes a call
 
 
 @router.get("/in-play")
@@ -599,7 +600,7 @@ async def assistant_state(request: Request):
 @router.post("/assistant/start")
 async def assistant_start(body: AssistantStart, request: Request):
     """Starts watching one to three stocks; another session running is stopped first. Read only."""
-    return await invoke(get_service(request).assistant.start, body.tickers, body.horizon)
+    return await invoke(get_service(request).assistant.start, body.tickers, body.horizon, calls=body.calls)
 
 
 @router.post("/assistant/stop")

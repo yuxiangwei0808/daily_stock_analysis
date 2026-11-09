@@ -1020,9 +1020,26 @@ every tab while the page is open. Read only: nothing is sent to moomoo, and its 
   a short note on that stock from its computed state: what changed, where the price sits against the levels,
   what your position or plan means now. At most one note a stock every `TRADE_ASSISTANT_NOTE_MINUTES` (3),
   at once for a fill or a plan's trigger, stop, target or time stop, and one at the start; notes show on the
-  page without a sound. A note may carry a call (long or short, a trigger, a stop, a target, a time stop and
-  why): it is labelled an untested model call, watched like your plans, alerted on, and graded the same way
-  as *Assistant calls*. **Ask** answers a question about the stock from the same state. Every price a
+  page without a sound. A note may carry a call, labelled an untested model call, watched like your plans and
+  alerted on:
+  - **enter**: a new trade, long or short, with a trigger, a stop, a target, a time stop and why;
+  - **add**: more of a position you hold on that stock, on its side, with its own trigger, stop, target and
+    time stop;
+  - **trim** or **exit**: sell part or all of a position you hold when the trigger trades (now, at a price, or
+    on a bar's close past it), standing until its time stop. A stop for a position is an exit below the price
+    for a long one (above for a short); taking profit at a price is a trim or exit above it.
+
+  How much to add or trim is never suggested. An add, trim or exit names the position by its label; one
+  naming a position you don't hold, an add on the wrong side, or a repeat of a call still waiting is not
+  recorded, and the note says why. One still waiting when you close the position becomes void. Entries and
+  adds are graded like your plans, as *Assistant calls*. Trims and exits are graded as *Assistant trims and
+  exits*, in % of the stock (an estimate for options): what the sale saved against holding to its time stop,
+  next to the same sale at 20 random minutes of the session, clustered by day (the rule is fixed in
+  `assistant_grades.py` and `docs/trading-methodology.md` §15). **Calls** on the start form sets how readily
+  the analyst calls: *Selective* (the default) only with a clear reason; *Active* also says hold, add, trim or
+  exit for each position you hold whenever something has changed, and sends a position's P&L alert straight to the
+  analyst (no watcher, no 3-minute gap), so the grades fill sooner, with more noise and more model calls.
+  **Ask** answers a question about the stock from the same state and never makes a call. Every price a
   note, call or answer writes must be one the state shows (within 0.05 %); otherwise it is held back and the
   page says only that. `TRADE_ASSISTANT_DAILY_CALLS` (150) caps the day's model calls, notes, plan readings
   and questions together; the card shows the day's count, by model, and the median time. A replay of a full
@@ -1247,7 +1264,7 @@ and `kept` (id → reason). `POST
 the read-only broker holdings and your alerts (409 when no account is set).
 `GET /in-play` returns today's in-play list (`{"list": null}` before 09:46).
 `POST /assistant/plans/parse`, `POST /assistant/plans`, `DELETE /assistant/plans/{id}` and `POST /assistant/ask`
-serve the assistant's plans and questions. `GET /assistant`, `POST /assistant/start` (`{"tickers": [..], "horizon": "0dte|intraday|swing"}`, one to three
+serve the assistant's plans and questions. `GET /assistant`, `POST /assistant/start` (`{"tickers": [..], "horizon": "0dte|intraday|swing", "calls": "selective|active"}`, one to three
 US stocks; another session is stopped first), `POST /assistant/stop` and the event stream `GET /assistant/stream`
 (`state` once a second while a session runs, `alert` as each happens) serve the trading assistant.
 `GET /ideas?days=7` (1–30) lists the trend scan's reviewed ideas and the breakout alerts, newest first,

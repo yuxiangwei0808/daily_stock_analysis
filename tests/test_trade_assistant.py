@@ -278,7 +278,7 @@ def test_the_api_starts_shows_and_stops_a_session():
     from fastapi.testclient import TestClient
     from api.v1.endpoints.trade_desk import router
     a, charts, _ = _assistant()
-    a.start = lambda tickers, horizon: asst.Assistant.start(a, tickers, horizon, at(9, 50), threads=False)
+    a.start = lambda tickers, horizon, calls: asst.Assistant.start(a, tickers, horizon, at(9, 50), threads=False, calls=calls)
     app = FastAPI()
     app.state.trade_desk_service = SimpleNamespace(assistant=a)
     app.include_router(router, prefix="/api/v1/trade-desk")
@@ -287,8 +287,12 @@ def test_the_api_starts_shows_and_stops_a_session():
         assert client.post("/api/v1/trade-desk/assistant/start", json={"tickers": ["SPY", "QQQ", "NVDA", "TSLA"]}).status_code == 422
         assert client.post("/api/v1/trade-desk/assistant/start", json={"tickers": ["SPY"], "horizon": "weekly"}).status_code == 422
         assert client.post("/api/v1/trade-desk/assistant/start", json={"tickers": ["S PY"]}).status_code == 422
+        assert client.post("/api/v1/trade-desk/assistant/start", json={"tickers": ["SPY"], "calls": "always"}).status_code == 422
         started = client.post("/api/v1/trade-desk/assistant/start", json={"tickers": ["SPY"], "horizon": "0dte"})
         assert started.status_code == 200 and started.json()["running"] and started.json()["horizon"] == "0dte"
+        assert started.json()["calls"] == "selective" and started.json()["call_styles"]["active"] == "Active"
+        active = client.post("/api/v1/trade-desk/assistant/start", json={"tickers": ["SPY"], "calls": "active"}).json()
+        assert active["calls"] == "active" and "active calls" in active["events"][0]["detail"]
         stopped = client.post("/api/v1/trade-desk/assistant/stop").json()
         assert stopped["running"] is False and stopped["stopped"]["reason"] == "stopped from the page"
 
@@ -800,3 +804,99 @@ def test_watcher_decisions_are_graded_by_the_next_30_minutes_and_summarised_by_d
     a._watch_log = [{"ticker": "SPY", "at": at(9, 31).isoformat(), "escalate": True, "price": 735.0}]
     a.stop("the session closed", at(16, 15))
     assert "2026-11-09" not in (repo.setting(aw.GRADES_SETTING) or {})  # 09:31 + 30 min is past the 20 bars held
+
+
+def _holding(monkeypatch, answers, calls="selective"):
+    """A session on SPY while you hold a 0DTE call, with a fake model."""
+    from src.services.trade_desk import assistant_model
+    generate, asked = _model(answers)
+    monkeypatch.setattr(assistant_model, "generate", generate)
+    monkeypatch.setattr(holdings, "enabled", lambda: True)
+    rows = [{"key": "SPY|C735", "ticker": "SPY", "type": "option", "exposure": "long", "label": "SPY 11/09 735C",
+             "pnl_pct": 30.0, "weight_pct": 1.2, "days_left": 0, "stop": 728.0, "target": 742.0}]
+    monkeypatch.setattr(position_plans, "panel_rows", lambda view, plans, rules: [dict(row) for row in rows])
+    store = SimpleNamespace(view=lambda live=False: {"positions": ["x"]}, plans=lambda: {"plans": {}}, rules=lambda: [])
+    repo = FakeRepo()
+    a, charts, clock = _assistant(SimpleNamespace(repo=repo, holdings=store, worker=SimpleNamespace(_shadow_watch=None)))
+    a.start(["SPY"], "0dte", at(9, 50), threads=False, calls=calls)
+    a.io(at(9, 50))
+    charts.push_quote("US.SPY", 736.0, at(9, 50, 1))
+    a.check(at(9, 50, 1))
+    return a, charts, clock, asked, rows, repo
+
+
+def test_calls_on_a_held_position_add_trim_or_exit_and_are_graded_against_holding(monkeypatch):
+    exit_call = {"action": "exit", "position": "SPY 11/09 735C", "trigger": {"kind": "below", "price": 730.0},
+                 "stop": None, "target": None, "time_stop": None, "why": "Losing the prior day low ends the move"}
+    a, charts, clock, asked, rows, repo = _holding(monkeypatch, [
+        {"note": "Your 735C is up 30% on cost; 740 is the next level, untested.", "call": exit_call},
+        {"note": "Same picture.", "call": dict(exit_call)},
+        {"note": "Strong.", "call": {"action": "add", "position": "SPY 11/09 735C", "direction": "short",
+                                     "trigger": {"kind": "now"}, "stop": 738.03, "target": 730.0}},
+        {"note": "Trim the other one.", "call": {"action": "trim", "position": "SPY 11/09 740C", "trigger": {"kind": "now"}}},
+        {"note": "Room to 740.", "call": {"action": "add", "position": "SPY 11/09 735C",
+                                          "trigger": {"kind": "above", "price": 738.03}, "stop": 732.43, "target": 740.0,
+                                          "time_stop": "11:00", "why": "Over the pre-market high"}}])
+    a.notes_step(at(9, 50, 2))
+    assert "Make a call only when the state gives a clear reason" in asked[0]["system"]
+    assert '"exposure": "long"' in asked[0]["prompt"]
+    spy = a.state()["tickers"][0]
+    sale = spy["plans"][0]
+    assert sale["kind"] == "exit" and sale["action"] == "exit" and sale["position"] == "SPY 11/09 735C"
+    assert sale["status"] == "waiting" and sale["direction"] == "long" and "stop" not in sale
+    assert spy["notes"][0]["call"] == "exit SPY 11/09 735C below 730, until 16:00"
+    assert any(e["title"] == "Assistant call watched: SPY exit SPY 11/09 735C below 730" for e in a.events_after(0))
+    item = a._tickers["SPY"]
+    for minute, why in ((51, "the same call is already waiting (exit SPY 11/09 735C below 730)"),
+                        (52, "an add to SPY 11/09 735C is on its side (long)"),
+                        (53, "a trim names a position held on SPY, not SPY 11/09 740C")):
+        a._write_note(item, ["test"], at(9, minute))
+        assert a.state()["tickers"][0]["notes"][0]["text"].endswith(f"(Its call was not recorded: {why}.)")
+    a._write_note(item, ["test"], at(9, 54))
+    add = a.state()["tickers"][0]["plans"][0]
+    assert add["kind"] == "call" and add["action"] == "add" and add["direction"] == "long" and add["stop"] == 732.43
+    assert a.state()["tickers"][0]["notes"][0]["call"] == "add to SPY 11/09 735C: long above 738.03, stop 732.43, target 740, out by 11:00"
+    assert '"action": "exit"' in asked[-1]["prompt"] and "waiting for its trigger: not sold yet" in asked[-1]["prompt"]
+    charts.push_quote("US.SPY", 729.9, at(10, 0))
+    a.check(at(10, 0))
+    assert a.events_after(0)[-1]["title"] == "Assistant call triggered: exit SPY 11/09 735C at 729.9"
+    rows.clear()  # you closed it: the add waiting on it has nothing to add to
+    clock["mono"] += asst.POSITION_SECONDS
+    a.io(at(10, 1))
+    a.check(at(10, 1))
+    assert a.events_after(0)[-1]["title"] == "Assistant call on add to SPY 11/09 735C is void: the position closed before it triggered"
+    # The day: 736 falling 0.02 a minute, so the 10:00 sale at 729.9 beat holding to the close.
+    item.bars = _day_bars([(736.4 - 0.02 * k, 736.5 - 0.02 * k, 736.3 - 0.02 * k, 736.4 - 0.02 * k - 0.01) for k in range(390)])
+    a.stop("the session closed", at(16, 15))
+    graded = repo.rows[sale["id"]]
+    held = item.bars[-1]["close"]
+    assert graded["status"] == "closed" and graded["how"] == "held" and graded["saved_pct"] == pytest.approx(
+        -(held - 729.9) / 729.9 * 100, abs=1e-4)
+    assert graded["saved_pct"] > 0 and graded["twin_saved_pct"] is not None
+    assert repo.rows[add["id"]]["status"] == "void"
+
+
+def test_active_calls_ask_for_a_call_on_each_held_position(monkeypatch):
+    a, charts, clock, asked, rows, repo = _holding(monkeypatch, [{"note": "Holding is fine for now.", "call": None}], calls="active")
+    a.notes_step(at(9, 50, 2))
+    assert "For each held position, say in the note whether you would hold, add, trim or exit" in asked[0]["system"]
+    assert a.state()["calls"] == "active"
+    with pytest.raises(ValueError, match="Calls are selective, active"):
+        a.start(["SPY"], "0dte", at(9, 55), threads=False, calls="always")
+
+
+def test_with_active_calls_a_positions_pnl_step_goes_straight_to_the_analyst(monkeypatch):
+    from src.services.trade_desk import assistant_watch
+    monkeypatch.setattr(assistant_watch, "watch_enabled", lambda: True)
+    for calls, straight in (("selective", False), ("active", True)):
+        a, charts, clock, asked, rows, repo = _holding(monkeypatch, [{"note": "First look.", "call": None},
+                                                                    {"note": "Up 45% on cost.", "call": None}], calls=calls)
+        a.notes_step(at(9, 50, 2))
+        for second, pnl in ((30, 30.0), (59, 45.0)):  # the first reading sets the marks; then a new best
+            rows[0]["pnl_pct"] = pnl
+            clock["mono"] += asst.POSITION_SECONDS
+            a.io(at(9, 50, second))
+        assert any(e["title"] == "SPY 11/09 735C +45.0% on cost" for e in a.events_after(0))
+        a.notes_step(at(9, 51))  # a minute after the first note: only an urgent reason is read now
+        assert (len(asked) == 2) is straight, calls
+        assert bool(a._watch_wants.get("SPY")) is not straight, calls

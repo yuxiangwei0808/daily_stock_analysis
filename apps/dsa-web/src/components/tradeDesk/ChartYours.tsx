@@ -7,7 +7,7 @@ import type { ChartGradeKind, ChartGradeTable, ChartYours } from '../../types/tr
 import { nyTime, price } from './chartOverlays';
 import { errorMessage } from './deskFormat';
 
-const signedR = (value?: number | null) => (value == null ? '—' : `${value >= 0 ? '+' : '−'}${Math.abs(value).toFixed(2)}R`);
+const signedR = (value?: number | null, unit = 'R') => (value == null ? '—' : `${value >= 0 ? '+' : '−'}${Math.abs(value).toFixed(2)}${unit}`);
 const STATUS: Record<string, string> = { waiting: 'Waiting', open: 'Open', closed: 'Finished', expired: 'Expired', void: 'Void' };
 
 function describe(item: ChartYours) {
@@ -105,7 +105,7 @@ export function YoursCard({ ticker, lastPrice, yours, chart, onChanged }: { tick
 }
 
 function verdict(row: ChartGradeKind) {
-  if (row.verdict === 'passes') return `Passes: beats random timing (t ${row.t?.toFixed(2)} ≥ ${row.tNeeded}) and made money`;
+  if (row.verdict === 'passes') return `Passes: beats random timing (t ${row.t?.toFixed(2)} ≥ ${row.tNeeded}) and ${row.unit === '%' ? 'beat holding' : 'made money'}`;
   if (row.verdict === 'no_edge') return `No edge shown (t ${row.t == null ? '—' : row.t.toFixed(2)}${row.tNeeded ? `, needs ${row.tNeeded}` : ''})`;
   return `Too early: ${row.graded} of ${row.needed} graded`;
 }
@@ -121,7 +121,7 @@ export function GradesCard({ version }: { version: number }) {
   return (
     <Card variant="bordered" padding="sm" data-testid="chart-grades">
       <h3 className="px-1 pb-1 text-sm font-semibold text-foreground">Forward grades</h3>
-      <p className="px-1 pb-2 text-[11px] text-muted-text">A system flag counts only if the chart showed it before it traded. Each trade follows the backtest's exits and is compared with the same trade at random times; a kind gets a verdict after {table?.minTrades ?? 30} graded trades.</p>
+      <p className="px-1 pb-2 text-[11px] text-muted-text">A system flag counts only if the chart showed it before it traded. Each trade follows the backtest's exits and is compared with the same trade at random times; a kind gets a verdict after {table?.minTrades ?? 30} graded trades. The assistant's trims and exits are in % of the stock: what each sale saved against holding to its time stop.</p>
       {error ? <p className="px-1 text-xs text-secondary-text">{error}</p> : null}
       {table ? <div className="overflow-x-auto"><table className="w-full whitespace-nowrap text-left text-xs">
         <thead className="text-muted-text"><tr><th className="px-2 py-1 font-normal">Source</th><th className="px-2 py-1 text-right font-normal">Graded</th>
@@ -130,9 +130,9 @@ export function GradesCard({ version }: { version: number }) {
         <tbody>{table.kinds.map((row) => <tr key={`${row.source}-${row.kind}`} className="border-t border-border/30">
           <td className="px-2 py-1 text-foreground">{row.label}</td>
           <td className="px-2 py-1 text-right font-mono">{row.graded}/{row.needed}</td>
-          <td className="px-2 py-1 text-right font-mono">{signedR(row.meanR)}</td>
-          <td className="px-2 py-1 text-right font-mono">{signedR(row.twinR)}</td>
-          <td className="px-2 py-1 text-right font-mono">{signedR(row.edge)}</td>
+          <td className="px-2 py-1 text-right font-mono">{signedR(row.meanR, row.unit)}</td>
+          <td className="px-2 py-1 text-right font-mono">{signedR(row.twinR, row.unit)}</td>
+          <td className="px-2 py-1 text-right font-mono">{signedR(row.edge, row.unit)}</td>
           <td className="px-2 py-1 text-secondary-text">{verdict(row)}</td>
           <td className="px-2 py-1 font-mono text-muted-text">{row.waiting} · {row.open} · {row.expired}{row.late ? ` · ${row.late} late` : ''}{row.void ? ` · ${row.void} void` : ''}</td>
         </tr>)}</tbody>

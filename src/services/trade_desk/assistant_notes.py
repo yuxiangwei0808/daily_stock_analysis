@@ -66,17 +66,22 @@ def as_of(now: Optional[datetime] = None) -> str:
 
 
 # -- phase 4: notes, calls and your questions --------------------------------------------------------
-NOTE_SYSTEM = """You are a trading assistant beside a trader during the US session. You get one stock's state as the system
+_NOTE_HEAD = """You are a trading assistant beside a trader during the US session. You get one stock's state as the system
 computed it: the price, levels with their test verdicts, box flags with their grades, option contracts near the price,
 the trader's positions and plans, the latest events, and why you are asked now. Write for the trader in plain English.
-Reply with one JSON object and nothing else:
+"""
+_NOTE_REPLY = """Reply with one JSON object and nothing else:
 {"note": "two to four short sentences: what just changed, where the price sits against the levels that matter, and what
 the trader's position or plan means now, with its risk in % of the account when the state gives one",
- "call": null, or {"direction": "long" or "short",
+ "call": null, or {"action": "enter" | "add" | "trim" | "exit",
+                   "position": for add, trim and exit, the held position's label exactly as the state gives it, else null,
+                   "direction": "long" or "short" (enter; add, trim and exit follow the position's exposure),
                    "trigger": {"kind": "now" | "above" | "below" | "close_above" | "close_below", "price": number or null,
                                "bar_minutes": 1 | 5 | 15 or null},
-                   "stop": number, "target": number, "time_stop": "HH:MM" or null, "why": "one sentence"}}
-Rules:
+                   "stop": number for enter and add, else null, "target": number for enter and add, else null,
+                   "time_stop": "HH:MM" or null, "why": "one sentence"}}
+"""
+_RULES = """Rules:
 - Every price you write, in the note or the call, must be one in the state: the last price, a level, a flag's or plan's
   price, stop or target, or a contract's strike, bid, ask or breakeven. Never compute, round or invent a price.
 - Nothing here has passed a test except what the state marks "pass": say once in a note that the levels and flags you
@@ -85,15 +90,41 @@ Rules:
 - A plan's "state" says whether it is waiting for its trigger, in the trade, or done; take it as given.
 - When a chart image comes with the state, read the shape from it (the trend, ranges, how the price reached a
   level); every price you write still comes from the state, never from the picture's axis.
-- Make a call only when the state gives a clear reason; most notes have none. It is an untested model call: it is
-  recorded and graded against the same trade at random times. Never size a position.
-- The trader places every order; never say an order was or will be placed."""
+"""
+_CALL_RULES = """- A call is a whole rule a computer can follow, every part a price from the state. "enter" is a new trade on the
+  stock; "add" is more of a held position, on its side. Both need a trigger, a stop, a target and a time stop.
+  "trim" sells part of a held position and "exit" all of it, when the trigger trades: a stop for a position is an
+  exit with a "below" trigger for a long position ("above" for a short one), and taking profit at a price is a trim or
+  exit with an "above" trigger for a long ("below" for a short). Their time_stop is how long the call stands.
+- A position's stop and target come from the trader's alerts, the daily review or a 2 ATR rule: risk levels, not
+  tested signals, and prices of the stock also for an option position.
+- {readiness}
+- Don't repeat a call of yours that the plans show still waiting or in the trade.
+- Every call is an untested model call: it is recorded and graded, an entry or add against the same trade at random
+  times, a trim or exit against holding to its time stop and against selling at random times.
+- Never size a position or say how much to add or trim: the trader decides. The trader places every order; never
+  say an order was or will be placed."""
 
-ASK_SYSTEM = NOTE_SYSTEM.replace(
-    "Reply with one JSON object and nothing else:\n{\"note\":",
-    "The trader asks you a question about the stock. Reply with one JSON object and nothing else:\n{\"answer\": \"answer the "
-    "question in up to five short sentences, with the numbers from the state\", \"note\":").replace(
-    "\"call\": null, or {", "\"call\": always null for a question, never {")
+CALL_STYLES = {
+    "selective": "Make a call only when the state gives a clear reason; most notes have none.",
+    "active": ("Make a call whenever the state gives a reason you can say in one sentence: completed bars confirming a "
+               "move through a level, the price at a held position's or plan's level, or a position's P&L step. For each "
+               "held position, say in the note whether you would hold, add, trim or exit, and make it a call unless it is "
+               "hold. Make none when nothing has changed since the last note."),
+}
+
+
+def note_system(calls: str = "selective") -> str:
+    """The analyst's instructions for a note; ``calls`` is how readily it makes a call (CALL_STYLES)."""
+    return _NOTE_HEAD + _NOTE_REPLY + _RULES + _CALL_RULES.format(readiness=CALL_STYLES.get(calls, CALL_STYLES["selective"]))
+
+
+NOTE_SYSTEM = note_system()
+
+ASK_SYSTEM = (_NOTE_HEAD + """The trader asks you a question about the stock. Reply with one JSON object and nothing else:
+{"answer": "answer the question in up to five short sentences, with the numbers from the state", "note": "", "call": null}
+""" + _RULES + """- A question gets no call: answer it in words. Never size a position or say how much to add or trim: the
+  trader decides. The trader places every order; never say an order was or will be placed.""")
 
 PRICE = re.compile(r"(?<![\w.%])(\d{1,6}(?:\.\d{1,4})?)(?![\d%]|\s*(?:%|percent|R\b|min|minute|second|s\b|day|session|share|contract|x\b))")
 
@@ -114,10 +145,11 @@ def context(state: Dict[str, Any], *, horizon: str, now: datetime, closing: Opti
         "flags": state.get("flags") or [],
         "contracts": [{k: r.get(k) for k in ("right", "strike", "bid", "ask", "iv", "delta", "breakeven", "breakeven_move_pct",
                                              "theta_per_min", "minutes_left")} for r in contracts],
-        "positions": [{k: p.get(k) for k in ("label", "type", "pnl_pct", "weight_pct", "stop", "target", "days_left")}
+        "positions": [{k: p.get(k) for k in ("label", "type", "exposure", "pnl_pct", "weight_pct", "stop", "target", "days_left")}
                       for p in state.get("positions") or []],
         "plans": [{"source": p.get("source"), "state": _plan_state(p),
-                   **{k: p.get(k) for k in ("direction", "trigger", "stop", "target", "time_stop")},
+                   **{k: p.get(k) for k in ("action", "position", "direction", "trigger", "stop", "target", "time_stop")
+                      if p.get(k) is not None},
                    "entry_price": p.get("price"), "exit_price": (p.get("live_exit") or {}).get("price") or p.get("exit")}
                   for p in state.get("plans") or []],
         "recent_events": [{"time": datetime.fromisoformat(e["at"]).astimezone(_NEW_YORK).strftime("%H:%M"), "title": e["title"]}
@@ -137,8 +169,13 @@ def _hhmm(text: Any) -> str:
 def _plan_state(plan: Dict[str, Any]) -> str:
     """A plan's status in words, with its prices: the bare status ("open") reads to a model like "not triggered"."""
     status, live = plan.get("status"), plan.get("live_exit")
+    if plan.get("kind") == "exit" and status in ("open", "closed"):
+        sold = f"{plan.get('action')} triggered at {plan.get('price'):g} at {_hhmm(plan.get('entry_time'))}"
+        if status == "closed" and plan.get("saved_pct") is not None:
+            return f"{sold}; graded: {plan['saved_pct']:+.2f}% against holding to {plan.get('time_stop')}"
+        return f"{sold}: done for today, graded against holding to {plan.get('time_stop')} after the close"
     if status == "waiting":
-        return "waiting for its trigger: not in the trade"
+        return "waiting for its trigger: not sold yet" if plan.get("kind") == "exit" else "waiting for its trigger: not in the trade"
     if status == "open" and live:
         return f"in the trade from {plan.get('price'):g} at {_hhmm(plan.get('entry_time'))}, then reached its {live['how']} " \
                f"at {live['price']:g} at {_hhmm(live['time'])}: done for today, graded after the close"

@@ -61,10 +61,14 @@ describe('GradesCard', () => {
     api.getChartGrades.mockResolvedValue({ minTrades: 30, recent: [], kinds: [
       { ...row, graded: 3, meanR: -0.2, t: null, verdict: 'too_early' },
       { ...row, kind: 'mark', label: 'Your marks', graded: 31, meanR: 0.4, t: 2.5, tNeeded: 2.1, verdict: 'passes' },
+      { ...row, source: 'assistant', kind: 'exit', label: 'Assistant trims and exits', unit: '%', graded: 30, meanR: 0.12, twinR: -0.03,
+        edge: 0.15, t: 2.3, tNeeded: 2.1, verdict: 'passes' },
     ] });
     render(<GradesCard version={0} />);
     expect(await screen.findByText('Too early: 3 of 30 graded')).toBeInTheDocument();
     expect(screen.getByText('Passes: beats random timing (t 2.50 ≥ 2.1) and made money')).toBeInTheDocument();
-    expect(screen.getAllByText('2 · 1 · 4 · 1 late')).toHaveLength(2);
+    expect(screen.getByText('Passes: beats random timing (t 2.30 ≥ 2.1) and beat holding')).toBeInTheDocument();
+    expect(screen.getByText('+0.12%')).toBeInTheDocument();
+    expect(screen.getAllByText('2 · 1 · 4 · 1 late')).toHaveLength(3);
   });
 });

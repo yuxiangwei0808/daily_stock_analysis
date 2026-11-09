@@ -8,6 +8,7 @@ import type {
   HoldingRuleInput,
   HoldingsResponse,
   PortfolioSummary,
+  AssistantCalls,
   AssistantHorizon,
   AssistantNote,
   AssistantPlan,
@@ -441,8 +442,8 @@ export const tradeDeskApi = {
     return toCamelCase<AssistantState>(response.data);
   },
 
-  async startAssistant(tickers: string[], horizon: AssistantHorizon): Promise<AssistantState> {
-    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/start`, { tickers, horizon }, { timeout: 60000 });
+  async startAssistant(tickers: string[], horizon: AssistantHorizon, calls: AssistantCalls = 'selective'): Promise<AssistantState> {
+    const response = await apiClient.post<Record<string, unknown>>(`${BASE_PATH}/assistant/start`, { tickers, horizon, calls }, { timeout: 60000 });
     return toCamelCase<AssistantState>(response.data);
   },
 

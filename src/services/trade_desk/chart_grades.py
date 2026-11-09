@@ -42,8 +42,10 @@ OPEN_STATES = ("waiting", "open", "closed")  # still moving: entry, exit or twin
 KINDS = (("system", "break_retest", "System: break and retest"), ("system", "fade", "System: fade at a box"),
          ("you", "mark", "Your marks"), ("you", "box", "Your boxes"),
          # Same-day trades graded by the trading assistant (assistant_grades.py): clustered by day, not month.
-         ("you", "plan", "Your plans"), ("assistant", "call", "Assistant calls"))
-SESSION_KINDS = ("plan", "call")
+         # The assistant's trims and exits are graded in % against holding, not in R.
+         ("you", "plan", "Your plans"), ("assistant", "call", "Assistant calls"),
+         ("assistant", "exit", "Assistant trims and exits"))
+SESSION_KINDS = ("plan", "call", "exit")
 
 
 def _aware(text: str) -> datetime:
@@ -248,9 +250,10 @@ class ChartGrades:
         out = []
         for source, kind, label in KINDS:
             mine = [r for r in rows if r.get("source") == source and r.get("kind") == kind]
-            graded = [SimpleNamespace(R=r["R"], twin_R=r["twin_R"], edge=r["R"] - r["twin_R"], month=r["month"],
-                                      ret_pct=r.get("ret_pct") or 0.0)
-                      for r in mine if r["status"] == "closed" and r.get("twin_R") is not None]
+            mean, twin = ("saved_pct", "twin_saved_pct") if kind == "exit" else ("R", "twin_R")
+            graded = [SimpleNamespace(R=r[mean], twin_R=r[twin], edge=r[mean] - r[twin], month=r["month"],
+                                      ret_pct=r[mean] if kind == "exit" else r.get("ret_pct") or 0.0)
+                      for r in mine if r["status"] == "closed" and r.get(twin) is not None]
             stats = bb.summarize(graded) if graded else None
             needed = t_needed(stats["months"]) if stats else None
             verdict = "too_early"
@@ -258,11 +261,13 @@ class ChartGrades:
                 verdict = "passes" if bb.passes({"all": stats}, needed or 99) else "no_edge"
             count = {status: sum(1 for r in mine if r["status"] == status) for status in
                      ("waiting", "open", "closed", "expired", "late", "void")}
-            out.append({"source": source, "kind": kind, "label": label, "graded": len(graded), "needed": MIN_TRADES,
+            out.append({"source": source, "kind": kind, "label": label, "unit": "%" if kind == "exit" else "R",
+                        "graded": len(graded), "needed": MIN_TRADES,
                         **count, "mean_R": _r(stats and stats["mean_R"]), "twin_R": _r(stats and stats["twin_R"]),
                         "edge": _r(stats and stats["edge"]), "t": _r(stats and stats["t_edge"]),
                         "months": stats["months"] if stats else 0, "t_needed": needed, "verdict": verdict})
-        keep = ("id", "ticker", "status", "source", "kind", "direction", "price", "stop", "target", "R", "twin_R",
+        keep = ("id", "ticker", "status", "source", "kind", "action", "position", "direction", "price", "stop", "target",
+                "R", "twin_R", "saved_pct", "twin_saved_pct",
                 "entry_time", "exit_time", "how", "seen_at", "marked_at", "kept_at", "top", "bottom", "impulse_t", "tidy",
                 "void", "note")
         return {"kinds": out, "recent": [{k: r.get(k) for k in keep if k in r} for r in rows[:recent]],

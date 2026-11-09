@@ -97,3 +97,79 @@ def test_stops_count_first_gaps_fill_at_the_open_and_the_entry_bar_ignores_targe
     assert ag.simulate(_bars([(100, 103, 100, 101), (101, 101, 100.5, 101)]), 0, 100, 99, 102, 1, 1) == (101.0, "time", 1)
     short = _bars([(100, 100.2, 99.8, 100), (100, 100.1, 97, 98)])
     assert ag.simulate(short, 0, 100, 101, 98, -1, 1) == (98, "target", 1)
+
+
+LONG = {"key": "SPY|C735", "label": "SPY 11/09 735C", "exposure": "long"}
+SHORT = {"key": "SPY|P735", "label": "SPY 11/09 735P", "exposure": "short"}
+
+
+def test_a_trim_or_exit_names_a_held_side_and_stands_until_its_time_stop():
+    sale = ag.check_sale({"action": "exit", "trigger": {"kind": "below", "price": 578}}, LONG, CLOSE, at(10, 0))
+    assert sale["action"] == "exit" and sale["direction"] == 1 and sale["time_stop"] == "16:00"
+    assert sale["stop"] is None and sale["target"] is None and sale["position_key"] == "SPY|C735"
+    rec = ag.new_record("SPY", "assistant", sale, 579.0, at(10, 0))
+    assert rec["kind"] == "exit" and rec["id"].startswith("assistant|SPY|exit|") and rec["status"] == "waiting"
+    assert ag.view(rec)["position"] == "SPY 11/09 735C" and ag.view(rec)["action"] == "exit"
+    now = ag.new_record("SPY", "assistant", ag.check_sale({"action": "trim", "time_stop": "11:00"}, SHORT, CLOSE, at(10, 0)),
+                        579.0, at(10, 0))
+    assert now["status"] == "open" and now["price"] == 579.0 and now["direction"] == -1
+    for bad, position, why in (({"action": "hold"}, LONG, "trim or an exit"),
+                               ({"action": "exit"}, {**LONG, "exposure": "neutral"}, "neither long nor short"),
+                               ({"action": "exit", "trigger": {"kind": "above"}}, LONG, "needs a price"),
+                               ({"action": "exit", "time_stop": "09:45"}, LONG, "already passed")):
+        with pytest.raises(ValueError, match=why):
+            ag.check_sale(bad, position, CLOSE, at(10, 0))
+
+
+def test_a_sale_triggers_at_its_price_and_keeps_its_time_stop_without_an_alert():
+    rec = ag.new_record("SPY", "assistant", ag.check_sale({"action": "exit", "trigger": {"kind": "below", "price": 578},
+                                                           "time_stop": "11:00"}, LONG, CLOSE, at(10, 0)), 579.0, at(10, 0))
+    assert ag.step(rec, 578.5, [], at(10, 1)) is None
+    assert ag.step(rec, 577.9, [], at(10, 2)) == "triggered" and rec["price"] == 577.9  # no stop or target to void it
+    assert ag.step(rec, 570.0, [], at(10, 30)) is None
+    assert ag.step(rec, 576.0, [], at(11, 0)) == "measured" and rec["live_exit"] == {"how": "held", "price": 576.0,
+                                                                                   "time": at(11, 0).isoformat()}
+    late = ag.new_record("SPY", "assistant", ag.check_sale({"action": "trim", "trigger": {"kind": "above", "price": 590},
+                                                            "time_stop": "11:00"}, LONG, CLOSE, at(10, 0)), 579.0, at(10, 0))
+    assert ag.step(late, 580.0, [], at(11, 0)) == "expired"
+
+
+def test_a_sale_is_graded_against_holding_to_its_time_stop_and_against_random_minutes():
+    # Up 0.01 a minute until 12:00, then down 0.02 a minute: selling near the top beats holding and most random minutes.
+    path = []
+    for k in range(390):
+        mid = 100 + 0.01 * min(k, 149) - 0.02 * max(k - 149, 0)
+        path.append((mid, mid + 0.01, mid - 0.01, mid))
+    bars = _bars(path)
+    sale = ag.check_sale({"action": "exit", "trigger": {"kind": "now"}}, LONG, CLOSE, at(9, 40))
+    rec = ag.new_record("XYZ", "assistant", sale, 101.49, at(12, 0, 5))
+    rec.update(entry_time=at(12, 0, 5).isoformat(), price=101.49)
+    assert ag.settle(rec, bars, CLOSE)
+    held = path[-1][3]
+    assert rec["status"] == "closed" and rec["how"] == "held" and rec["exit"] == pytest.approx(held)
+    assert rec["saved_pct"] == pytest.approx(-(held - 101.49) / 101.49 * 100, abs=1e-4) and rec["saved_pct"] > 0
+    assert rec["twin_saved_pct"] is not None and rec["twin_saved_pct"] < rec["saved_pct"]
+    short = ag.new_record("XYZ", "assistant", ag.check_sale({"action": "exit"}, SHORT, CLOSE, at(9, 40)), 101.49, at(12, 0, 5))
+    short.update(entry_time=at(12, 0, 5).isoformat(), price=101.49)
+    assert ag.settle(short, bars, CLOSE) and short["saved_pct"] == pytest.approx(-rec["saved_pct"], abs=1e-4)
+    assert ag.view(rec)["saved_pct"] == rec["saved_pct"] and "R" not in ag.view(rec)
+
+
+def test_on_random_walks_a_sale_at_a_random_minute_shows_no_edge_over_its_twins():
+    """Methodology §5: the rule and its twins on random data must differ by about zero."""
+    import numpy as np
+    rng = np.random.default_rng(20261109)
+    edges = []
+    for day in range(300):
+        closes = 100 * np.exp(np.cumsum(rng.normal(0, 0.0008, 391)))
+        path = [(closes[k], max(closes[k], closes[k + 1]) * 1.0002, min(closes[k], closes[k + 1]) * 0.9998, closes[k + 1])
+                for k in range(390)]
+        bars = _bars(path)
+        k = int(rng.integers(4, 380))  # a bar from 09:35
+        side = LONG if day % 2 else SHORT
+        rec = ag.new_record("XYZ", "assistant", ag.check_sale({"action": "exit"}, side, CLOSE, at(9, 31)), path[k][0], at(9, 31))
+        rec.update(entry_time=(at(9, 30) + timedelta(minutes=k, seconds=1)).isoformat(), price=round(float(path[k][0]), 4))
+        assert ag.settle(rec, bars, CLOSE)
+        edges.append(rec["saved_pct"] - rec["twin_saved_pct"])
+    edges = np.array(edges)
+    assert abs(edges.mean()) < 3 * edges.std(ddof=1) / np.sqrt(len(edges))

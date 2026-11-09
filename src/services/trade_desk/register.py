@@ -69,6 +69,13 @@ IDEAS: Tuple[Idea, ...] = (
          "Forward: each decision's next 30-minute range, same stock and day, day clusters", FORWARD,
          "Tracked forward: escalated moments against the same stock's other moments that day",
          "[trade-desk.md](trade-desk.md)"),
+    Idea("assistant_calls", "Shadow mode analyst calls: enter and add",
+         "Forward: R after cost against the same trade at 20 random minutes, same stock and day, day clusters", FORWARD,
+         "Tracked forward against random timing (Chart tab, Forward grades)", "[trade-desk.md](trade-desk.md)"),
+    Idea("assistant_sales", "Shadow mode analyst calls: trim and exit",
+         "Forward: the sale against holding to its time stop and against the same sale at 20 random minutes, "
+         "% of the stock, day clusters", FORWARD,
+         "Tracked forward against holding and random timing (Chart tab, Forward grades)", "Same"),
     Idea("prior_day_levels", "Prior day high, low and close", "Shown on the chart", NOT_TESTED,
          "Not tested as levels on their own", "[trade-desk.md](trade-desk.md#chart)"),
     Idea("value_area_levels", "Value-area high and low of the two prior weeks", "Shown on the chart", NOT_TESTED,

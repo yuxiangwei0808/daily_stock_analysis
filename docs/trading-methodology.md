@@ -209,6 +209,8 @@ Tracked forward or shown, without a verdict here (the scoreboard grades the forw
 | Stock report calls (buy, watch, sell) | Forward from each day's first report | Tracked forward against the rest of the watchlist | Journal tab, What's working |
 | Social scan and YouTube picks | Forward, 5/10/20 sessions | Tracked forward against same-day stocks | Journal tab, What's working |
 | Shadow mode watcher: which moments go to the analyst | Forward: each decision's next 30-minute range, same stock and day, day clusters | Tracked forward: escalated moments against the same stock's other moments that day | [trade-desk.md](trade-desk.md) |
+| Shadow mode analyst calls: enter and add | Forward: R after cost against the same trade at 20 random minutes, same stock and day, day clusters | Tracked forward against random timing (Chart tab, Forward grades) | [trade-desk.md](trade-desk.md) |
+| Shadow mode analyst calls: trim and exit | Forward: the sale against holding to its time stop and against the same sale at 20 random minutes, % of the stock, day clusters | Tracked forward against holding and random timing (Chart tab, Forward grades) | Same |
 | Prior day high, low and close | Shown on the chart | Not tested as levels on their own | [trade-desk.md](trade-desk.md#chart) |
 | Value-area high and low of the two prior weeks | Shown on the chart | Not tested as levels on their own (only as a box filter, above) | [trade-desk.md](trade-desk.md#chart) |
 | Pre-market high and low | Shown by the trading assistant | Not tested | [trading-assistant-plan.md](trading-assistant-plan.md) |
@@ -268,6 +270,13 @@ Tracked forward or shown, without a verdict here (the scoreboard grades the forw
 - The assistant's own calls and the plans you type can't be replayed, so they go straight to
   forward tracking (section 9). They are labelled "untested model call" or "your plan" and graded
   against the same trade at random times (twins differ only in the time), clustered by day.
+- Calls on a position you hold follow the same parts (section 2): an add is a trade with its own
+  trigger, stop, target and time stop, graded like an entry. A trim or an exit is a sale at a
+  trigger, standing until a time stop, and is graded per unit on the stock (an estimate for options,
+  section 14): what the sale saved against holding to the time stop, in %, against the same sale at
+  random minutes, clustered by day. It passes only if it beats those twins and the sales beat holding
+  on average. The rule is fixed in `assistant_grades.py`. How much to add or trim is never suggested
+  (section 8).
 - Every number the assistant writes comes from the system's computations or quotes, never from its
   own estimate.
 - Shadow mode works in three tiers ([trade-desk.md](trade-desk.md)): code watches every quote and alerts on events

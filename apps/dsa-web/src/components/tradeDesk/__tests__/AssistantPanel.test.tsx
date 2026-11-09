@@ -61,8 +61,11 @@ describe('AssistantPanel', () => {
     expect(await screen.findByText(/Shadow mode is an add-on to normal mode/)).toBeInTheDocument();
     expect(screen.getByLabelText('Assistant stocks')).toHaveValue('SPY');
     fireEvent.change(screen.getByLabelText('Assistant stocks'), { target: { value: 'spy, qqq' } });
+    expect(screen.getByLabelText('Assistant calls')).toHaveValue('selective');
+    expect(screen.getByText(/also says hold, add, trim or exit for each position you hold/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Assistant calls'), { target: { value: 'active' } });
     fireEvent.click(screen.getByRole('button', { name: 'Turn on shadow mode' }));
-    await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['SPY', 'QQQ'], '0dte'));
+    await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['SPY', 'QQQ'], '0dte', 'active'));
     expect(onShow).toHaveBeenCalledWith('SPY');
     expect(await screen.findByText('Pre-market high')).toBeInTheDocument();
     expect(within(screen.getByTestId('assistant-levels')).getByText('not tested')).toBeInTheDocument();
@@ -118,7 +121,7 @@ describe('AssistantPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /TSLA/ }));
     expect(screen.getByLabelText('Assistant stocks')).toHaveValue('TSLA');
     fireEvent.click(screen.getByRole('button', { name: /Shadow the top 3/ }));
-    await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['TSLA', 'NVDA', 'AMD'], '0dte'));
+    await waitFor(() => expect(api.startAssistant).toHaveBeenCalledWith(['TSLA', 'NVDA', 'AMD'], '0dte', 'selective'));
   });
 
   it('shows nothing when the desk is unavailable', async () => {

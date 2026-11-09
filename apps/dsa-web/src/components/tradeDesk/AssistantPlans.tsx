@@ -14,10 +14,31 @@ const EMPTY: AssistantPlanDraft = { direction: 'long', trigger: { kind: 'now', p
 const text = (value: number | null) => (value == null ? '' : String(value));
 const number = (value: string) => (value.trim() === '' ? null : Number(value));
 
+const SALE: Record<string, string> = { trim: 'Trim', exit: 'Exit' };
+const signed = (value: number, unit: string) => `${value >= 0 ? '+' : '−'}${Math.abs(value).toFixed(2)}${unit}`;
+
 function describe(plan: AssistantPlan) {
-  const trigger = plan.trigger.kind === 'now' ? 'from the price then'
-    : `${TRIGGERS.find(([key]) => key === plan.trigger.kind)?.[1].toLowerCase()} ${price(plan.trigger.price || 0)}${plan.trigger.barMinutes ? ` (${plan.trigger.barMinutes}-min bar)` : ''}`;
-  return `${plan.direction === 'long' ? 'Long' : 'Short'} ${trigger}, stop ${price(plan.stop)}, target ${price(plan.target)}, out by ${plan.timeStop}`;
+  const sale = plan.kind === 'exit';
+  const trigger = plan.trigger.kind === 'now' ? (sale ? 'now' : 'from the price then')
+    : `${sale ? 'when it ' : ''}${TRIGGERS.find(([key]) => key === plan.trigger.kind)?.[1].toLowerCase()} ${price(plan.trigger.price || 0)}${plan.trigger.barMinutes ? ` (${plan.trigger.barMinutes}-min bar)` : ''}`;
+  if (sale) return `${SALE[plan.action || 'exit']} ${plan.position} ${trigger}, until ${plan.timeStop}`;
+  const side = `${plan.direction === 'long' ? 'Long' : 'Short'} ${trigger}`;
+  const what = plan.action === 'add' ? `Add to ${plan.position}: ${side.toLowerCase()}` : side;
+  return `${what}, stop ${price(plan.stop ?? 0)}, target ${price(plan.target ?? 0)}, out by ${plan.timeStop}`;
+}
+
+/** What happened to a plan or call after it triggered: the R of a trade, or what a sale saved against holding. */
+function outcome(plan: AssistantPlan) {
+  if (plan.kind === 'exit') {
+    if (plan.status === 'open') return plan.liveExit ? ` · sold at ${price(plan.price ?? 0)}, held to ${plan.timeStop} at ${price(plan.liveExit.price)}` : ` · sold at ${price(plan.price ?? 0)}`;
+    if (plan.status === 'closed' && plan.savedPct != null) {
+      return ` · sold at ${price(plan.price ?? 0)}: ${signed(plan.savedPct, '%')} against holding to ${plan.timeStop}${plan.twinSavedPct != null ? `, random timing ${signed(plan.twinSavedPct, '%')}` : ''}`;
+    }
+    return '';
+  }
+  return `${plan.price != null && plan.status !== 'waiting' ? ` · in at ${price(plan.price)}` : ''}`
+    + `${plan.liveExit && plan.status === 'open' ? ` · ${plan.liveExit.how} at ${price(plan.liveExit.price)}` : ''}`
+    + `${plan.status === 'closed' && plan.r != null ? ` · ${plan.how} ${signed(plan.r, 'R')}${plan.twinR != null ? `, random timing ${signed(plan.twinR, 'R')}` : ''}` : ''}`;
 }
 
 /** Your plans on one stock: type it or fill it in, confirm, and the session watches it; graded after the close. */
@@ -101,11 +122,8 @@ export function AssistantPlans({ ticker, plans }: { ticker: string; plans: Assis
       {error ? <p role="alert" className="pt-1 text-xs text-danger">{error}</p> : null}
       {plans.length ? <ul className="mt-2 space-y-1 text-xs">{plans.map((plan) => <li key={plan.id} className="flex items-start justify-between gap-2 border-t border-border/30 pt-1">
         <div className="min-w-0 text-secondary-text">
-          <Badge variant={plan.status === 'open' ? 'warning' : 'default'}>{STATUS[plan.status] || plan.status}</Badge>{' '}
-          {plan.source === 'assistant' ? <span className="text-muted-text">Assistant call (untested model call) · </span> : null}{describe(plan)}
-          {plan.price != null && plan.status !== 'waiting' ? ` · in at ${price(plan.price)}` : ''}
-          {plan.liveExit && plan.status === 'open' ? ` · ${plan.liveExit.how} at ${price(plan.liveExit.price)}` : ''}
-          {plan.status === 'closed' && plan.r != null ? ` · ${plan.how} ${plan.r >= 0 ? '+' : '−'}${Math.abs(plan.r).toFixed(2)}R${plan.twinR != null ? `, random timing ${plan.twinR >= 0 ? '+' : '−'}${Math.abs(plan.twinR).toFixed(2)}R` : ''}` : ''}
+          <Badge variant={plan.status === 'open' ? 'warning' : 'default'}>{(plan.kind === 'exit' && plan.status === 'open' ? 'Triggered' : STATUS[plan.status]) || plan.status}</Badge>{' '}
+          {plan.source === 'assistant' ? <span className="text-muted-text">Assistant call (untested model call) · </span> : null}{describe(plan)}{outcome(plan)}
           {plan.void ? ` · ${plan.void}` : ''}{plan.why ? <span className="block text-muted-text">{plan.why}</span> : null}
         </div>
         {plan.status === 'waiting' ? <button type="button" aria-label="Remove plan" className="shrink-0 text-muted-text hover:text-danger"

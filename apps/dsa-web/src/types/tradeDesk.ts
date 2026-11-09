@@ -879,9 +879,11 @@ export interface ChartYours {
 }
 
 export interface ChartGradeKind {
-  source: 'system' | 'you';
+  source: 'system' | 'you' | 'assistant';
   kind: string;
   label: string;
+  /** "R" per trade; "%" for the assistant's trims and exits (what each sale saved against holding). */
+  unit?: 'R' | '%';
   graded: number;
   needed: number;
   waiting: number;
@@ -1030,17 +1032,22 @@ export interface AssistantPlanDraft {
   instrument: 'calls' | 'puts' | 'shares' | null;
 }
 
+/** A plan you typed, or an assistant call: ``enter`` and ``add`` are trades with a stop and a target (kind ``call``);
+ * ``trim`` and ``exit`` sell a held ``position`` at the trigger (kind ``exit``), graded in % against holding to the time stop. */
 export interface AssistantPlan {
   id: string;
   ticker: string;
   status: 'waiting' | 'open' | 'closed' | 'void' | 'expired';
   source: 'you' | 'assistant';
-  kind: 'plan' | 'call';
+  kind: 'plan' | 'call' | 'exit';
+  action?: 'enter' | 'add' | 'trim' | 'exit';
+  position?: string;
+  /** The side of the trade; for a trim or exit, the side of the position it sells. */
   direction: 'long' | 'short';
   trigger: { kind: AssistantTrigger; price: number | null; barMinutes: number | null };
   invalidation?: number;
-  stop: number;
-  target: number;
+  stop?: number;
+  target?: number;
   timeStop: string;
   instrument?: string;
   price?: number;
@@ -1050,6 +1057,8 @@ export interface AssistantPlan {
   exit?: number;
   r?: number;
   twinR?: number;
+  savedPct?: number;
+  twinSavedPct?: number;
   void?: string;
   text?: string;
   why?: string;
@@ -1129,10 +1138,15 @@ export interface AssistantTicker {
   error: string | null;
 }
 
+export type AssistantCalls = 'selective' | 'active';
+
 export interface AssistantState {
   running: boolean;
   horizon: AssistantHorizon | null;
   horizons: Record<AssistantHorizon, string>;
+  /** How readily the analyst makes a call; set when shadow mode is turned on. */
+  calls?: AssistantCalls;
+  callStyles?: Record<AssistantCalls, string>;
   startedAt: string | null;
   stopped: { at: string; reason: string } | null;
   maxTickers: number;

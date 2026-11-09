@@ -46,6 +46,25 @@ describe('AssistantPlans', () => {
     await waitFor(() => expect(api.removeAssistantPlan).toHaveBeenCalledWith('you|SPY|plan|a'));
   });
 
+  it('says an add, trim or exit call on your position in words, and grades a sale against holding', () => {
+    const calls = [
+      { id: 'assistant|SPY|call|c', ticker: 'SPY', status: 'waiting', source: 'assistant', kind: 'call', action: 'add',
+        position: 'SPY 11/09 735C', direction: 'long', trigger: { kind: 'above', price: 738.03, barMinutes: null }, stop: 732.43,
+        target: 740, timeStop: '11:00' },
+      { id: 'assistant|SPY|exit|d', ticker: 'SPY', status: 'open', source: 'assistant', kind: 'exit', action: 'exit',
+        position: 'SPY 11/09 735C', direction: 'long', trigger: { kind: 'below', price: 730, barMinutes: null }, timeStop: '16:00',
+        price: 729.9 },
+      { id: 'assistant|SPY|exit|e', ticker: 'SPY', status: 'closed', source: 'assistant', kind: 'exit', action: 'trim',
+        position: 'SPY 11/09 735C', direction: 'long', trigger: { kind: 'now', price: null, barMinutes: null }, timeStop: '15:30',
+        price: 736, how: 'held', exit: 734, savedPct: 0.27, twinSavedPct: -0.05 },
+    ];
+    render(<AssistantPlans ticker="SPY" plans={calls as never} />);
+    expect(screen.getByText(/Add to SPY 11\/09 735C: long trades at or above 738.03, stop 732.43, target 740.00, out by 11:00/)).toBeInTheDocument();
+    expect(screen.getByText(/Exit SPY 11\/09 735C when it trades at or below 730.00, until 16:00 · sold at 729.90/)).toBeInTheDocument();
+    expect(screen.getByText('Triggered')).toBeInTheDocument();
+    expect(screen.getByText(/Trim SPY 11\/09 735C now, until 15:30 · sold at 736.00: \+0.27% against holding to 15:30, random timing −0.05%/)).toBeInTheDocument();
+  });
+
   it('can be filled in by hand and says what is missing', async () => {
     render(<AssistantPlans ticker="SPY" plans={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Fill in by hand' }));

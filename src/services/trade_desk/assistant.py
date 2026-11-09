@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 _NEW_YORK = ZoneInfo("America/New_York")
 MAX_TICKERS = 3
 HORIZONS = {"0dte": "0DTE options", "intraday": "Intraday", "swing": "Swing"}
+CALL_STYLES = {"selective": "Selective", "active": "Active"}  # how readily the analyst calls (assistant_notes.CALL_STYLES)
+SESSION_KINDS = ("plan", "call", "exit")  # same-day records the session watches and grades (assistant_grades.py)
 SWING_DAYS = 14  # a swing session's contracts: the first expiry at least this many days out
 CHECK_SECONDS = 0.25
 IO_SECONDS = 1.0
@@ -60,6 +62,7 @@ SILENT = timedelta(seconds=60)
 NOTES_KEPT = 12
 NOTE_KINDS = ("level", "flag", "position", "pnl", "close_soon", "plan")  # events that ask for a note
 URGENT = ("position", "plan")  # a fill, a plan's trigger, stop, target or time stop: a note without waiting
+ACTIVE_URGENT = ("pnl",)  # with active calls, a position's P&L step too, straight to the analyst
 NOTES_SECONDS = 1.0
 MINUTES_A_YEAR = 365 * 24 * 60
 # What each level rests on, for its label (register.py); your own levels carry none.
@@ -188,6 +191,7 @@ class Assistant:
         self._threads: List[threading.Thread] = []
         self._tickers: Dict[str, _Ticker] = {}
         self.horizon: Optional[str] = None
+        self.calls = "selective"
         self.started_at: Optional[datetime] = None
         self.stopped: Optional[Dict[str, Any]] = None
         self._events: deque = deque(maxlen=EVENTS)
@@ -209,7 +213,7 @@ class Assistant:
         return self.started_at is not None
 
     def start(self, tickers: List[str], horizon: str = "0dte", now: Optional[datetime] = None, *,
-              threads: bool = True) -> Dict[str, Any]:
+              threads: bool = True, calls: str = "selective") -> Dict[str, Any]:
         names = list(dict.fromkeys(_validate(ticker, "1m") for ticker in tickers if str(ticker or "").strip()))
         if not names:
             raise ValueError("Choose one to three US stocks")
@@ -217,12 +221,14 @@ class Assistant:
             raise ValueError(f"At most {MAX_TICKERS} stocks at a time")
         if horizon not in HORIZONS:
             raise ValueError(f"Horizons are {', '.join(HORIZONS)}")
+        if calls not in CALL_STYLES:
+            raise ValueError(f"Calls are {', '.join(CALL_STYLES)}")
         now = now or self._clock()
         if self.running:
             self.stop("restarted with other stocks", now)
         with self._lock:
             self._tickers = {name: _Ticker(name) for name in names}
-            self.horizon, self.started_at, self.stopped = horizon, now, None
+            self.horizon, self.calls, self.started_at, self.stopped = horizon, calls, now, None
             self._events.clear()
             self._next, self._wants, self._watch_wants, self._last_note = {}, {}, {}, {}
             self._watch_log, self._analyst_times = [], []
@@ -230,7 +236,8 @@ class Assistant:
         for item in self._tickers.values():
             item.stream = self.charts.stream(item.ticker, "1m")  # quote, 1- and 15-minute bars, with push
         self._load_plans(now)
-        self._event(None, "session", f"Watching {', '.join(names)}", f"{HORIZONS[horizon]}; alerts on this page", now)
+        self._event(None, "session", f"Watching {', '.join(names)}",
+                    f"{HORIZONS[horizon]}; {CALL_STYLES[calls].lower()} calls; alerts on this page", now)
         if threads:
             self._stop.clear()
             from . import assistant_watch
@@ -325,7 +332,7 @@ class Assistant:
                **extra: Any) -> None:
         from . import assistant_watch
         watcher = ticker and wants_note and kind in NOTE_KINDS and kind not in assistant_watch.ALWAYS \
-            and assistant_watch.watch_enabled()
+            and kind not in self._urgent_kinds() and assistant_watch.watch_enabled()
         with self._lock:
             self._seq += 1
             self._events.append({"seq": self._seq, "at": now.isoformat(), "ticker": ticker, "kind": kind,
@@ -334,6 +341,10 @@ class Assistant:
                 self._watch_wants.setdefault(ticker, []).append(f"{kind}: {title}")
             elif ticker and wants_note and kind in NOTE_KINDS:
                 self._wants.setdefault(ticker, []).append(f"{kind}: {title}")
+
+    def _urgent_kinds(self) -> Tuple[str, ...]:
+        """The events the analyst reads at once, without the watcher or the gap between notes."""
+        return URGENT + ACTIVE_URGENT if self.calls == "active" else URGENT
 
     def events_after(self, seq: int) -> List[Dict[str, Any]]:
         with self._lock:
@@ -691,7 +702,7 @@ class Assistant:
         day = _local(now).date().isoformat()
         for item in self._tickers.values():
             rows = repo.chart_trades(ticker=item.ticker, limit=200)
-            item.plans = [row for row in rows if row.get("kind") in ("plan", "call") and row.get("day") == day][::-1]
+            item.plans = [row for row in rows if row.get("kind") in SESSION_KINDS and row.get("day") == day][::-1]
 
     def _save_plans(self) -> None:
         with self._lock:
@@ -711,19 +722,36 @@ class Assistant:
             if rec["status"] not in ag.WATCHED:
                 continue
             with self._lock:
-                what = ag.step(rec, item.price, item.bars, now)
+                gone = (rec["status"] == "waiting" and rec.get("position_key") and item.held is not None
+                        and rec["position_key"] not in item.held)
+                if gone:  # an add, trim or exit has nothing to act on once you closed the position
+                    rec.update(status="void", void="the position closed before it triggered", void_time=now.isoformat())
+                    what = "void"
+                else:
+                    what = ag.step(rec, item.price, item.bars, now)
             if what is None:
                 continue
             self._dirty[rec["id"]] = rec
+            if what == "measured":
+                continue  # a sale's time stop: what it is graded against, no alert
             whose = "Your plan" if rec["source"] == "you" else "Assistant call"
-            side = "long" if rec["direction"] == 1 else "short"
-            titles = {"triggered": f"{whose} triggered: {item.ticker} {side} at {rec.get('price', item.price):g}",
-                      "void": f"{whose} on {item.ticker} is void: {rec.get('void', '')}",
-                      "expired": f"{whose} on {item.ticker} expired: not triggered by {rec['time_stop']}",
-                      "stop": f"{whose} on {item.ticker} reached its stop {rec['stop']:g}",
-                      "target": f"{whose} on {item.ticker} reached its target {rec['target']:g}",
-                      "time": f"{whose} on {item.ticker}: time stop {rec['time_stop']}"}
-            detail = f"Last {item.price:g}; stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}."
+            if rec.get("kind") == "exit":
+                sale = f"{rec['action']} {rec['position']}"
+                titles = {"triggered": f"{whose} triggered: {sale} at {rec.get('price', item.price):g}",
+                          "void": f"{whose} to {sale} is void: {rec.get('void', '')}",
+                          "expired": f"{whose} to {sale} expired: not triggered by {rec['time_stop']}"}
+                detail = (f"Last {item.price:g}; {_plan_words(rec)}, until {rec['time_stop']}. "
+                          f"Graded against holding to {rec['time_stop']}.")
+            else:
+                side = "long" if rec["direction"] == 1 else "short"
+                what_on = f"add to {rec['position']}" if rec.get("action") == "add" else item.ticker
+                titles = {"triggered": f"{whose} triggered: {what_on} {side} at {rec.get('price', item.price):g}",
+                          "void": f"{whose} on {what_on} is void: {rec.get('void', '')}",
+                          "expired": f"{whose} on {what_on} expired: not triggered by {rec['time_stop']}",
+                          "stop": f"{whose} on {what_on} reached its stop {rec['stop']:g}",
+                          "target": f"{whose} on {what_on} reached its target {rec['target']:g}",
+                          "time": f"{whose} on {what_on}: time stop {rec['time_stop']}"}
+                detail = f"Last {item.price:g}; stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}."
             self._event(item.ticker, "plan", titles[what], detail, now, plan=rec["id"])
 
     def _item(self, ticker: str) -> _Ticker:
@@ -734,8 +762,11 @@ class Assistant:
         return item
 
     def add_plan(self, ticker: str, fields: Dict[str, Any], *, text: str = "", source: str = "you", why: str = "",
-                 model: str = "", now: Optional[datetime] = None) -> Dict[str, Any]:
-        """A plan you confirmed (or a call of the assistant's), watched from now on and graded after the session."""
+                 model: str = "", now: Optional[datetime] = None, position: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """A plan you confirmed (or a call of the assistant's), watched from now on and graded after the session.
+
+        A call's ``fields`` carry its ``action`` (assistant_grades.ACTIONS); an add, trim or exit names the held
+        ``position`` (a row of the stock's positions) it is about."""
         now = now or self._clock()
         item = self._item(ticker)
         if item.price is None:
@@ -745,7 +776,23 @@ class Assistant:
             raise ValueError("Plans are for the regular session")
         if now < opening and str((fields.get("trigger") or {}).get("kind") or "now") == "now":
             raise ValueError("Before the open a plan needs a trigger price: entering now would use a pre-market price")
-        plan = ag.check_plan(fields, item.price, closing, now)
+        action = str(fields.get("action") or "").lower() or None
+        if source == "you" or action in (None, "enter"):
+            plan = ag.check_plan(fields, item.price, closing, now)
+            if source != "you":
+                plan["action"] = "enter"
+        elif position is None:
+            raise ValueError(f"{_a(action)} names a position held on {item.ticker}")
+        elif action == "add":
+            side = {"long": "long", "short": "short"}.get(str(position.get("exposure") or ""))
+            if side is None or str(fields.get("direction") or side).lower() != side:
+                raise ValueError(f"an add to {position.get('label')} is on its side ({position.get('exposure') or 'unknown'})")
+            plan = {**ag.check_plan({**fields, "direction": side}, item.price, closing, now), "action": "add",
+                    "position": position["label"], "position_key": position["key"]}
+        elif action in ag.SALES:
+            plan = ag.check_sale(fields, position, closing, now)
+        else:
+            raise ValueError(f"A call is one of {', '.join(ag.ACTIONS)}")
         rec = ag.new_record(item.ticker, source, plan, item.price, now, text=text, why=why, model=model)
         repo = self._repo()
         if repo is not None:
@@ -753,8 +800,9 @@ class Assistant:
         with self._lock:
             item.plans.append(rec)
         whose = "Plan" if source == "you" else "Assistant call"
-        self._event(item.ticker, "plan", f"{whose} watched: {item.ticker} {_plan_words(rec)}",
-                    f"Stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}.", now, plan=rec["id"],
+        detail = (f"Until {rec['time_stop']}; graded against holding to then." if rec["kind"] == "exit"
+                  else f"Stop {rec['stop']:g}, target {rec['target']:g}, out by {rec['time_stop']}.")
+        self._event(item.ticker, "plan", f"{whose} watched: {item.ticker} {_plan_words(rec)}", detail, now, plan=rec["id"],
                     wants_note=False)
         return ag.view(rec)
 
@@ -824,6 +872,7 @@ class Assistant:
                      "last_error": self._usage["last_error"], "note_minutes": _note_gap().total_seconds() / 60,
                      "order": _model_order(), "watch": _watch_state(self._usage, self._watch_summary)}
             return {"running": self.running, "horizon": self.horizon, "horizons": HORIZONS,
+                    "calls": self.calls, "call_styles": CALL_STYLES,
                     "started_at": self.started_at.isoformat() if self.started_at else None, "stopped": self.stopped,
                     "max_tickers": MAX_TICKERS, "tickers": tickers, "events": [dict(e) for e in list(self._events)[-60:]][::-1],
                     "seq": self._seq, "model": model,
@@ -887,7 +936,7 @@ class Assistant:
             if not reasons or not item.loaded or item.price is None:
                 continue
             last = self._last_note.get(item.ticker)
-            urgent = any(reason.split(":")[0] in URGENT or reason.startswith("watcher") for reason in reasons)
+            urgent = any(reason.split(":")[0] in self._urgent_kinds() or reason.startswith("watcher") for reason in reasons)
             if last is not None and now - last < _note_gap() and not urgent:
                 continue
             with self._lock:  # what arrived meanwhile comes too
@@ -1063,7 +1112,7 @@ class Assistant:
         from . import assistant_notes, assistant_watch
         ctx = self._context(item, now, reasons)
         try:
-            result = assistant_notes.ask_model(assistant_notes.NOTE_SYSTEM, ctx, images=self._chart_images(item))
+            result = assistant_notes.ask_model(assistant_notes.note_system(self.calls), ctx, images=self._chart_images(item))
         except RuntimeError as exc:
             self._failed(exc)
             return
@@ -1081,18 +1130,39 @@ class Assistant:
         call = note["call"]
         if call:
             try:
-                fields = {"direction": call.get("direction"), "trigger": call.get("trigger") or {"kind": "now"},
-                          "stop": call.get("stop"), "target": call.get("target"), "time_stop": call.get("time_stop")}
-                plan = self.add_plan(item.ticker, fields, source="assistant", why=str(call.get("why") or ""),
-                                     model=entry["model"], now=now)
-                entry["call"] = (f"{plan['direction']} {plan['trigger']['kind'].replace('_', ' ')}"
-                                 + (f" {plan['trigger']['price']:g}" if plan["trigger"].get("price") else "")
-                                 + f", stop {plan['stop']:g}, target {plan['target']:g}, out by {plan['time_stop']}")
+                entry["call"] = self._record_call(item, call, entry["model"], now)
             except ValueError as exc:
                 entry["text"] += f" (Its call was not recorded: {exc}.)"
         with self._lock:
             item.notes.appendleft(entry)
         self._event(item.ticker, "note", f"{item.ticker}: assistant note", entry["text"][:240], now, wants_note=False)
+
+    def _record_call(self, item: _Ticker, call: Dict[str, Any], model: str, now: datetime) -> str:
+        """Watches the analyst's call (enter, add, trim or exit) and says it in words; ValueError when it can't be."""
+        action = str(call.get("action") or "enter").lower()
+        if action not in ag.ACTIONS:
+            raise ValueError(f"a call is one of {', '.join(ag.ACTIONS)}")
+        position = None
+        if action != "enter":
+            label = str(call.get("position") or "").strip()
+            with self._lock:
+                position = next((dict(row) for row in item.positions if row.get("label") == label), None)
+            if position is None:
+                raise ValueError(f"{_a(action)} names a position held on {item.ticker}" + (f", not {label}" if label else ""))
+        with self._lock:
+            same = next((rec for rec in item.plans if rec.get("source") == "assistant" and rec["status"] == "waiting"
+                         and (rec.get("action") or "enter") == action
+                         and (rec.get("position_key") == position["key"] if position else
+                              rec["direction"] == (1 if str(call.get("direction")).lower() == "long" else -1))), None)
+        if same is not None:
+            raise ValueError(f"the same call is already waiting ({_plan_words(same)})")
+        fields = {"action": action, "direction": call.get("direction"), "trigger": call.get("trigger") or {"kind": "now"},
+                  "stop": call.get("stop"), "target": call.get("target"), "time_stop": call.get("time_stop")}
+        plan = self.add_plan(item.ticker, fields, source="assistant", why=str(call.get("why") or ""), model=model, now=now,
+                             position=position)
+        if plan["kind"] == "exit":
+            return f"{_plan_words(plan)}, until {plan['time_stop']}"
+        return f"{_plan_words(plan)}, stop {plan['stop']:g}, target {plan['target']:g}, out by {plan['time_stop']}"
 
     def ask(self, ticker: str, question: str, now: Optional[datetime] = None) -> Dict[str, Any]:
         """Your question about a stock in the session, answered from its computed state."""
@@ -1194,12 +1264,22 @@ def _note_gap() -> timedelta:
         return timedelta(minutes=3)
 
 
+def _a(action: str) -> str:
+    return f"{'an' if action[:1] in 'ae' else 'a'} {action}"
+
+
 def _plan_words(rec: Dict[str, Any]) -> str:
-    """A plan's side and trigger in words, e.g. "short below 150" or "long close above 194.53 on a 5-minute bar"."""
-    side = "long" if rec["direction"] == 1 else "short"
+    """A plan's side and trigger in words, e.g. "short below 150", "long close above 194.53 on a 5-minute bar",
+    "add to NVDA shares: long above 190" or "exit SPY 11/09 735C below 734" (``rec`` a record or its view)."""
+    side = "long" if rec["direction"] in (1, "long") else "short"
     trigger = rec["trigger"]
+    bar = trigger.get("bar_minutes")
     when = "now" if trigger["kind"] == "now" else f"{trigger['kind'].replace('_', ' ')} {trigger['price']:g}" + (
-        f" on a {trigger['bar_minutes']}-minute bar" if trigger["bar_minutes"] else "")
+        f" on a {bar}-minute bar" if bar else "")
+    if rec.get("action") in ag.SALES:
+        return f"{rec['action']} {rec['position']} {when}"
+    if rec.get("action") == "add":
+        return f"add to {rec['position']}: {side} {when}"
     return f"{side} {when}"
 
 
@@ -1223,7 +1303,7 @@ def settle_open_plans(repo: Any, provider: Any, now: datetime) -> int:
     restart) from the day's 1-minute bars; older ones that missed their day expire. Returns how many moved."""
     day = _local(now).date()
     _, closing = _session_bounds(day)
-    rows = [row for row in repo.chart_trades(statuses=ag.WATCHED, limit=1000) if row.get("kind") in ("plan", "call")]
+    rows = [row for row in repo.chart_trades(statuses=ag.WATCHED, limit=1000) if row.get("kind") in SESSION_KINDS]
     changed = []
     bars_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
     for rec in rows:
